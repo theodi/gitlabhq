@@ -1,21 +1,32 @@
+if ENV['GITLAB_ROOT_PASSWORD'].blank?
+  password = '5iveL!fe'
+  expire_time = Time.now
+else
+  password = ENV['GITLAB_ROOT_PASSWORD']
+  expire_time = nil
+end
+
 admin = User.create(
-  email: "admin@local.host",
+  email: "admin@example.com",
   name: "Administrator",
   username: 'root',
-  password: "5iveL!fe",
-  password_confirmation: "5iveL!fe",
-  password_expires_at: Time.now
+  password: password,
+  password_confirmation: password,
+  password_expires_at: expire_time,
+  theme_id: Gitlab::Theme::MARS
+
 )
 
 admin.projects_limit = 10000
 admin.admin = true
 admin.save!
+admin.confirm!
 
 if admin.valid?
-puts %q[
+puts %Q[
 Administrator account created:
 
-login.........admin@local.host
-password......5iveL!fe
+login.........root
+password......#{password}
 ]
 end

@@ -1,6 +1,4 @@
-class Commit
+class @Commit
   constructor: ->
-    $('.files .file').each ->
+    $('.files .diff-file').each ->
       new CommitFile(this)
-
-@Commit = Commit

@@ -2,9 +2,6 @@ class RegistrationsController < Devise::RegistrationsController
   before_filter :signup_enabled?
 
   def destroy
-    if current_user.owned_projects.count > 0
-      redirect_to account_profile_path, alert: "Remove projects and groups before removing account." and return
-    end
     current_user.destroy
 
     respond_to do |format|
@@ -16,12 +13,23 @@ class RegistrationsController < Devise::RegistrationsController
 
   def build_resource(hash=nil)
     super
-    self.resource.with_defaults
+  end
+
+  def after_sign_up_path_for(resource)
+    new_user_session_path
+  end
+
+  def after_inactive_sign_up_path_for(resource)
+    new_user_session_path
   end
 
   private
 
   def signup_enabled?
     redirect_to new_user_session_path unless Gitlab.config.gitlab.signup_enabled
+  end
+
+  def sign_up_params
+    params.require(:user).permit(:username, :email, :name, :password, :password_confirmation)
   end
 end

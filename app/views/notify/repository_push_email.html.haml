@@ -1,0 +1,28 @@
+%h3 #{@author.name} pushed to #{@branch} at #{link_to @project.name_with_namespace, project_url(@project)}
+
+%h4 Commits:
+
+%ul
+  - @commits.each do |commit|
+    %li
+      %strong #{link_to commit.short_id, project_commit_url(@project, commit)}
+      %span by #{commit.author_name}
+      %pre #{commit.safe_message}
+
+%h4 Changes:
+- @diffs.each do |diff|
+  %li
+    %strong
+      - if diff.old_path == diff.new_path
+        = diff.new_path
+      - elsif diff.new_path && diff.old_path
+        #{diff.old_path} &rarr; #{diff.new_path}
+      - else
+        = diff.new_path || diff.old_path
+    %hr
+    %pre
+      = diff.diff
+    %br
+
+- if @compare.timeout
+  %h5 Huge diff. To prevent performance issues changes are hidden

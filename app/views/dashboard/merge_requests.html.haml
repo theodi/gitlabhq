@@ -1,13 +1,14 @@
 %h3.page-title
   Merge Requests
-  %span.pull-right #{@merge_requests.total_count} merge requests
 
 
 %p.light
-  Only merge requests created by you or assigned to you are listed here.
+  List all merge requests from all projects you have access to.
 %hr
 .row
-  .span3
+  .fixed.sidebar-expand-button.hidden-lg.hidden-md
+    %i.fa.fa-list.fa-2x
+  .col-md-3.responsive-side
     = render 'shared/filter', entity: 'merge_request'
-  .span9
+  .col-md-9
     = render 'shared/merge_requests'

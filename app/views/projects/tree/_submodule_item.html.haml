@@ -1,11 +1,14 @@
-- url = submodule_item.url(@ref) rescue ''
-- name = submodule_item.basename
-- return '' unless url
-%tr{ class: "tree-item", url: url }
+- tree, commit = submodule_links(submodule_item)
+%tr{ class: "tree-item" }
   %td.tree-item-file-name
-    = image_tag "submodule.png"
-    %strong= truncate(name, length: 40)
+    %i.fa.fa-archive
+    %span
+      = link_to truncate(submodule_item.name, length: 40), tree
+    @
+    %span.monospace
+      - if commit.nil?
+        #{truncate_sha(submodule_item.id)}
+      - else
+        = link_to "#{truncate_sha(submodule_item.id)}", commit
   %td
-    %code= submodule_item.id[0..10]
-  %td{ colspan: 2 }
-    = link_to truncate(url, length: 40), url
+  %td.hidden-xs

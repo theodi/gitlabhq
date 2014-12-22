@@ -8,8 +8,8 @@
 #  title       :string(255)
 #  data        :text
 #  project_id  :integer
-#  created_at  :datetime         not null
-#  updated_at  :datetime         not null
+#  created_at  :datetime
+#  updated_at  :datetime
 #  action      :integer
 #  author_id   :integer
 #
@@ -36,7 +36,7 @@ describe Event do
       @user = project.owner
 
       data = {
-        before: "0000000000000000000000000000000000000000",
+        before: Gitlab::Git::BLANK_SHA,
         after: "0220c11b9a3e6c69dc8fd35321254ca9a7b98f7e",
         ref: "refs/heads/master",
         user_id: @user.id,
@@ -60,31 +60,8 @@ describe Event do
 
     it { @event.push?.should be_true }
     it { @event.proper?.should be_true }
-    it { @event.new_branch?.should be_true }
     it { @event.tag?.should be_false }
     it { @event.branch_name.should == "master" }
     it { @event.author.should == @user }
-  end
-
-  describe 'Team events' do
-    let(:user_project) { stub.as_null_object }
-    let(:observer) { UsersProjectObserver.instance }
-
-    before {
-      Event.should_receive :create
-      observer.stub(notification: stub.as_null_object)
-    }
-
-    describe "Joined project team" do
-      it "should create event" do
-        observer.after_create user_project
-      end
-    end
-
-    describe "Left project team" do
-      it "should create event" do
-        observer.after_destroy user_project
-      end
-    end
   end
 end

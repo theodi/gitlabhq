@@ -1,4 +1,5 @@
-Feature: Dashboard active tab
+@dashboard
+Feature: Dashboard Active Tab
   Background:
     Given I sign in as a user
 

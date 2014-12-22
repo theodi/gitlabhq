@@ -1,33 +1,38 @@
-%h3.page-title= @milestone.new_record? ? "New Milestone" : "Edit Milestone ##{@milestone.id}"
+%h3.page-title= @milestone.new_record? ? "New Milestone" : "Edit Milestone ##{@milestone.iid}"
 .back-link
   = link_to project_milestones_path(@project) do
     &larr; To milestones
 
 %hr
 
-= form_for [@project, @milestone], html: {class: "new_milestone form-horizontal"}  do |f|
+= form_for [@project, @milestone], html: {class: 'form-horizontal milestone-form gfm-form'}  do |f|
   -if @milestone.errors.any?
-    .alert.alert-error
+    .alert.alert-danger
       %ul
         - @milestone.errors.full_messages.each do |msg|
           %li= msg
   .row
-    .span6
-      .control-group
+    .col-md-6
+      .form-group
         = f.label :title, "Title", class: "control-label"
-        .controls
-          = f.text_field :title, maxlength: 255, class: "input-xlarge"
+        .col-sm-10
+          = f.text_field :title, maxlength: 255, class: "form-control"
           %p.hint Required
-      .control-group
+      .form-group.milestone-description
         = f.label :description, "Description", class: "control-label"
-        .controls
-          = f.text_area :description, maxlength: 2000, class: "input-xlarge", rows: 10
-          %p.hint Milestones are parsed with #{link_to "GitLab Flavored Markdown", help_markdown_path, target: '_blank'}.
-    .span6
-      .control-group
+        .col-sm-10
+          = render layout: 'projects/md_preview' do
+            = render 'projects/zen', f: f, attr: :description, classes: 'description form-control'
+            .hint
+              .pull-left Milestones are parsed with #{link_to "GitLab Flavored Markdown", help_page_path("markdown", "markdown"), target: '_blank'}.
+              .pull-left Attach images (JPG, PNG, GIF) by dragging & dropping or #{link_to "selecting them", '#', class: 'markdown-selector' }.
+          .clearfix
+          .error-alert
+    .col-md-6
+      .form-group
         = f.label :due_date, "Due Date", class: "control-label"
-        .controls= f.hidden_field :due_date
-        .controls
+        .col-sm-10= f.hidden_field :due_date
+        .col-sm-10
           .datepicker
 
   .form-actions
@@ -45,3 +50,5 @@
     dateFormat: "yy-mm-dd",
     onSelect: function(dateText, inst) { $("#milestone_due_date").val(dateText) }
   }).datepicker("setDate", $.datepicker.parseDate('yy-mm-dd', $('#milestone_due_date').val()));
+
+  window.project_image_path_upload = "#{upload_image_project_path @project}";

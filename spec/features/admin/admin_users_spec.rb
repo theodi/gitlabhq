@@ -1,6 +1,6 @@
 require 'spec_helper'
 
-describe "Admin::Users" do
+describe "Admin::Users", feature: true  do
   before { login_as :admin }
 
   describe "GET /admin/users" do
@@ -35,7 +35,6 @@ describe "Admin::Users" do
       user = User.last
       user.projects_limit.should == Gitlab.config.gitlab.default_projects_limit
       user.can_create_group.should == Gitlab.config.gitlab.default_can_create_group
-      user.can_create_team.should == Gitlab.config.gitlab.default_can_create_team
     end
 
     it "should create user with valid data" do
@@ -48,20 +47,16 @@ describe "Admin::Users" do
     it "should call send mail" do
       Notify.should_receive(:new_user_email)
 
-      User.observers.enable :user_observer do
-        click_button "Create user"
-      end
+      click_button "Create user"
     end
 
     it "should send valid email to user with email & password" do
-      User.observers.enable :user_observer do
-        click_button "Create user"
-        user = User.last
-        email = ActionMailer::Base.deliveries.last
-        email.subject.should have_content("Account was created")
-        email.text_part.body.should have_content(user.email)
-        email.text_part.body.should have_content('password')
-      end
+      click_button "Create user"
+      user = User.last
+      email = ActionMailer::Base.deliveries.last
+      email.subject.should have_content("Account was created")
+      email.text_part.body.should have_content(user.email)
+      email.text_part.body.should have_content('password')
     end
   end
 

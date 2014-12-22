@@ -21,34 +21,31 @@ module TreeHelper
     tree.html_safe
   end
 
+  def render_readme(readme)
+    if gitlab_markdown?(readme.name)
+      preserve(markdown(readme.data))
+    elsif markup?(readme.name)
+      render_markup(readme.name, readme.data)
+    else
+      simple_format(readme.data)
+    end
+  end
+
   # Return an image icon depending on the file type
   #
   # type - String type of the tree item; either 'folder' or 'file'
   def tree_icon(type)
-    image = type == 'folder' ? 'file_dir.png' : 'file_txt.png'
-    image_tag(image, size: '16x16')
+    icon_class = if type == 'folder'
+                   'fa fa-folder'
+                 else
+                   'fa fa-file-o'
+                 end
+
+    content_tag :i, nil, class: icon_class
   end
 
   def tree_hex_class(content)
     "file_#{hexdigest(content.name)}"
-  end
-
-  # Public: Determines if a given filename is compatible with GitHub::Markup.
-  #
-  # filename - Filename string to check
-  #
-  # Returns boolean
-  def markup?(filename)
-    filename.downcase.end_with?(*%w(.textile .rdoc .org .creole
-                                    .mediawiki .rst .asciidoc .pod))
-  end
-
-  def gitlab_markdown?(filename)
-    filename.downcase.end_with?(*%w(.mdown .md .markdown))
-  end
-
-  def plain_text_readme? filename
-    filename =~ /^README(.txt)?$/i
   end
 
   # Simple shortcut to File.join
@@ -56,20 +53,41 @@ module TreeHelper
     File.join(*args)
   end
 
-  def allowed_tree_edit?
-    return false unless @repository.branch_names.include?(@ref)
+  def allowed_tree_edit?(project = nil, ref = nil)
+    project ||= @project
+    ref ||= @ref
+    return false unless project.repository.branch_names.include?(ref)
 
-    if @project.protected_branch? @ref
-      can?(current_user, :push_code_to_protected_branches, @project)
+    if project.protected_branch? ref
+      can?(current_user, :push_code_to_protected_branches, project)
     else
-      can?(current_user, :push_code, @project)
+      can?(current_user, :push_code, project)
+    end
+  end
+
+  def edit_blob_link(project, ref, path, options = {})
+    if project.repository.blob_at(ref, path).text?
+      text = 'Edit'
+      after = options[:after] || ''
+      from_mr = options[:from_merge_request_id]
+      link_opts = {}
+      link_opts[:from_merge_request_id] = from_mr if from_mr
+      cls = 'btn btn-small'
+      if allowed_tree_edit?(project, ref)
+        link_to text, project_edit_tree_path(project, tree_join(ref, path),
+                                             link_opts), class: cls
+      else
+        content_tag :span, text, class: cls + ' disabled'
+      end + after.html_safe
+    else
+      ''
     end
   end
 
   def tree_breadcrumbs(tree, max_links = 2)
-    if tree.path
+    if @path.present?
       part_path = ""
-      parts = tree.path.split("\/")
+      parts = @path.split('/')
 
       yield('..', nil) if parts.count > max_links
 
@@ -78,17 +96,25 @@ module TreeHelper
         part_path = part if part_path.empty?
 
         next unless parts.last(2).include?(part) if parts.count > max_links
-        yield(part, tree_join(tree.ref, part_path))
+        yield(part, tree_join(@ref, part_path))
       end
     end
   end
 
-  def up_dir_path tree
-    file = File.join(tree.path, "..")
-    tree_join(tree.ref, file)
+  def up_dir_path(tree)
+    file = File.join(@path, "..")
+    tree_join(@ref, file)
   end
 
   def leave_edit_message
     "Leave edit mode?\nAll unsaved changes will be lost."
+  end
+
+  def editing_preview_title(filename)
+    if Gitlab::MarkdownHelper.previewable?(filename)
+      'Preview'
+    else
+      'Diff'
+    end
   end
 end

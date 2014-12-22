@@ -1,7 +1,43 @@
 module API
   module APIHelpers
+    PRIVATE_TOKEN_HEADER = "HTTP_PRIVATE_TOKEN"
+    PRIVATE_TOKEN_PARAM = :private_token
+    SUDO_HEADER ="HTTP_SUDO"
+    SUDO_PARAM = :sudo
+
+    def parse_boolean(value)
+      [ true, 1, '1', 't', 'T', 'true', 'TRUE', 'on', 'ON' ].include?(value)
+    end
+
     def current_user
-      @current_user ||= User.find_by_authentication_token(params[:private_token] || env["HTTP_PRIVATE_TOKEN"])
+      private_token = (params[PRIVATE_TOKEN_PARAM] || env[PRIVATE_TOKEN_HEADER]).to_s
+      @current_user ||= User.find_by(authentication_token: private_token)
+
+      unless @current_user && Gitlab::UserAccess.allowed?(@current_user)
+        return nil
+      end
+
+      identifier = sudo_identifier()
+
+      # If the sudo is the current user do nothing
+      if (identifier && !(@current_user.id == identifier || @current_user.username == identifier))
+        render_api_error!('403 Forbidden: Must be admin to use sudo', 403) unless @current_user.is_admin?
+        @current_user = User.by_username_or_id(identifier)
+        not_found!("No user id or username for: #{identifier}") if @current_user.nil?
+      end
+
+      @current_user
+    end
+
+    def sudo_identifier()
+      identifier ||= params[SUDO_PARAM] ||= env[SUDO_HEADER]
+
+      # Regex for integers
+      if (!!(identifier =~ /^[0-9]+$/))
+        identifier.to_i
+      else
+        identifier
+      end
     end
 
     def user_project
@@ -10,7 +46,7 @@ module API
     end
 
     def find_project(id)
-      project = Project.find_by_id(id) || Project.find_with_namespace(id)
+      project = Project.find_with_namespace(id) || Project.find_by(id: id)
 
       if project && can?(current_user, :read_project, project)
         project
@@ -19,22 +55,38 @@ module API
       end
     end
 
-    def paginate(object)
-      object.page(params[:page]).per(params[:per_page].to_i)
+    def paginate(relation)
+      per_page  = params[:per_page].to_i
+      paginated = relation.page(params[:page]).per(per_page)
+      add_pagination_headers(paginated, per_page)
+
+      paginated
     end
 
     def authenticate!
       unauthorized! unless current_user
     end
 
+    def authenticate_by_gitlab_shell_token!
+      unauthorized! unless secret_token == params['secret_token']
+    end
+
     def authenticated_as_admin!
       forbidden! unless current_user.is_admin?
     end
 
-    def authorize! action, subject
+    def authorize!(action, subject)
       unless abilities.allowed?(current_user, action, subject)
         forbidden!
       end
+    end
+
+    def authorize_push_project
+      authorize! :push_code, user_project
+    end
+
+    def authorize_admin_project
+      authorize! :admin_project, user_project
     end
 
     def can?(object, action, subject)
@@ -54,10 +106,33 @@ module API
 
     def attributes_for_keys(keys)
       attrs = {}
+
       keys.each do |key|
-        attrs[key] = params[key] if params[key].present?
+        if params[key].present? or (params.has_key?(key) and params[key] == false)
+          attrs[key] = params[key]
+        end
       end
-      attrs
+
+      ActionController::Parameters.new(attrs).permit!
+    end
+
+    # Helper method for validating all labels against its names
+    def validate_label_params(params)
+      errors = {}
+
+      if params[:labels].present?
+        params[:labels].split(',').each do |label_name|
+          label = user_project.labels.create_with(
+            color: Label::DEFAULT_COLOR).find_or_initialize_by(
+              title: label_name.strip)
+
+          if label.invalid?
+            errors[label.title] = label.errors
+          end
+        end
+      end
+
+      errors
     end
 
     # error helpers
@@ -84,7 +159,17 @@ module API
     end
 
     def not_allowed!
-      render_api_error!('Method Not Allowed', 405)
+      render_api_error!('405 Method Not Allowed', 405)
+    end
+
+    def conflict!(message = nil)
+      render_api_error!(message || '409 Conflict', 409)
+    end
+
+    def render_validation_error!(model)
+      unless model.valid?
+        render_api_error!(model.errors.messages || '400 Bad Request', 400)
+      end
     end
 
     def render_api_error!(message, status)
@@ -93,12 +178,28 @@ module API
 
     private
 
+    def add_pagination_headers(paginated, per_page)
+      request_url = request.url.split('?').first
+
+      links = []
+      links << %(<#{request_url}?page=#{paginated.current_page - 1}&per_page=#{per_page}>; rel="prev") unless paginated.first_page?
+      links << %(<#{request_url}?page=#{paginated.current_page + 1}&per_page=#{per_page}>; rel="next") unless paginated.last_page?
+      links << %(<#{request_url}?page=1&per_page=#{per_page}>; rel="first")
+      links << %(<#{request_url}?page=#{paginated.total_pages}&per_page=#{per_page}>; rel="last")
+
+      header 'Link', links.join(', ')
+    end
+
     def abilities
       @abilities ||= begin
                        abilities = Six.new
                        abilities << Ability
                        abilities
                      end
+    end
+
+    def secret_token
+      File.read(Rails.root.join('.gitlab_shell_secret'))
     end
   end
 end

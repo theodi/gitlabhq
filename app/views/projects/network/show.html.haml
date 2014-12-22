@@ -1,14 +1,26 @@
 = render "head"
 .project-network
-  .tip
-    You can move around the graph by using the arrow keys.
+  .controls
+    = form_tag project_network_path(@project, @id), method: :get, class: 'form-inline network-form' do |f|
+      = text_field_tag :extended_sha1, @options[:extended_sha1], placeholder: "Input an extended SHA1 syntax", class: 'search-input form-control input-mx-250 search-sha'
+      = button_tag class: 'btn btn-success btn-search-sha' do
+        %i.fa.fa-search
+      .inline.prepend-left-20
+        .checkbox.light
+          = label_tag :filter_ref do
+            = check_box_tag :filter_ref, 1, @options[:filter_ref]
+            %span Begin with the selected commit
+
   .network-graph
-    .loading.loading-gray
+    = spinner nil, true
 
 :javascript
-  new Network({
+  disableButtonIfEmptyField('#extended_sha1', '.btn-search-sha')
+
+  network_graph = new Network({
     url: '#{project_network_path(@project, @ref, @options.merge(format: :json))}',
     commit_url: '#{project_commit_path(@project, 'ae45ca32').gsub("ae45ca32", "%s")}',
     ref: '#{@ref}',
     commit_id: '#{@commit.id}'
   })
+  new ShortcutsNetwork(network_graph.branch_graph)

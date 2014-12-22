@@ -13,6 +13,8 @@
 #  line_code     :string(255)
 #  commit_id     :string(255)
 #  noteable_id   :integer
+#  system        :boolean          default(FALSE), not null
+#  st_diff       :text
 #
 
 require 'spec_helper'
@@ -25,8 +27,6 @@ describe Note do
   end
 
   describe "Mass assignment" do
-    it { should_not allow_mass_assignment_of(:author) }
-    it { should_not allow_mass_assignment_of(:author_id) }
   end
 
   describe "Validation" do
@@ -59,6 +59,11 @@ describe Note do
       note.should be_upvote
     end
 
+    it "recognizes a thumbsup emoji as a vote" do
+      note = build(:votable_note, note: ":thumbsup: for this")
+      note.should be_upvote
+    end
+
     it "recognizes a -1 note" do
       note = create(:votable_note, note: "-1 for this")
       note.should be_downvote
@@ -68,10 +73,14 @@ describe Note do
       note = build(:votable_note, note: ":-1: for this")
       note.should be_downvote
     end
+
+    it "recognizes a thumbsdown emoji as a vote" do
+      note = build(:votable_note, note: ":thumbsdown: for this")
+      note.should be_downvote
+    end
   end
 
   let(:project) { create(:project) }
-  let(:commit) { project.repository.commit }
 
   describe "Commit notes" do
     let!(:note) { create(:note_on_commit, note: "+1 from me") }
@@ -130,7 +139,7 @@ describe Note do
   describe "Merge request notes" do
     let!(:note) { create(:note_on_merge_request, note: "+1 from me") }
 
-    it "should not be votable" do
+    it "should be votable" do
       note.should be_votable
     end
   end
@@ -149,7 +158,7 @@ describe Note do
     let(:author) { create(:user) }
     let(:status) { 'new_status' }
 
-    subject { Note.create_status_change_note(thing, project, author, status) }
+    subject { Note.create_status_change_note(thing, project, author, status, nil) }
 
     it 'creates and saves a Note' do
       should be_a Note
@@ -160,6 +169,169 @@ describe Note do
     its(:project) { should == thing.project }
     its(:author) { should == author }
     its(:note) { should =~ /Status changed to #{status}/ }
+
+    it 'appends a back-reference if a closing mentionable is supplied' do
+      commit = double('commit', gfm_reference: 'commit 123456')
+      n = Note.create_status_change_note(thing, project, author, status, commit)
+
+      n.note.should =~ /Status changed to #{status} by commit 123456/
+    end
+  end
+
+  describe '#create_assignee_change_note' do
+    let(:project) { create(:project) }
+    let(:thing) { create(:issue, project: project) }
+    let(:author) { create(:user) }
+    let(:assignee) { create(:user) }
+
+    subject { Note.create_assignee_change_note(thing, project, author, assignee) }
+
+    context 'creates and saves a Note' do
+      it { should be_a Note }
+      its(:id) { should_not be_nil }
+    end
+
+    its(:noteable) { should == thing }
+    its(:project) { should == thing.project }
+    its(:author) { should == author }
+    its(:note) { should =~ /Reassigned to @#{assignee.username}/ }
+
+    context 'assignee is removed' do
+      let(:assignee) { nil }
+
+      its(:note) { should =~ /Assignee removed/ }
+    end
+  end
+
+  describe '#create_cross_reference_note' do
+    let(:project)    { create(:project) }
+    let(:author)     { create(:user) }
+    let(:issue)      { create(:issue, project: project) }
+    let(:mergereq)   { create(:merge_request, :simple, target_project: project, source_project: project) }
+    let(:commit)     { project.repository.commit }
+
+    # Test all of {issue, merge request, commit} in both the referenced and referencing
+    # roles, to ensure that the correct information can be inferred from any argument.
+
+    context 'issue from a merge request' do
+      subject { Note.create_cross_reference_note(issue, mergereq, author, project) }
+
+      it { should be_valid }
+      its(:noteable) { should == issue }
+      its(:project)  { should == issue.project }
+      its(:author)   { should == author }
+      its(:note) { should == "_mentioned in merge request !#{mergereq.iid}_" }
+    end
+
+    context 'issue from a commit' do
+      subject { Note.create_cross_reference_note(issue, commit, author, project) }
+
+      it { should be_valid }
+      its(:noteable) { should == issue }
+      its(:note) { should == "_mentioned in commit #{commit.sha}_" }
+    end
+
+    context 'merge request from an issue' do
+      subject { Note.create_cross_reference_note(mergereq, issue, author, project) }
+
+      it { should be_valid }
+      its(:noteable) { should == mergereq }
+      its(:project) { should == mergereq.project }
+      its(:note) { should == "_mentioned in issue ##{issue.iid}_" }
+    end
+
+    context 'commit from a merge request' do
+      subject { Note.create_cross_reference_note(commit, mergereq, author, project) }
+
+      it { should be_valid }
+      its(:noteable) { should == commit }
+      its(:project) { should == project }
+      its(:note) { should == "_mentioned in merge request !#{mergereq.iid}_" }
+    end
+
+    context 'commit contained in a merge request' do
+      subject { Note.create_cross_reference_note(mergereq.commits.first, mergereq, author, project) }
+
+      it { should be_nil }
+    end
+
+    context 'commit from issue' do
+      subject { Note.create_cross_reference_note(commit, issue, author, project) }
+
+      it { should be_valid }
+      its(:noteable_type) { should == "Commit" }
+      its(:noteable_id) { should be_nil }
+      its(:commit_id) { should == commit.id }
+      its(:note) { should == "_mentioned in issue ##{issue.iid}_" }
+    end
+
+    context 'commit from commit' do
+      let(:parent_commit) { commit.parents.first }
+      subject { Note.create_cross_reference_note(commit, parent_commit, author, project) }
+
+      it { should be_valid }
+      its(:noteable_type) { should == "Commit" }
+      its(:noteable_id) { should be_nil }
+      its(:commit_id) { should == commit.id }
+      its(:note) { should == "_mentioned in commit #{parent_commit.id}_" }
+    end
+  end
+
+  describe '#cross_reference_exists?' do
+    let(:project) { create :project }
+    let(:author) { create :user }
+    let(:issue) { create :issue }
+    let(:commit0) { project.repository.commit }
+    let(:commit1) { project.repository.commit('HEAD~2') }
+
+    before do
+      Note.create_cross_reference_note(issue, commit0, author, project)
+    end
+
+    it 'detects if a mentionable has already been mentioned' do
+      Note.cross_reference_exists?(issue, commit0).should be_true
+    end
+
+    it 'detects if a mentionable has not already been mentioned' do
+      Note.cross_reference_exists?(issue, commit1).should be_false
+    end
+
+    context 'commit on commit' do
+      before do
+        Note.create_cross_reference_note(commit0, commit1, author, project)
+      end
+
+      it { Note.cross_reference_exists?(commit0, commit1).should be_true }
+      it { Note.cross_reference_exists?(commit1, commit0).should be_false }
+    end
+  end
+
+  describe '#system?' do
+    let(:project) { create(:project) }
+    let(:issue)   { create(:issue, project: project) }
+    let(:other)   { create(:issue, project: project) }
+    let(:author)  { create(:user) }
+    let(:assignee) { create(:user) }
+
+    it 'should recognize user-supplied notes as non-system' do
+      @note = create(:note_on_issue)
+      @note.should_not be_system
+    end
+
+    it 'should identify status-change notes as system notes' do
+      @note = Note.create_status_change_note(issue, project, author, 'closed', nil)
+      @note.should be_system
+    end
+
+    it 'should identify cross-reference notes as system notes' do
+      @note = Note.create_cross_reference_note(issue, other, author, project)
+      @note.should be_system
+    end
+
+    it 'should identify assignee-change notes as system notes' do
+      @note = Note.create_assignee_change_note(issue, project, author, assignee)
+      @note.should be_system
+    end
   end
 
   describe :authorization do
@@ -175,8 +347,8 @@ describe Note do
 
     describe :read do
       before do
-        @p1.users_projects.create(user: @u2, project_access: UsersProject::GUEST)
-        @p2.users_projects.create(user: @u3, project_access: UsersProject::GUEST)
+        @p1.project_members.create(user: @u2, access_level: ProjectMember::GUEST)
+        @p2.project_members.create(user: @u3, access_level: ProjectMember::GUEST)
       end
 
       it { @abilities.allowed?(@u1, :read_note, @p1).should be_false }
@@ -186,8 +358,8 @@ describe Note do
 
     describe :write do
       before do
-        @p1.users_projects.create(user: @u2, project_access: UsersProject::DEVELOPER)
-        @p2.users_projects.create(user: @u3, project_access: UsersProject::DEVELOPER)
+        @p1.project_members.create(user: @u2, access_level: ProjectMember::DEVELOPER)
+        @p2.project_members.create(user: @u3, access_level: ProjectMember::DEVELOPER)
       end
 
       it { @abilities.allowed?(@u1, :write_note, @p1).should be_false }
@@ -197,14 +369,21 @@ describe Note do
 
     describe :admin do
       before do
-        @p1.users_projects.create(user: @u1, project_access: UsersProject::REPORTER)
-        @p1.users_projects.create(user: @u2, project_access: UsersProject::MASTER)
-        @p2.users_projects.create(user: @u3, project_access: UsersProject::MASTER)
+        @p1.project_members.create(user: @u1, access_level: ProjectMember::REPORTER)
+        @p1.project_members.create(user: @u2, access_level: ProjectMember::MASTER)
+        @p2.project_members.create(user: @u3, access_level: ProjectMember::MASTER)
       end
 
       it { @abilities.allowed?(@u1, :admin_note, @p1).should be_false }
       it { @abilities.allowed?(@u2, :admin_note, @p1).should be_true }
       it { @abilities.allowed?(@u3, :admin_note, @p1).should be_false }
     end
+  end
+
+  it_behaves_like 'an editable mentionable' do
+    let(:issue) { create :issue, project: project }
+    let(:subject) { create :note, noteable: issue, project: project }
+    let(:backref_text) { issue.gfm_reference }
+    let(:set_mentionable_text) { ->(txt) { subject.note = txt } }
   end
 end

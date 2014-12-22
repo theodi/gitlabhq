@@ -1,6 +1,4 @@
-class GroupMembers
+class @GroupMembers
   constructor: ->
-    $('li.users_group').bind 'ajax:success', ->
+    $('li.group_member').bind 'ajax:success', ->
       $(this).fadeOut()
-
-@GroupMembers = GroupMembers

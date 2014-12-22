@@ -14,12 +14,13 @@ class Projects::SnippetsController < Projects::ApplicationController
   # Allow destroy snippet
   before_filter :authorize_admin_project_snippet!, only: [:destroy]
 
-  layout 'projects'
-
   respond_to :html
 
   def index
-    @snippets = @project.snippets.fresh.non_expired
+    @snippets = SnippetsFinder.new.execute(current_user, {
+      filter: :by_project,
+      project: @project
+    })
   end
 
   def new
@@ -27,7 +28,7 @@ class Projects::SnippetsController < Projects::ApplicationController
   end
 
   def create
-    @snippet = @project.snippets.build(params[:project_snippet])
+    @snippet = @project.snippets.build(snippet_params)
     @snippet.author = current_user
 
     if @snippet.save
@@ -41,7 +42,7 @@ class Projects::SnippetsController < Projects::ApplicationController
   end
 
   def update
-    if @snippet.update_attributes(params[:project_snippet])
+    if @snippet.update_attributes(snippet_params)
       redirect_to project_snippet_path(@project, @snippet)
     else
       respond_with(@snippet)
@@ -50,8 +51,8 @@ class Projects::SnippetsController < Projects::ApplicationController
 
   def show
     @note = @project.notes.new(noteable: @snippet)
-    @target_type = :snippet
-    @target_id = @snippet.id
+    @notes = @snippet.notes.fresh
+    @noteable = @snippet
   end
 
   def destroy
@@ -65,9 +66,9 @@ class Projects::SnippetsController < Projects::ApplicationController
   def raw
     send_data(
       @snippet.content,
-      type: "text/plain",
+      type: 'text/plain; charset=utf-8',
       disposition: 'inline',
-      filename: @snippet.file_name
+      filename: @snippet.sanitized_file_name
     )
   end
 
@@ -87,5 +88,9 @@ class Projects::SnippetsController < Projects::ApplicationController
 
   def module_enabled
     return render_404 unless @project.snippets_enabled
+  end
+
+  def snippet_params
+    params.require(:project_snippet).permit(:title, :content, :file_name, :private, :visibility_level)
   end
 end

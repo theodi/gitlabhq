@@ -2,17 +2,14 @@
 #
 # Table name: services
 #
-#  id          :integer          not null, primary key
-#  type        :string(255)
-#  title       :string(255)
-#  token       :string(255)
-#  project_id  :integer          not null
-#  created_at  :datetime         not null
-#  updated_at  :datetime         not null
-#  active      :boolean          default(FALSE), not null
-#  project_url :string(255)
-#  subdomain   :string(255)
-#  room        :string(255)
+#  id         :integer          not null, primary key
+#  type       :string(255)
+#  title      :string(255)
+#  project_id :integer          not null
+#  created_at :datetime
+#  updated_at :datetime
+#  active     :boolean          default(FALSE), not null
+#  properties :text
 #
 
 require 'spec_helper'
@@ -25,7 +22,6 @@ describe Service do
   end
 
   describe "Mass assignment" do
-    it { should_not allow_mass_assignment_of(:project_id) }
   end
 
   describe "Test Button" do
@@ -44,12 +40,12 @@ describe Service do
       end
 
       describe :can_test do
-        it { @testable.should == false }
+        it { @testable.should == true }
       end
     end
 
     describe "With commits" do
-      let (:project) { create :project_with_code }
+      let (:project) { create :project }
 
       before do
         @service.stub(

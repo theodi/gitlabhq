@@ -2,18 +2,19 @@ class Admin::UsersController < Admin::ApplicationController
   before_filter :user, only: [:show, :edit, :update, :destroy]
 
   def index
-    @users = User.scoped
-    @users = @users.filter(params[:filter])
+    @users = User.filter(params[:filter])
     @users = @users.search(params[:name]) if params[:name].present?
+    @users = @users.sort(@sort = params[:sort])
     @users = @users.alphabetically.page(params[:page])
   end
 
   def show
-    @projects = user.authorized_projects
+    @personal_projects = user.personal_projects
+    @joined_projects = user.projects.joined(@user)
   end
 
   def new
-    @user = User.new.with_defaults
+    @user = User.new
   end
 
   def edit
@@ -37,16 +38,16 @@ class Admin::UsersController < Admin::ApplicationController
   end
 
   def create
-    admin = params[:user].delete("admin")
-
     opts = {
       force_random_password: true,
-      password_expires_at: Time.now
+      password_expires_at: nil
     }
 
-    @user = User.new(params[:user].merge(opts), as: :admin)
-    @user.admin = (admin && admin.to_i > 0)
+    @user = User.new(user_params.merge(opts))
     @user.created_by_id = current_user.id
+    @user.generate_password
+    @user.generate_reset_token
+    @user.skip_confirmation!
 
     respond_to do |format|
       if @user.save
@@ -60,17 +61,18 @@ class Admin::UsersController < Admin::ApplicationController
   end
 
   def update
-    admin = params[:user].delete("admin")
+    user_params_with_pass = user_params.dup
 
-    if params[:user][:password].blank?
-      params[:user].delete(:password)
-      params[:user].delete(:password_confirmation)
+    if params[:user][:password].present?
+      user_params_with_pass.merge!(
+        password: params[:user][:password],
+        password_confirmation: params[:user][:password_confirmation],
+      )
     end
 
-    user.admin = (admin && admin.to_i > 0)
-
     respond_to do |format|
-      if user.update_attributes(params[:user], as: :admin)
+      if user.update_attributes(user_params_with_pass)
+        user.confirm!
         format.html { redirect_to [:admin, user], notice: 'User was successfully updated.' }
         format.json { head :ok }
       else
@@ -83,9 +85,10 @@ class Admin::UsersController < Admin::ApplicationController
   end
 
   def destroy
-    if user.personal_projects.count > 0
-      redirect_to admin_users_path, alert: "User is a project owner and can't be removed." and return
-    end
+    # 1. Remove groups where user is the only owner
+    user.solo_owned_groups.map(&:destroy)
+
+    # 2. Remove user with all authored content including personal projects
     user.destroy
 
     respond_to do |format|
@@ -94,9 +97,28 @@ class Admin::UsersController < Admin::ApplicationController
     end
   end
 
+  def remove_email
+    email = user.emails.find(params[:email_id])
+    email.destroy
+
+    respond_to do |format|
+      format.html { redirect_to :back, notice: "Successfully removed email." }
+      format.js { render nothing: true }
+    end
+  end
+
   protected
 
   def user
-    @user ||= User.find_by_username!(params[:id])
+    @user ||= User.find_by!(username: params[:id])
+  end
+
+  def user_params
+    params.require(:user).permit(
+      :email, :remember_me, :bio, :name, :username,
+      :skype, :linkedin, :twitter, :website_url, :color_scheme_id, :theme_id, :force_random_password,
+      :extern_uid, :provider, :password_expires_at, :avatar, :hide_no_ssh_key,
+      :projects_limit, :can_create_group, :admin
+    )
   end
 end

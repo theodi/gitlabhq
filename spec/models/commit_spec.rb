@@ -1,7 +1,8 @@
 require 'spec_helper'
 
 describe Commit do
-  let(:commit) { create(:project_with_code).repository.commit }
+  let(:project) { create :project }
+  let(:commit) { project.repository.commit }
 
   describe '#title' do
     it "returns no_commit_message when safe_message is blank" do
@@ -10,7 +11,7 @@ describe Commit do
     end
 
     it "truncates a message without a newline at 80 characters" do
-      message = commit.safe_message * 10
+      message = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec sodales id felis id blandit. Vivamus egestas lacinia lacus, sed rutrum mauris.'
 
       commit.stub(:safe_message).and_return(message)
       commit.title.should == "#{message[0..79]}&hellip;"
@@ -23,11 +24,14 @@ describe Commit do
       commit.title.should == message
     end
 
-    it "truncates a message with a newline after 80 characters at 70 characters" do
-      message = (commit.safe_message * 10) + "\n"
+    it "does not truncates a message with a newline after 80 but less 100 characters" do
+      message =<<eos
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec sodales id felis id blandit.
+Vivamus egestas lacinia lacus, sed rutrum mauris.
+eos
 
       commit.stub(:safe_message).and_return(message)
-      commit.title.should == "#{message[0..79]}&hellip;"
+      commit.title.should == message.split("\n").first
     end
   end
 
@@ -45,5 +49,36 @@ describe Commit do
     it { should respond_to(:tree) }
     it { should respond_to(:id) }
     it { should respond_to(:to_patch) }
+  end
+
+  describe '#closes_issues' do
+    let(:issue) { create :issue, project: project }
+    let(:other_project) { create :project, :public }
+    let(:other_issue) { create :issue, project: other_project }
+
+    it 'detects issues that this commit is marked as closing' do
+      stub_const('Gitlab::ClosingIssueExtractor::ISSUE_CLOSING_REGEX',
+                 /Fixes #\d+/)
+      commit.stub(safe_message: "Fixes ##{issue.iid}")
+      commit.closes_issues(project).should == [issue]
+    end
+
+    it 'does not detect issues from other projects' do
+      ext_ref = "#{other_project.path_with_namespace}##{other_issue.iid}"
+      stub_const('Gitlab::ClosingIssueExtractor::ISSUE_CLOSING_REGEX',
+                 /^([Cc]loses|[Ff]ixes)/)
+      commit.stub(safe_message: "Fixes #{ext_ref}")
+      commit.closes_issues(project).should be_empty
+    end
+  end
+
+  it_behaves_like 'a mentionable' do
+    let(:subject) { commit }
+    let(:mauthor) { create :user, email: commit.author_email }
+    let(:backref_text) { "commit #{subject.id}" }
+    let(:set_mentionable_text) { ->(txt){ subject.stub(safe_message: txt) } }
+
+    # Include the subject in the repository stub.
+    let(:extra_commits) { [subject] }
   end
 end

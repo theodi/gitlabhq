@@ -8,17 +8,14 @@
 #  title       :string(255)
 #  data        :text
 #  project_id  :integer
-#  created_at  :datetime         not null
-#  updated_at  :datetime         not null
+#  created_at  :datetime
+#  updated_at  :datetime
 #  action      :integer
 #  author_id   :integer
 #
 
 class Event < ActiveRecord::Base
-  attr_accessible :project, :action, :data, :author_id, :project_id,
-                  :target_id, :target_type
-
-  default_scope where("author_id IS NOT NULL")
+  default_scope { where.not(author_id: nil) }
 
   CREATED   = 1
   UPDATED   = 2
@@ -33,6 +30,7 @@ class Event < ActiveRecord::Base
   delegate :name, :email, to: :author, prefix: true, allow_nil: true
   delegate :title, to: :issue, prefix: true, allow_nil: true
   delegate :title, to: :merge_request, prefix: true, allow_nil: true
+  delegate :title, to: :note, prefix: true, allow_nil: true
 
   belongs_to :author, class_name: "User"
   belongs_to :project
@@ -41,26 +39,23 @@ class Event < ActiveRecord::Base
   # For Hash only
   serialize :data
 
+  # Callbacks
+  after_create :reset_project_activity
+
   # Scopes
   scope :recent, -> { order("created_at DESC") }
   scope :code_push, -> { where(action: PUSHED) }
   scope :in_projects, ->(project_ids) { where(project_id: project_ids).recent }
 
   class << self
-    def determine_action(record)
-      if [Issue, MergeRequest].include? record.class
-        Event::CREATED
-      elsif record.kind_of? Note
-        Event::COMMENTED
-      end
-    end
-
     def create_ref_event(project, user, ref, action = 'add', prefix = 'refs/heads')
+      commit = project.repository.commit(ref.target)
+
       if action.to_s == 'add'
         before = '00000000'
-        after = ref.commit.id
+        after = commit.id
       else
-        before = ref.commit.id
+        before = commit.id
         after = '00000000'
       end
 
@@ -74,6 +69,12 @@ class Event < ActiveRecord::Base
         },
         author_id: user.id
       )
+    end
+
+    def reset_event_cache_for(target)
+      Event.where(target_id: target.id, target_type: target.class.to_s).
+        order('id DESC').limit(100).
+        update_all(updated_at: Time.now)
     end
   end
 
@@ -153,6 +154,10 @@ class Event < ActiveRecord::Base
     target if target_type == "MergeRequest"
   end
 
+  def note
+    target if target_type == "Note"
+  end
+
   def action_name
     if closed?
       "closed"
@@ -168,7 +173,7 @@ class Event < ActiveRecord::Base
   end
 
   def valid_push?
-    data[:ref]
+    data[:ref] && ref_name.present?
   rescue => ex
     false
   end
@@ -179,10 +184,6 @@ class Event < ActiveRecord::Base
 
   def branch?
     data[:ref]["refs/heads"]
-  end
-
-  def new_branch?
-    commit_from =~ /^00000/
   end
 
   def new_ref?
@@ -223,7 +224,7 @@ class Event < ActiveRecord::Base
 
   # Max 20 commits from push DESC
   def commits
-    @commits ||= data[:commits].reverse
+    @commits ||= (data[:commits] || []).reverse
   end
 
   def commits_count
@@ -256,8 +257,12 @@ class Event < ActiveRecord::Base
     target.commit_id
   end
 
+  def target_iid
+    target.respond_to?(:iid) ? target.iid : target_id
+  end
+
   def note_short_commit_id
-    note_commit_id[0..8]
+    Commit.truncate_sha(note_commit_id)
   end
 
   def note_commit?
@@ -280,8 +285,12 @@ class Event < ActiveRecord::Base
     end
   end
 
-  def wall_note?
-    target.noteable_type.blank?
+  def note_target_iid
+    if note_target.respond_to?(:iid)
+      note_target.iid
+    else
+      note_target_id
+    end.to_s
   end
 
   def note_target_type
@@ -290,5 +299,21 @@ class Event < ActiveRecord::Base
     else
       "Wall"
     end.downcase
+  end
+
+  def body?
+    if push?
+      push_with_commits?
+    elsif note?
+      true
+    else
+      target.respond_to? :title
+    end
+  end
+
+  def reset_project_activity
+    if project
+      project.update_column(:last_activity_at, self.created_at)
+    end
   end
 end

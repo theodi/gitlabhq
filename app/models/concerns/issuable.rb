@@ -13,6 +13,8 @@ module Issuable
     belongs_to :assignee, class_name: "User"
     belongs_to :milestone
     has_many :notes, as: :noteable, dependent: :destroy
+    has_many :label_links, as: :target, dependent: :destroy
+    has_many :labels, through: :label_links
 
     validates :author, presence: true
     validates :title, presence: true, length: { within: 0..255 }
@@ -23,6 +25,10 @@ module Issuable
     scope :assigned, -> { where("assignee_id IS NOT NULL") }
     scope :unassigned, -> { where("assignee_id IS NULL") }
     scope :of_projects, ->(ids) { where(project_id: ids) }
+    scope :opened, -> { with_state(:opened, :reopened) }
+    scope :only_opened, -> { with_state(:opened) }
+    scope :only_reopened, -> { with_state(:reopened) }
+    scope :closed, -> { with_state(:closed) }
 
     delegate :name,
              :email,
@@ -35,12 +41,28 @@ module Issuable
              allow_nil: true,
              prefix: true
 
-    attr_accessor :author_id_of_changes
+    attr_mentionable :title, :description
   end
 
   module ClassMethods
     def search(query)
-      where("title like :query", query: "%#{query}%")
+      where("LOWER(title) like :query", query: "%#{query.downcase}%")
+    end
+
+    def full_search(query)
+      where("LOWER(title) like :query OR LOWER(description) like :query", query: "%#{query.downcase}%")
+    end
+
+    def sort(method)
+      case method.to_s
+      when 'newest' then reorder("#{table_name}.created_at DESC")
+      when 'oldest' then reorder("#{table_name}.created_at ASC")
+      when 'recently_updated' then reorder("#{table_name}.updated_at DESC")
+      when 'last_updated' then reorder("#{table_name}.updated_at ASC")
+      when 'milestone_due_soon' then joins(:milestone).reorder("milestones.due_date ASC")
+      when 'milestone_due_later' then joins(:milestone).reorder("milestones.due_date DESC")
+      else reorder("#{table_name}.created_at DESC")
+      end
     end
   end
 
@@ -107,5 +129,29 @@ module Issuable
       mentions << note.mentioned_users
     end
     users.concat(mentions.reduce([], :|)).uniq
+  end
+
+  def to_hook_data(user)
+    {
+      object_kind: self.class.name.underscore,
+      user: user.hook_attrs,
+      object_attributes: hook_attrs
+    }
+  end
+
+  def label_names
+    labels.order('title ASC').pluck(:title)
+  end
+
+  def remove_labels
+    labels.delete_all
+  end
+
+  def add_labels_by_names(label_names)
+    label_names.each do |label_name|
+      label = project.labels.create_with(
+        color: Label::DEFAULT_COLOR).find_or_create_by(title: label_name.strip)
+      self.labels << label
+    end
   end
 end

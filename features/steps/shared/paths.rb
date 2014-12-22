@@ -1,32 +1,61 @@
 module SharedPaths
   include Spinach::DSL
+  include RepoHelpers
 
   step 'I visit new project page' do
     visit new_project_path
   end
 
   # ----------------------------------------
+  # User
+  # ----------------------------------------
+
+  step 'I visit user "John Doe" page' do
+    visit user_path("john_doe")
+  end
+
+  # ----------------------------------------
   # Group
   # ----------------------------------------
 
-  step 'I visit group page' do
-    visit group_path(current_group)
+  step 'I visit group "Owned" page' do
+    visit group_path(Group.find_by(name:"Owned"))
   end
 
-  step 'I visit group issues page' do
-    visit issues_group_path(current_group)
+  step 'I visit group "Owned" issues page' do
+    visit issues_group_path(Group.find_by(name:"Owned"))
   end
 
-  step 'I visit group merge requests page' do
-    visit merge_requests_group_path(current_group)
+  step 'I visit group "Owned" merge requests page' do
+    visit merge_requests_group_path(Group.find_by(name:"Owned"))
   end
 
-  step 'I visit group members page' do
-    visit members_group_path(current_group)
+  step 'I visit group "Owned" members page' do
+    visit members_group_path(Group.find_by(name:"Owned"))
   end
 
-  step 'I visit group settings page' do
-    visit edit_group_path(current_group)
+  step 'I visit group "Owned" settings page' do
+    visit edit_group_path(Group.find_by(name:"Owned"))
+  end
+
+  step 'I visit group "Guest" page' do
+    visit group_path(Group.find_by(name:"Guest"))
+  end
+
+  step 'I visit group "Guest" issues page' do
+    visit issues_group_path(Group.find_by(name:"Guest"))
+  end
+
+  step 'I visit group "Guest" merge requests page' do
+    visit merge_requests_group_path(Group.find_by(name:"Guest"))
+  end
+
+  step 'I visit group "Guest" members page' do
+    visit members_group_path(Group.find_by(name:"Guest"))
+  end
+
+  step 'I visit group "Guest" settings page' do
+    visit edit_group_path(Group.find_by(name:"Guest"))
   end
 
   # ----------------------------------------
@@ -65,8 +94,12 @@ module SharedPaths
     visit profile_path
   end
 
+  step 'I visit profile password page' do
+    visit edit_profile_password_path
+  end
+
   step 'I visit profile account page' do
-    visit account_profile_path
+    visit profile_account_path
   end
 
   step 'I visit profile SSH keys page' do
@@ -79,6 +112,14 @@ module SharedPaths
 
   step 'I visit profile history page' do
     visit history_profile_path
+  end
+
+  step 'I visit profile groups page' do
+    visit profile_groups_path
+  end
+
+  step 'I should be redirected to the profile groups page' do
+    current_path.should == profile_groups_path
   end
 
   # ----------------------------------------
@@ -99,6 +140,10 @@ module SharedPaths
 
   step 'I visit admin logs page' do
     visit admin_logs_path
+  end
+
+  step 'I visit admin messages page' do
+    visit admin_broadcast_messages_path
   end
 
   step 'I visit admin hooks page' do
@@ -160,10 +205,6 @@ module SharedPaths
     visit project_merge_requests_path(@project)
   end
 
-  step "I visit my project's wall page" do
-    visit project_wall_path(@project)
-  end
-
   step "I visit my project's wiki page" do
     visit project_wiki_path(@project, :home)
   end
@@ -196,6 +237,10 @@ module SharedPaths
     visit project_branches_path(@project)
   end
 
+  step 'I visit project protected branches page' do
+    visit project_protected_branches_path(@project)
+  end
+
   step 'I visit compare refs page' do
     visit project_compare_index_path(@project)
   end
@@ -213,11 +258,30 @@ module SharedPaths
   end
 
   step 'I visit blob file from repo' do
-    visit project_blob_path(@project, File.join(ValidCommit::ID, ValidCommit::BLOB_FILE_PATH))
+    visit project_blob_path(@project, File.join(sample_commit.id, sample_blob.path))
   end
 
-  step 'I visit project source page for "8470d70"' do
-    visit project_tree_path(@project, "8470d70")
+  step 'I visit ".gitignore" file in repo' do
+    visit project_blob_path(@project, File.join(root_ref, '.gitignore'))
+  end
+
+  step 'I am on the new file page' do
+    current_path.should eq(project_new_tree_path(@project, root_ref))
+  end
+
+  step 'I am on the ".gitignore" edit file page' do
+    current_path.should eq(project_edit_tree_path(
+      @project, File.join(root_ref, '.gitignore')))
+  end
+
+  step 'I visit project source page for "6d39438"' do
+    visit project_tree_path(@project, "6d39438")
+  end
+
+  step 'I visit project source page for' \
+       ' "6d394385cf567f80a8fd85055db1ab4c5295806f"' do
+    visit project_tree_path(@project,
+                            '6d394385cf567f80a8fd85055db1ab4c5295806f')
   end
 
   step 'I visit project tags page' do
@@ -225,7 +289,7 @@ module SharedPaths
   end
 
   step 'I visit project commit page' do
-    visit project_commit_path(@project, ValidCommit::ID)
+    visit project_commit_path(@project, sample_commit.id)
   end
 
   step 'I visit project "Shop" issues page' do
@@ -233,21 +297,57 @@ module SharedPaths
   end
 
   step 'I visit issue page "Release 0.4"' do
-    issue = Issue.find_by_title("Release 0.4")
+    issue = Issue.find_by(title: "Release 0.4")
+    visit project_issue_path(issue.project, issue)
+  end
+
+  step 'I visit issue page "Tasks-open"' do
+    issue = Issue.find_by(title: 'Tasks-open')
+    visit project_issue_path(issue.project, issue)
+  end
+
+  step 'I visit issue page "Tasks-closed"' do
+    issue = Issue.find_by(title: 'Tasks-closed')
     visit project_issue_path(issue.project, issue)
   end
 
   step 'I visit project "Shop" labels page' do
+    project = Project.find_by(name: 'Shop')
     visit project_labels_path(project)
   end
 
+  step 'I visit project "Forum" labels page' do
+    project = Project.find_by(name: 'Forum')
+    visit project_labels_path(project)
+  end
+
+  step 'I visit project "Shop" new label page' do
+    project = Project.find_by(name: 'Shop')
+    visit new_project_label_path(project)
+  end
+
+  step 'I visit project "Forum" new label page' do
+    project = Project.find_by(name: 'Forum')
+    visit new_project_label_path(project)
+  end
+
   step 'I visit merge request page "Bug NS-04"' do
-    mr = MergeRequest.find_by_title("Bug NS-04")
+    mr = MergeRequest.find_by(title: "Bug NS-04")
     visit project_merge_request_path(mr.target_project, mr)
   end
 
   step 'I visit merge request page "Bug NS-05"' do
-    mr = MergeRequest.find_by_title("Bug NS-05")
+    mr = MergeRequest.find_by(title: "Bug NS-05")
+    visit project_merge_request_path(mr.target_project, mr)
+  end
+
+  step 'I visit merge request page "MR-task-open"' do
+    mr = MergeRequest.find_by(title: 'MR-task-open')
+    visit project_merge_request_path(mr.target_project, mr)
+  end
+
+  step 'I visit merge request page "MR-task-closed"' do
+    mr = MergeRequest.find_by(title: 'MR-task-closed')
     visit project_merge_request_path(mr.target_project, mr)
   end
 
@@ -267,12 +367,36 @@ module SharedPaths
     visit project_team_index_path(project)
   end
 
-  step 'I visit project "Shop" wall page' do
-    visit project_wall_path(project)
-  end
-
   step 'I visit project wiki page' do
     visit project_wiki_path(@project, :home)
+  end
+
+  # ----------------------------------------
+  # Visibility Projects
+  # ----------------------------------------
+
+  step 'I visit project "Community" page' do
+    project = Project.find_by(name: "Community")
+    visit project_path(project)
+  end
+
+  step 'I visit project "Internal" page' do
+    project = Project.find_by(name: "Internal")
+    visit project_path(project)
+  end
+
+  step 'I visit project "Enterprise" page' do
+    project = Project.find_by(name: "Enterprise")
+    visit project_path(project)
+  end
+
+  # ----------------------------------------
+  # Empty Projects
+  # ----------------------------------------
+
+  step "I visit empty project page" do
+    project = Project.find_by(name: "Empty Public Project")
+    visit project_path(project)
   end
 
   # ----------------------------------------
@@ -280,26 +404,34 @@ module SharedPaths
   # ----------------------------------------
 
   step 'I visit the public projects area' do
-    visit public_root_path
+    visit explore_projects_path
   end
 
-  step 'I visit public page for "Community" project' do
-    visit public_project_path(Project.find_by_name("Community"))
+   step 'I visit the explore trending projects' do
+     visit trending_explore_projects_path
+   end
+
+   step 'I visit the explore starred projects' do
+     visit starred_explore_projects_path
+   end
+
+  step 'I visit the public groups area' do
+    visit explore_groups_path
   end
 
   # ----------------------------------------
   # Snippets
   # ----------------------------------------
 
-  Given 'I visit project "Shop" snippets page' do
+  step 'I visit project "Shop" snippets page' do
     visit project_snippets_path(project)
   end
 
-  Given 'I visit snippets page' do
+  step 'I visit snippets page' do
     visit snippets_path
   end
 
-  Given 'I visit new snippet page' do
+  step 'I visit new snippet page' do
     visit new_snippet_path
   end
 
@@ -308,6 +440,14 @@ module SharedPaths
   end
 
   def project
-    project = Project.find_by_name!("Shop")
+    Project.find_by!(name: 'Shop')
+  end
+
+  # ----------------------------------------
+  # Errors
+  # ----------------------------------------
+
+  step 'page status code should be 404' do
+    status_code.should == 404
   end
 end

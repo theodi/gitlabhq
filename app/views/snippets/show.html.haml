@@ -3,13 +3,13 @@
 
   - if @snippet.private?
     %span.label.label-success
-      %i.icon-lock
+      %i.fa.fa-lock
       private
 
   .pull-right
-    = link_to new_snippet_path, class: "btn btn-new btn-small", title: "New Snippet" do
+    = link_to new_snippet_path, class: "btn btn-new", title: "New Snippet" do
       Add new snippet
-
+%hr
 
 .append-bottom-20
   .pull-right
@@ -17,7 +17,7 @@
     %span.light
       by
       = link_to user_snippets_path(@snippet.author) do
-        = image_tag gravatar_icon(@snippet.author_email), class: "avatar avatar-inline s16"
+        = image_tag avatar_icon(@snippet.author_email), class: "avatar avatar-inline s16"
         = @snippet.author_name
 
   .back-link
@@ -28,4 +28,16 @@
       = link_to snippets_path do
         &larr; discover snippets
 
-%div= render 'blob'
+.file-holder
+  .file-title
+    %i.fa.fa-file
+    %span.file_name
+      = @snippet.file_name
+    .options
+      .btn-group
+        - if can?(current_user, :modify_personal_snippet, @snippet)
+          = link_to "edit", edit_snippet_path(@snippet), class: "btn btn-small", title: 'Edit Snippet'
+        = link_to "raw", raw_snippet_path(@snippet), class: "btn btn-small", target: "_blank"
+      - if can?(current_user, :admin_personal_snippet, @snippet)
+        = link_to "remove", snippet_path(@snippet), method: :delete, data: { confirm: "Are you sure?" }, class: "btn btn-small btn-remove", title: 'Delete Snippet'
+  = render 'shared/snippets/blob'

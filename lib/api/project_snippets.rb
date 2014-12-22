@@ -41,7 +41,6 @@ module API
       #   id (required) - The ID of a project
       #   title (required) - The title of a snippet
       #   file_name (required) - The name of a snippet file
-      #   lifetime (optional) - The expiration date of a snippet
       #   code (required) - The content of a snippet
       # Example Request:
       #   POST /projects/:id/snippets
@@ -50,7 +49,6 @@ module API
         required_attributes! [:title, :file_name, :code]
 
         attrs = attributes_for_keys [:title, :file_name]
-        attrs[:expires_at] = params[:lifetime] if params[:lifetime].present?
         attrs[:content] = params[:code] if params[:code].present?
         @snippet = user_project.snippets.new attrs
         @snippet.author = current_user
@@ -58,7 +56,7 @@ module API
         if @snippet.save
           present @snippet, with: Entities::ProjectSnippet
         else
-          not_found!
+          render_validation_error!(@snippet)
         end
       end
 
@@ -69,7 +67,6 @@ module API
       #   snippet_id (required) - The ID of a project snippet
       #   title (optional) - The title of a snippet
       #   file_name (optional) - The name of a snippet file
-      #   lifetime (optional) - The expiration date of a snippet
       #   code (optional) - The content of a snippet
       # Example Request:
       #   PUT /projects/:id/snippets/:snippet_id
@@ -78,13 +75,12 @@ module API
         authorize! :modify_project_snippet, @snippet
 
         attrs = attributes_for_keys [:title, :file_name]
-        attrs[:expires_at] = params[:lifetime] if params[:lifetime].present?
         attrs[:content] = params[:code] if params[:code].present?
 
         if @snippet.update_attributes attrs
           present @snippet, with: Entities::ProjectSnippet
         else
-          not_found!
+          render_validation_error!(@snippet)
         end
       end
 
@@ -101,6 +97,7 @@ module API
           authorize! :modify_project_snippet, @snippet
           @snippet.destroy
         rescue
+          not_found!('Snippet')
         end
       end
 

@@ -1,4 +1,5 @@
-Feature: Dashboard projects
+@dashboard
+Feature: Dashboard Projects
   Background:
     Given I sign in as a user
     And I own project "Shop"

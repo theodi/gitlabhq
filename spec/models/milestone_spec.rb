@@ -7,9 +7,10 @@
 #  project_id  :integer          not null
 #  description :text
 #  due_date    :date
-#  created_at  :datetime         not null
-#  updated_at  :datetime         not null
+#  created_at  :datetime
+#  updated_at  :datetime
 #  state       :string(255)
+#  iid         :integer
 #
 
 require 'spec_helper'
@@ -21,10 +22,10 @@ describe Milestone do
   end
 
   describe "Mass assignment" do
-    it { should_not allow_mass_assignment_of(:project_id) }
   end
 
   describe "Validation" do
+    before { subject.stub(set_iid: false) }
     it { should validate_presence_of(:title) }
     it { should validate_presence_of(:project) }
   end

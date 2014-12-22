@@ -11,7 +11,7 @@ class ProjectTeam
   #   @team << [@user, :master]
   #   @team << [@users, :master]
   #
-  def << args
+  def <<(args)
     users = args.first
 
     if users.respond_to?(:each)
@@ -22,17 +22,25 @@ class ProjectTeam
   end
 
   def find(user_id)
-    user = project.users.find_by_id(user_id)
+    user = project.users.find_by(id: user_id)
 
     if group
-      user ||= group.users.find_by_id(user_id)
+      user ||= group.users.find_by(id: user_id)
     end
 
     user
   end
 
   def find_tm(user_id)
-    project.users_projects.find_by_user_id(user_id)
+    tm = project.project_members.find_by(user_id: user_id)
+
+    # If user is not in project members
+    # we should check for group membership
+    if group && !tm
+      tm = group.group_members.find_by(user_id: user_id)
+    end
+
+    tm
   end
 
   def add_user(user, access)
@@ -44,7 +52,7 @@ class ProjectTeam
   end
 
   def add_users_ids(user_ids, access)
-    UsersProject.add_users_into_projects(
+    ProjectMember.add_users_into_projects(
       [project.id],
       user_ids,
       access
@@ -53,7 +61,11 @@ class ProjectTeam
 
   # Remove all users from project team
   def truncate
-    UsersProject.truncate_team(project)
+    ProjectMember.truncate_team(project)
+  end
+
+  def users
+    members
   end
 
   def members
@@ -79,9 +91,8 @@ class ProjectTeam
   def import(source_project)
     target_project = project
 
-    source_team = source_project.users_projects.all
-    target_team = target_project.users_projects.all
-    target_user_ids = target_team.map(&:user_id)
+    source_team = source_project.project_members.to_a
+    target_user_ids = target_project.project_members.pluck(:user_id)
 
     source_team.reject! do |tm|
       # Skip if user already present in team
@@ -91,11 +102,11 @@ class ProjectTeam
     source_team.map! do |tm|
       new_tm = tm.dup
       new_tm.id = nil
-      new_tm.project_id = target_project.id
+      new_tm.source = target_project
       new_tm
     end
 
-    UsersProject.transaction do
+    ProjectMember.transaction do
       source_team.each do |tm|
         tm.save
       end
@@ -106,18 +117,52 @@ class ProjectTeam
     false
   end
 
+  def guest?(user)
+    max_tm_access(user.id) == Gitlab::Access::GUEST
+  end
+
+  def reporter?(user)
+    max_tm_access(user.id) == Gitlab::Access::REPORTER
+  end
+
+  def developer?(user)
+    max_tm_access(user.id) == Gitlab::Access::DEVELOPER
+  end
+
+  def master?(user)
+    max_tm_access(user.id) == Gitlab::Access::MASTER
+  end
+
+  def member?(user_id)
+    !!find_tm(user_id)
+  end
+
+  def max_tm_access(user_id)
+    access = []
+    access << project.project_members.find_by(user_id: user_id).try(:access_field)
+
+    if group
+      access << group.group_members.find_by(user_id: user_id).try(:access_field)
+    end
+
+    access.compact.max
+  end
+
   private
 
   def fetch_members(level = nil)
-    project_members = project.users_projects
-    group_members = group ? group.users_groups : []
+    project_members = project.project_members
+    group_members = group ? group.group_members : []
 
     if level
       project_members = project_members.send(level)
       group_members = group_members.send(level) if group
     end
 
-    (project_members + group_members).map(&:user).uniq
+    user_ids = project_members.pluck(:user_id)
+    user_ids += group_members.pluck(:user_id) if group
+
+    User.where(id: user_ids)
   end
 
   def group

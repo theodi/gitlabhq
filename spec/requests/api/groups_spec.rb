@@ -1,13 +1,18 @@
 require 'spec_helper'
 
-describe API::API do
+describe API::API, api: true  do
   include ApiHelpers
 
-  let(:user1)  { create(:user) }
-  let(:user2)  { create(:user) }
+  let(:user1) { create(:user) }
+  let(:user2) { create(:user) }
   let(:admin) { create(:admin) }
-  let!(:group1)  { create(:group, owner: user1) }
-  let!(:group2)  { create(:group, owner: user2) }
+  let!(:group1) { create(:group) }
+  let!(:group2) { create(:group) }
+
+  before do
+    group1.add_owner(user1)
+    group2.add_owner(user2)
+  end
 
   describe "GET /groups" do
     context "when unauthenticated" do
@@ -52,7 +57,7 @@ describe API::API do
 
       it "should not return a group not attached to user1" do
         get api("/groups/#{group2.id}", user1)
-        response.status.should == 404
+        response.status.should == 403
       end
     end
 
@@ -90,7 +95,7 @@ describe API::API do
       end
 
       it "should return 400 bad request error if name not given" do
-        post api("/groups", admin), { path: group2.path }
+        post api("/groups", admin), {path: group2.path}
         response.status.should == 400
       end
 
@@ -101,13 +106,50 @@ describe API::API do
     end
   end
 
+  describe "DELETE /groups/:id" do
+    context "when authenticated as user" do
+      it "should remove group" do
+        delete api("/groups/#{group1.id}", user1)
+        response.status.should == 200
+      end
+
+      it "should not remove a group if not an owner" do
+        user3 = create(:user)
+        group1.add_user(user3, Gitlab::Access::MASTER)
+        delete api("/groups/#{group1.id}", user3)
+        response.status.should == 403
+      end
+
+      it "should not remove a non existing group" do
+        delete api("/groups/1328", user1)
+        response.status.should == 404
+      end
+
+      it "should not remove a group not attached to user1" do
+        delete api("/groups/#{group2.id}", user1)
+        response.status.should == 403
+      end
+    end
+
+    context "when authenticated as admin" do
+      it "should remove any existing group" do
+        delete api("/groups/#{group2.id}", admin)
+        response.status.should == 200
+      end
+
+      it "should not remove a non existing group" do
+        delete api("/groups/1328", admin)
+        response.status.should == 404
+      end
+    end
+  end
+
   describe "POST /groups/:id/projects/:project_id" do
     let(:project) { create(:project) }
     before(:each) do
-       project.stub!(:transfer).and_return(true)
-       Project.stub(:find).and_return(project)
+      Projects::TransferService.any_instance.stub(execute: true)
+      Project.stub(:find).and_return(project)
     end
-
 
     context "when authenticated as user" do
       it "should not transfer project to group" do
@@ -118,8 +160,8 @@ describe API::API do
 
     context "when authenticated as admin" do
       it "should transfer project to group" do
-        project.should_receive(:transfer)
         post api("/groups/#{group1.id}/projects/#{project.id}", admin)
+        response.status.should == 201
       end
     end
   end

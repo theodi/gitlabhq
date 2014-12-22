@@ -1,10 +1,9 @@
 !!! 5
 %html{ lang: "en"}
   = render "layouts/head", title: "Error"
-  %body{class: "#{app_theme} application"}
+  %body{class: "#{app_theme} #{theme_type} application"}
     = render "layouts/head_panel", title: "" if current_user
-    = render "layouts/flash"
-    .container
-      .content
-        %center.padded.prepend-top-20
-          = yield
+    .container.navless-container
+      = render "layouts/flash"
+      .error-page
+        = yield

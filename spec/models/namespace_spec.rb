@@ -5,11 +5,12 @@
 #  id          :integer          not null, primary key
 #  name        :string(255)      not null
 #  path        :string(255)      not null
-#  owner_id    :integer          not null
-#  created_at  :datetime         not null
-#  updated_at  :datetime         not null
+#  owner_id    :integer
+#  created_at  :datetime
+#  updated_at  :datetime
 #  type        :string(255)
 #  description :string(255)      default(""), not null
+#  avatar      :string(255)
 #
 
 require 'spec_helper'
@@ -25,8 +26,6 @@ describe Namespace do
   it { should validate_presence_of :owner }
 
   describe "Mass assignment" do
-    it { should allow_mass_assignment_of(:name) }
-    it { should allow_mass_assignment_of(:path) }
   end
 
   describe "Respond to" do

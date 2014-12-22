@@ -1,26 +1,24 @@
 @Pager =
-  limit: 0
-  offset: 0
-  disable: false
-  init: (limit, preload) ->
-    @limit = limit
+  init: (@limit = 0, preload, @disable = false) ->
+    @loading = $(".loading")
     if preload
       @offset = 0
       @getOld()
     else
-      @offset = limit
+      @offset = @limit
     @initLoadMore()
 
   getOld: ->
-    $(".loading").show()
+    @loading.show()
     $.ajax
       type: "GET"
       url: location.href
       data: "limit=" + @limit + "&offset=" + @offset
-      complete: ->
-        $(".loading").hide()
-
-      dataType: "script"
+      complete: =>
+        @loading.hide()
+      success: (data) ->
+        Pager.append(data.count, data.html)
+      dataType: "json"
 
   append: (count, html) ->
     $(".content_list").append html
@@ -38,6 +36,7 @@
       ceaseFire: ->
         Pager.disable
 
-      callback: (i) ->
-        $(".loading").show()
-        Pager.getOld()
+      callback: (i) =>
+        unless @loading.is(':visible')
+          @loading.show()
+          Pager.getOld()

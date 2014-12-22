@@ -1,86 +1,17 @@
 require 'spec_helper'
+require 'mime/types'
 
-describe API::API do
+describe API::API, api: true  do
   include ApiHelpers
-  before(:each) { enable_observers }
-  after(:each) {disable_observers}
+  include RepoHelpers
 
   let(:user) { create(:user) }
   let(:user2) { create(:user) }
-  let!(:project) { create(:project_with_code, creator_id: user.id) }
-  let!(:users_project) { create(:users_project, user: user, project: project, project_access: UsersProject::MASTER) }
+  let!(:project) { create(:project, creator_id: user.id) }
+  let!(:master) { create(:project_member, user: user, project: project, access_level: ProjectMember::MASTER) }
+  let!(:guest) { create(:project_member, user: user2, project: project, access_level: ProjectMember::GUEST) }
 
   before { project.team << [user, :reporter] }
-
-
-  describe "GET /projects/:id/repository/branches" do
-    it "should return an array of project branches" do
-      get api("/projects/#{project.id}/repository/branches", user)
-      response.status.should == 200
-      json_response.should be_an Array
-      json_response.first['name'].should == project.repo.heads.sort_by(&:name).first.name
-    end
-  end
-
-  describe "GET /projects/:id/repository/branches/:branch" do
-    it "should return the branch information for a single branch" do
-      get api("/projects/#{project.id}/repository/branches/new_design", user)
-      response.status.should == 200
-
-      json_response['name'].should == 'new_design'
-      json_response['commit']['id'].should == '621491c677087aa243f165eab467bfdfbee00be1'
-      json_response['protected'].should == false
-    end
-
-    it "should return a 404 error if branch is not available" do
-      get api("/projects/#{project.id}/repository/branches/unknown", user)
-      response.status.should == 404
-    end
-  end
-
-  describe "PUT /projects/:id/repository/branches/:branch/protect" do
-    it "should protect a single branch" do
-      put api("/projects/#{project.id}/repository/branches/new_design/protect", user)
-      response.status.should == 200
-
-      json_response['name'].should == 'new_design'
-      json_response['commit']['id'].should == '621491c677087aa243f165eab467bfdfbee00be1'
-      json_response['protected'].should == true
-    end
-
-    it "should return a 404 error if branch not found" do
-      put api("/projects/#{project.id}/repository/branches/unknown/protect", user)
-      response.status.should == 404
-    end
-
-    it "should return success when protect branch again" do
-      put api("/projects/#{project.id}/repository/branches/new_design/protect", user)
-      put api("/projects/#{project.id}/repository/branches/new_design/protect", user)
-      response.status.should == 200
-    end
-  end
-
-  describe "PUT /projects/:id/repository/branches/:branch/unprotect" do
-    it "should unprotect a single branch" do
-      put api("/projects/#{project.id}/repository/branches/new_design/unprotect", user)
-      response.status.should == 200
-
-      json_response['name'].should == 'new_design'
-      json_response['commit']['id'].should == '621491c677087aa243f165eab467bfdfbee00be1'
-      json_response['protected'].should == false
-    end
-
-    it "should return success when unprotect branch" do
-      put api("/projects/#{project.id}/repository/branches/unknown/unprotect", user)
-      response.status.should == 404
-    end
-
-    it "should return success when unprotect branch again" do
-      put api("/projects/#{project.id}/repository/branches/new_design/unprotect", user)
-      put api("/projects/#{project.id}/repository/branches/new_design/unprotect", user)
-      response.status.should == 200
-    end
-  end
 
   describe "GET /projects/:id/repository/tags" do
     it "should return an array of project tags" do
@@ -91,24 +22,69 @@ describe API::API do
     end
   end
 
-  describe "GET /projects/:id/repository/commits" do
-    context "authorized user" do
-      before { project.team << [user2, :reporter] }
+  describe 'POST /projects/:id/repository/tags' do
+    context 'lightweight tags' do
+      it 'should create a new tag' do
+        post api("/projects/#{project.id}/repository/tags", user),
+             tag_name: 'v7.0.1',
+             ref: 'master'
 
-      it "should return project commits" do
-        get api("/projects/#{project.id}/repository/commits", user)
-        response.status.should == 200
-
-        json_response.should be_an Array
-        json_response.first['id'].should == project.repository.commit.id
+        response.status.should == 201
+        json_response['name'].should == 'v7.0.1'
       end
     end
 
-    context "unauthorized user" do
-      it "should not return project commits" do
-        get api("/projects/#{project.id}/repository/commits")
-        response.status.should == 401
+    context 'annotated tag' do
+      it 'should create a new annotated tag' do
+        # Identity must be set in .gitconfig to create annotated tag.
+        repo_path = project.repository.path_to_repo
+        system(*%W(git --git-dir=#{repo_path} config user.name #{user.name}))
+        system(*%W(git --git-dir=#{repo_path} config user.email #{user.email}))
+
+        post api("/projects/#{project.id}/repository/tags", user),
+             tag_name: 'v7.1.0',
+             ref: 'master',
+             message: 'Release 7.1.0'
+
+        response.status.should == 201
+        json_response['name'].should == 'v7.1.0'
+        json_response['message'].should == 'Release 7.1.0'
       end
+    end
+
+    it 'should deny for user without push access' do
+      post api("/projects/#{project.id}/repository/tags", user2),
+           tag_name: 'v1.9.0',
+           ref: '621491c677087aa243f165eab467bfdfbee00be1'
+      response.status.should == 403
+    end
+
+    it 'should return 400 if tag name is invalid' do
+      post api("/projects/#{project.id}/repository/tags", user),
+           tag_name: 'v 1.0.0',
+           ref: 'master'
+      response.status.should == 400
+      json_response['message'].should == 'Tag name invalid'
+    end
+
+    it 'should return 400 if tag already exists' do
+      post api("/projects/#{project.id}/repository/tags", user),
+           tag_name: 'v8.0.0',
+           ref: 'master'
+      response.status.should == 201
+      post api("/projects/#{project.id}/repository/tags", user),
+           tag_name: 'v8.0.0',
+           ref: 'master'
+      response.status.should == 400
+      json_response['message'].should == 'Tag already exists'
+    end
+
+    it 'should return 400 if ref name is invalid' do
+      post api("/projects/#{project.id}/repository/tags", user),
+           tag_name: 'mytag',
+           ref: 'foo'
+      response.status.should == 400
+      json_response['message'].should == 'Invalid reference name'
     end
   end
 
@@ -121,7 +97,7 @@ describe API::API do
         response.status.should == 200
 
         json_response.should be_an Array
-        json_response.first['name'].should == 'app'
+        json_response.first['name'].should == 'encoding'
         json_response.first['type'].should == 'tree'
         json_response.first['mode'].should == '040000'
       end
@@ -135,25 +111,123 @@ describe API::API do
     end
   end
 
+  describe "GET /projects/:id/repository/blobs/:sha" do
+    it "should get the raw file contents" do
+      get api("/projects/#{project.id}/repository/blobs/master?filepath=README.md", user)
+      response.status.should == 200
+    end
+
+    it "should return 404 for invalid branch_name" do
+      get api("/projects/#{project.id}/repository/blobs/invalid_branch_name?filepath=README.md", user)
+      response.status.should == 404
+    end
+
+    it "should return 404 for invalid file" do
+      get api("/projects/#{project.id}/repository/blobs/master?filepath=README.invalid", user)
+      response.status.should == 404
+    end
+
+    it "should return a 400 error if filepath is missing" do
+      get api("/projects/#{project.id}/repository/blobs/master", user)
+      response.status.should == 400
+    end
+  end
+
   describe "GET /projects/:id/repository/commits/:sha/blob" do
     it "should get the raw file contents" do
       get api("/projects/#{project.id}/repository/commits/master/blob?filepath=README.md", user)
       response.status.should == 200
     end
+  end
 
-    it "should return 404 for invalid branch_name" do
-      get api("/projects/#{project.id}/repository/commits/invalid_branch_name/blob?filepath=README.md", user)
-      response.status.should == 404
+  describe "GET /projects/:id/repository/raw_blobs/:sha" do
+    it "should get the raw file contents" do
+      get api("/projects/#{project.id}/repository/raw_blobs/#{sample_blob.oid}", user)
+      response.status.should == 200
+    end
+  end
+
+  describe "GET /projects/:id/repository/archive(.:format)?:sha" do
+    it "should get the archive" do
+      get api("/projects/#{project.id}/repository/archive", user)
+      repo_name = project.repository.name.gsub("\.git", "")
+      response.status.should == 200
+      response.headers['Content-Disposition'].should =~ /filename\=\"#{repo_name}\-[^\.]+\.tar.gz\"/
+      response.content_type.should == MIME::Types.type_for('file.tar.gz').first.content_type
     end
 
-    it "should return 404 for invalid file" do
-      get api("/projects/#{project.id}/repository/commits/master/blob?filepath=README.invalid", user)
-      response.status.should == 404
+    it "should get the archive.zip" do
+      get api("/projects/#{project.id}/repository/archive.zip", user)
+      repo_name = project.repository.name.gsub("\.git", "")
+      response.status.should == 200
+      response.headers['Content-Disposition'].should =~ /filename\=\"#{repo_name}\-[^\.]+\.zip\"/
+      response.content_type.should == MIME::Types.type_for('file.zip').first.content_type
     end
 
-    it "should return a 400 error if filepath is missing" do
-      get api("/projects/#{project.id}/repository/commits/master/blob", user)
-      response.status.should == 400
+    it "should get the archive.tar.bz2" do
+      get api("/projects/#{project.id}/repository/archive.tar.bz2", user)
+      repo_name = project.repository.name.gsub("\.git", "")
+      response.status.should == 200
+      response.headers['Content-Disposition'].should =~ /filename\=\"#{repo_name}\-[^\.]+\.tar.bz2\"/
+      response.content_type.should == MIME::Types.type_for('file.tar.bz2').first.content_type
+    end
+
+    it "should return 404 for invalid sha" do
+      get api("/projects/#{project.id}/repository/archive/?sha=xxx", user)
+      response.status.should == 404
+    end
+  end
+
+  describe 'GET /projects/:id/repository/compare' do
+    it "should compare branches" do
+      get api("/projects/#{project.id}/repository/compare", user), from: 'master', to: 'feature'
+      response.status.should == 200
+      json_response['commits'].should be_present
+      json_response['diffs'].should be_present
+    end
+
+    it "should compare tags" do
+      get api("/projects/#{project.id}/repository/compare", user), from: 'v1.0.0', to: 'v1.1.0'
+      response.status.should == 200
+      json_response['commits'].should be_present
+      json_response['diffs'].should be_present
+    end
+
+    it "should compare commits" do
+      get api("/projects/#{project.id}/repository/compare", user), from: sample_commit.id, to: sample_commit.parent_id
+      response.status.should == 200
+      json_response['commits'].should be_empty
+      json_response['diffs'].should be_empty
+      json_response['compare_same_ref'].should be_false
+    end
+
+    it "should compare commits in reverse order" do
+      get api("/projects/#{project.id}/repository/compare", user), from: sample_commit.parent_id, to: sample_commit.id
+      response.status.should == 200
+      json_response['commits'].should be_present
+      json_response['diffs'].should be_present
+    end
+
+    it "should compare same refs" do
+      get api("/projects/#{project.id}/repository/compare", user), from: 'master', to: 'master'
+      response.status.should == 200
+      json_response['commits'].should be_empty
+      json_response['diffs'].should be_empty
+      json_response['compare_same_ref'].should be_true
+    end
+  end
+
+  describe 'GET /projects/:id/repository/contributors' do
+    it 'should return valid data' do
+      get api("/projects/#{project.id}/repository/contributors", user)
+      response.status.should == 200
+      json_response.should be_an Array
+      contributor = json_response.first
+      contributor['email'].should == 'dmitriy.zaporozhets@gmail.com'
+      contributor['name'].should == 'Dmitriy Zaporozhets'
+      contributor['commits'].should == 13
+      contributor['additions'].should == 0
+      contributor['deletions'].should == 0
     end
   end
 end

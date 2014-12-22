@@ -1,66 +1,106 @@
-# Operating Systems
+# Requirements
 
-## Linux
+## Operating Systems
 
-GitLab is developed for the Linux operating system.
+### Supported Unix distributions
 
-GitLab officially supports (recent versions of) these Linux distributions:
-
-- Ubuntu Linux
-- Debian/GNU Linux
-
-It should also work on (though they are not officially supported):
-
-- Arch
+- Ubuntu
+- Debian
 - CentOS
+- RedHat Enterprise Linux (please use the CentOS packages and instructions)
+- Scientific Linux (please use the CentOS packages and instructions)
+- Oracle Linux (please use the CentOS packages and instructions)
+
+For the installations options please see [the installation page on the GitLab website](https://about.gitlab.com/installation/).
+
+### Unsupported Unix distributions
+
+- OS X
+- Arch Linux
 - Fedora
 - Gentoo
-- RedHat
+- FreeBSD
 
-## Other Unix Systems
+On the above unsupported distributions is still possible to install GitLab yourself.
+Please see the [manual installation guide](https://github.com/gitlabhq/gitlabhq/blob/master/doc/install/installation.md) and the [unofficial installation guides](https://github.com/gitlabhq/gitlab-public-wiki/wiki/Unofficial-Installation-Guides) on the public wiki for more information.
 
-There is nothing that prevents GitLab from running on other Unix operating
-systems. This means you may get it to work on systems running FreeBSD or OS X.
-**If you want to try, please proceed with caution!**
+### Non-Unix operating systems such as Windows
 
-## Windows
+GitLab is developed for Unix operating systems.
+GitLab does **not** run on Windows and we have no plans of supporting it in the near future.
+Please consider using a virtual machine to run GitLab.
 
-GitLab does **not** run on Windows and we have no plans of supporting it in the
-near future. Please consider using a virtual machine to run GitLab.
+## Ruby versions
 
+GitLab requires Ruby (MRI) 2.0 or 2.1
+You will have to use the standard MRI implementation of Ruby.
+We love [JRuby](http://jruby.org/) and [Rubinius](http://rubini.us/) but GitLab needs several Gems that have native extensions.
 
-# Rubies
+## Hardware requirements
 
-GitLab requires Ruby (MRI) 1.9.3 and several Gems with native components.
-While it is generally possible to use other Rubies (like
-[JRuby](http://jruby.org/) or [Rubinius](http://rubini.us/)) it might require
-some work on your part.
+### Storage
 
+The necessary hard drive space largely depends on the size of the repos you want to store in GitLab but as a *rule of thumb* you should have at least twice as much free space as all your repos combined take up. You need twice the storage because [GitLab satellites](structure.md) contain an extra copy of each repo.
 
-# Hardware requirements
+If you want to be flexible about growing your hard drive space in the future consider mounting it using LVM so you can add more hard drives when you need them.
 
-## CPU
-
-We recommend a processor with **4 cores**. At a minimum you need a processor with 2 cores to responsively run an unmodified installation.
-
-## Memory
-
-- 512MB is too little memory, GitLab will be very slow and you will need 250MB of swap
-- 768MB is the minimal memory size and supports up to 100 users
-- **1GB** is the **recommended** memory size and supports up to 1,000 users
-- 1.5GB supports up to 10,000 users
-
-## Storage
-
-The necessary hard drive space largely depends on the size of the repos you want
-to store in GitLab. But as a *rule of thumb* you should have at least twice as much
-free space as your all repos combined take up. You need twice the storage because [GitLab satellites](structure.md) contain an extra copy of each repo. Apart from a local hard drive you can also mount a volume that supports the network file system (NFS) protocol. This volume might be located on a file server, a network attached storage (NAS) device, a storage area network (SAN) or on an Amazon Web Services (AWS) Elastic Block Store (EBS) volume.
+Apart from a local hard drive you can also mount a volume that supports the network file system (NFS) protocol. This volume might be located on a file server, a network attached storage (NAS) device, a storage area network (SAN) or on an Amazon Web Services (AWS) Elastic Block Store (EBS) volume.
 
 If you have enough RAM memory and a recent CPU the speed of GitLab is mainly limited by hard drive seek times. Having a fast drive (7200 RPM and up) or a solid state drive (SSD) will improve the responsiveness of GitLab.
 
+### CPU
 
-# Installation troubles and reporting success or failure
+- 1 core works supports up to 100 users but the application can be a bit slower due to having all workers and background jobs running on the same core
+- **2 cores** is the **recommended** number of cores and supports up to 500 users
+- 4 cores supports up to 2,000 users
+- 8 cores supports up to 5,000 users
+- 16 cores supports up to 10,000 users
+- 32 cores supports up to 20,000 users
+- 64 cores supports up to 40,000 users
 
-If you have troubles installing GitLab following the [official installation guide](installation.md)
-or want to share your experience installing GitLab on a not officially supported
-platform, please follow the the [contribution guide](/CONTRIBUTING.md).
+### Memory
+
+You need at least 2GB of addressable memory (RAM + swap) to install and use GitLab!
+With less memory GitLab will give strange errors during the reconfigure run and 500 errors during usage.
+
+- 512MB RAM + 1.5GB of swap is the absolute minimum but we strongly **advise against** this amount of memory. See the unicorn worker section below for more advise.
+- 1GB RAM + 1GB swap supports up to 100 users
+- **2GB RAM** is the **recommended** memory size and supports up to 500 users
+- 4GB RAM supports up to 2,000 users
+- 8GB RAM supports up to 5,000 users
+- 16GB RAM supports up to 10,000 users
+- 32GB RAM supports up to 20,000 users
+- 64GB RAM supports up to 40,000 users
+
+Notice: The 25 workers of Sidekiq will show up as separate processes in your process overview (such as top or htop) but they share the same RAM allocation since Sidekiq is a multithreaded application.
+
+## Unicorn Workers
+
+It's possible to increase the amount of unicorn workers and tis will usually help for to reduce the response time of the applications.
+For most instances we recommend using: CPU cores + 1 = unicorn workers.
+So for a machine with 2 cores, 3 unicorn workers is ideal.
+
+For all machines that have 1GB and up we recommend a minimum of two unicorn workers.
+If you have a 512MB machine with a magnetic (non-SSD) swap drive we recommend to configure only one Unicorn worker to prevent excessive swapping.
+With one Unicorn worker only git over ssh access will work because the git over HTTP access requires two running workers (one worker to receive the user request and one worker for the authorization check).
+If you have a 512MB machine with a SSD drive you can use two Unicorn workers, this will allow HTTP access although it will be slow due to swapping.
+
+## Database
+
+If you want to run the database separately, the **recommended** database size is **1 MB per user**.
+
+## Redis and Sidekiq
+
+Redis stores all user sessions and the background task queue.
+The storage requirements for Redis are minimal, about 25kB per user.
+Sidekiq processes the background jobs with a multithreaded process.
+This process starts with the entire Rails stack (200MB+) but it can grow over time due to memory leaks.
+On a very active server (10,000 active users) the Sidekiq process can use 1GB+ of memory.
+
+## Supported web browsers
+
+- Chrome (Latest stable version)
+- Firefox (Latest released version and [latest ESR version](https://www.mozilla.org/en-US/firefox/organizations/))
+- Safari 7+ (known problem: required fields in html5 do not work)
+- Opera (Latest released version)
+- IE 10+

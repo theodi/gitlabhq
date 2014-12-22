@@ -1,10 +1,13 @@
 require 'spec_helper'
 
 describe 'Gitlab::Satellite::Action' do
-  let(:project) { create(:project_with_code) }
+  let(:project) { create(:project) }
   let(:user) { create(:user) }
 
   describe '#prepare_satellite!' do
+    it 'should be able to fetch timeout from conf' do
+      Gitlab::Satellite::Action::DEFAULT_OPTIONS[:git_timeout].should == 30.seconds
+    end
 
     it 'create a repository with a parking branch and one remote: origin' do
       repo = project.satellite.repo
@@ -56,7 +59,7 @@ describe 'Gitlab::Satellite::Action' do
       called = false
 
       #set assumptions
-      File.rm(project.satellite.lock_file) unless !File.exists? project.satellite.lock_file
+      FileUtils.rm_f(project.satellite.lock_file)
 
       File.exists?(project.satellite.lock_file).should be_false
 
@@ -94,7 +97,7 @@ describe 'Gitlab::Satellite::Action' do
     end
 
     class FileLockStatusChecker < File
-      def flocked? &block
+      def flocked?(&block)
         status = flock LOCK_EX|LOCK_NB
         case status
           when false
@@ -113,4 +116,3 @@ describe 'Gitlab::Satellite::Action' do
 
   end
 end
-

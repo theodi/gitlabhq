@@ -1,8 +1,7 @@
 require 'spec_helper'
 
-describe API::API do
+describe API::API, api: true  do
   include ApiHelpers
-
   let(:user) { create(:user) }
   let!(:project) { create(:project, namespace: user.namespace ) }
   let!(:issue) { create(:issue, project: project, author: user) }
@@ -11,57 +10,7 @@ describe API::API do
   let!(:issue_note) { create(:note, noteable: issue, project: project, author: user) }
   let!(:merge_request_note) { create(:note, noteable: merge_request, project: project, author: user) }
   let!(:snippet_note) { create(:note, noteable: snippet, project: project, author: user) }
-  let!(:wall_note) { create(:note, project: project, author: user) }
   before { project.team << [user, :reporter] }
-
-  describe "GET /projects/:id/notes" do
-    context "when unauthenticated" do
-      it "should return authentication error" do
-        get api("/projects/#{project.id}/notes")
-        response.status.should == 401
-      end
-    end
-
-    context "when authenticated" do
-      it "should return project wall notes" do
-        get api("/projects/#{project.id}/notes", user)
-        response.status.should == 200
-        json_response.should be_an Array
-        json_response.first['body'].should == wall_note.note
-      end
-    end
-  end
-
-  describe "GET /projects/:id/notes/:note_id" do
-    it "should return a wall note by id" do
-      get api("/projects/#{project.id}/notes/#{wall_note.id}", user)
-      response.status.should == 200
-      json_response['body'].should == wall_note.note
-    end
-
-    it "should return a 404 error if note not found" do
-      get api("/projects/#{project.id}/notes/123", user)
-      response.status.should == 404
-    end
-  end
-
-  describe "POST /projects/:id/notes" do
-    it "should create a new wall note" do
-      post api("/projects/#{project.id}/notes", user), body: 'hi!'
-      response.status.should == 201
-      json_response['body'].should == 'hi!'
-    end
-
-    it "should return 401 unauthorized error" do
-      post api("/projects/#{project.id}/notes")
-      response.status.should == 401
-    end
-
-    it "should return a 400 bad request if body is missing" do
-      post api("/projects/#{project.id}/notes", user)
-      response.status.should == 400
-    end
-  end
 
   describe "GET /projects/:id/noteable/:noteable_id/notes" do
     context "when noteable is an Issue" do
@@ -141,7 +90,7 @@ describe API::API do
         post api("/projects/#{project.id}/issues/#{issue.id}/notes", user), body: 'hi!'
         response.status.should == 201
         json_response['body'].should == 'hi!'
-        json_response['author']['email'].should == user.email
+        json_response['author']['username'].should == user.username
       end
 
       it "should return a 400 bad request error if body not given" do
@@ -160,7 +109,7 @@ describe API::API do
         post api("/projects/#{project.id}/snippets/#{snippet.id}/notes", user), body: 'hi!'
         response.status.should == 201
         json_response['body'].should == 'hi!'
-        json_response['author']['email'].should == user.email
+        json_response['author']['username'].should == user.username
       end
 
       it "should return a 400 bad request error if body not given" do
@@ -172,6 +121,14 @@ describe API::API do
         post api("/projects/#{project.id}/snippets/#{snippet.id}/notes"), body: 'hi!'
         response.status.should == 401
       end
+    end
+  end
+
+  describe "POST /projects/:id/noteable/:noteable_id/notes to test observer on create" do
+    it "should create an activity event when an issue note is created" do
+      Event.should_receive(:create)
+
+      post api("/projects/#{project.id}/issues/#{issue.id}/notes", user), body: 'hi!'
     end
   end
 end

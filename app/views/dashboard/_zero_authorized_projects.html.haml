@@ -1,12 +1,50 @@
-%h3.nothing_here_message
-  You don't have access to any projects.
-  %br
-  - if current_user.can_create_project?
-    You can create up to
-    = pluralize(current_user.projects_limit, "project") + "."
-    Click on the button below to add a new one
-    .link_holder
-      = link_to new_project_path, class: "btn btn-primary" do
-        New Project »
-  - else
-    If you are added to a project, it will be displayed here
+%h3.page-title Welcome to GitLab!
+%p.light Self hosted Git management application.
+%hr
+%div
+  .dashboard-intro-icon
+    %i.fa.fa-bookmark-o
+  %div
+    %p.slead
+      You don't have access to any projects right now.
+      %br
+      - if current_user.can_create_project?
+        You can create up to
+        %strong= pluralize(current_user.projects_limit, "project") + "."
+      - else
+        If you are added to a project, it will be displayed here.
+
+    - if current_user.can_create_project?
+      .link_holder
+        = link_to new_project_path, class: "btn btn-new" do
+          New project »
+
+- if current_user.can_create_group?
+  %hr
+  %div
+    .dashboard-intro-icon
+      %i.fa.fa-users
+    %div
+      %p.slead
+        You can create a group for several dependent projects.
+        %br
+        Groups are the best way to manage projects and members.
+      .link_holder
+        = link_to new_group_path, class: "btn btn-new" do
+          New group »
+
+-if @publicish_project_count > 0
+  %hr
+  %div
+    .dashboard-intro-icon
+      %i.fa.fa-globe
+    %div
+      %p.slead
+        There are
+        %strong= @publicish_project_count
+        public projects on this server.
+        %br
+        Public projects are an easy way to allow everyone to have read-only access.
+      .link_holder
+        = link_to trending_explore_projects_path, class: "btn btn-new" do
+          Browse public projects »

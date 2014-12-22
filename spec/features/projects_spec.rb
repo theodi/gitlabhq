@@ -1,8 +1,6 @@
 require 'spec_helper'
 
-describe "Projects" do
-  before(:each) { enable_observers }
-  after(:each) {disable_observers}
+describe "Projects", feature: true, js: true do
   before { login_as :user }
 
   describe "DELETE /projects/:id" do
@@ -12,8 +10,23 @@ describe "Projects" do
       visit edit_project_path(@project)
     end
 
-    it "should be correct path" do
-      expect { click_link "Remove project" }.to change {Project.count}.by(-1)
+    it "should remove project" do
+      expect { remove_project }.to change {Project.count}.by(-1)
     end
+
+    it 'should delete the project from disk' do
+      expect(GitlabShellWorker).to(
+        receive(:perform_async).with(:remove_repository,
+                                     /#{@project.path_with_namespace}/)
+      ).twice
+
+      remove_project
+    end
+  end
+
+  def remove_project
+    click_link "Remove project"
+    fill_in 'confirm_name_input', with: @project.path
+    click_button 'Confirm'
   end
 end

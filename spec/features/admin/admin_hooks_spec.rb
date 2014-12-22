@@ -1,6 +1,6 @@
 require 'spec_helper'
 
-describe "Admin::Hooks" do
+describe "Admin::Hooks", feature: true do
   before do
     @project = create(:project)
     login_as :admin
@@ -33,7 +33,7 @@ describe "Admin::Hooks" do
     end
 
     it "should open new hook popup" do
-      page.current_path.should == admin_hooks_path
+      current_path.should == admin_hooks_path
       page.should have_content(@url)
     end
   end
@@ -45,7 +45,7 @@ describe "Admin::Hooks" do
       click_link "Test Hook"
     end
 
-    it { page.current_path.should == admin_hooks_path }
+    it { current_path.should == admin_hooks_path }
   end
 
 end

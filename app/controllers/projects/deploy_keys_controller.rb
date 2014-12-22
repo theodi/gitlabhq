@@ -7,7 +7,7 @@ class Projects::DeployKeysController < Projects::ApplicationController
   layout "project_settings"
 
   def index
-    @enabled_keys = @project.deploy_keys.all
+    @enabled_keys = @project.deploy_keys
     @available_keys = available_keys - @enabled_keys
   end
 
@@ -22,7 +22,7 @@ class Projects::DeployKeysController < Projects::ApplicationController
   end
 
   def create
-    @key = DeployKey.new(params[:deploy_key])
+    @key = DeployKey.new(deploy_key_params)
 
     if @key.valid? && @project.deploy_keys << @key
       redirect_to project_deploy_keys_path(@project)
@@ -42,7 +42,7 @@ class Projects::DeployKeysController < Projects::ApplicationController
   end
 
   def enable
-    project.deploy_keys << available_keys.find(params[:id])
+    @project.deploy_keys << available_keys.find(params[:id])
 
     redirect_to project_deploy_keys_path(@project)
   end
@@ -57,5 +57,9 @@ class Projects::DeployKeysController < Projects::ApplicationController
 
   def available_keys
     @available_keys ||= current_user.accessible_deploy_keys
+  end
+
+  def deploy_key_params
+    params.require(:deploy_key).permit(:key, :title)
   end
 end

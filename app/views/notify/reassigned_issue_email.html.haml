@@ -1,11 +1,1 @@
-%p
-  = "Reassigned Issue ##{@issue.id}"
-  = link_to_gfm truncate(@issue.title, length: 30), project_issue_url(@issue.project, @issue)
-%p
-  Assignee changed
-  - if @previous_assignee
-    from
-    %strong #{@previous_assignee.name}
-  to
-  %strong #{@issue.assignee_name}
-
+= render 'reassigned_issuable_email', issuable: @issue

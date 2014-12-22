@@ -35,10 +35,19 @@
     padding-top: 0;
   }
 
+  &.event-inline {
+    .avatar {
+      position: relative;
+      top: -2px;
+    }
+  }
+
+  padding: 12px 0px;
   border-bottom: 1px solid #eee;
   .event-title {
+    @include str-truncated(72%);
     color: #333;
-    font-weight: bold;
+    font-weight: 500;
     font-size: 14px;
     .author_name {
       color: #333;
@@ -46,32 +55,33 @@
   }
   .event-body {
     margin-left: 35px;
+    margin-right: 100px;
+    color: #777;
 
-    .commit p {
-      color: #666;
-      padding-top: 5px;
-    }
-    .event-info {
-      color: #666;
-    }
     .event-note {
-      color: #555;
       margin-top: 5px;
+
+      .md {
+        font-size: 13px;
+      }
 
       pre {
         border: none;
         background: #f9f9f9;
         border-radius: 0;
-        color: #555;
+        color: #777;
         margin: 0 20px;
       }
 
-      .note-file-attach {
-        .note-image-attach {
-          margin-top: 4px;
-          margin-left: 0px;
-          max-width: 200px;
-        }
+      .note-image-attach {
+        margin-top: 4px;
+        margin-left: 0px;
+        max-width: 200px;
+        float: none;
+      }
+
+      p:last-child {
+        margin-bottom: 0;
       }
     }
     .event-note-icon {
@@ -95,15 +105,7 @@
       width: 20px;
     }
   }
-  ul {
-    margin-bottom: 5px;
-    .avatar {
-      width: 18px;
-      margin: 2px 4px;
-    }
-  }
 
-  padding: 14px 0px;
   &:last-child { border:none }
 
   .event_commits {
@@ -113,19 +115,28 @@
       &.commit {
         background: transparent;
         padding: 3px;
+        padding-left: 0;
         border: none;
-        font-size: 12px;
+        .commit-row-title {
+          font-size: 12px;
+        }
       }
       &.commits-stat {
         display: block;
         padding: 3px;
-        margin-top: 3px;
+        padding-left: 0;
 
         &:hover {
           background: none;
         }
       }
     }
+  }
+
+  .event-item-timestamp {
+    float: right;
+    color: #999;
+    line-height: 22px;
   }
 }
 
@@ -141,20 +152,54 @@
   .filter_icon {
     a {
       text-align:center;
-      border-left: 3px solid $primary_color;
-      background: #f9f9f9;
+      background: $bg_primary;
       margin-bottom: 10px;
       float: left;
-      padding: 9px 7px;
+      padding: 9px 6px;
       font-size: 18px;
-      width: 26px;
+      width: 40px;
+      color: #FFF;
+      @include border-radius(3px);
     }
 
     &.inactive {
       a {
         color: #DDD;
-        border-left: 3px solid #EEE;
+        background: #f9f9f9;
       }
+    }
+  }
+}
+
+/*
+ * Last push widget
+ */
+.event-last-push {
+  .event-last-push-text {
+    @include str-truncated(75%);
+    line-height: 24px;
+  }
+}
+
+@media (max-width: $screen-xs-max) {
+  .event-item {
+    .event-title {
+      white-space: normal;
+      overflow: visible;
+      max-width: 100%;
+    }
+    .avatar {
+      display: none;
+    }
+
+    .event-body {
+      margin: 0;
+      border-left: 2px solid #DDD;
+      padding-left: 10px;
+    }
+
+    .event-item-timestamp {
+      display: none;
     }
   }
 }

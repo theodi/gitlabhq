@@ -9,32 +9,26 @@ class SnippetsController < ApplicationController
 
   before_filter :set_title
 
+  skip_before_filter :authenticate_user!, only: [:index, :user_index, :show, :raw]
+
   respond_to :html
 
-  layout 'navless'
+  layout :determine_layout
 
   def index
-    @snippets = Snippet.public.fresh.non_expired.page(params[:page]).per(20)
+    @snippets = SnippetsFinder.new.execute(current_user, filter: :all).page(params[:page]).per(20)
   end
 
   def user_index
-    @user = User.find_by_username(params[:username])
-    @snippets = @user.snippets.fresh.non_expired
+    @user = User.find_by(username: params[:username])
 
-    if @user == current_user
-      @snippets = case params[:scope]
-                  when 'public' then
-                    @snippets.public
-                  when 'private' then
-                    @snippets.private
-                  else
-                    @snippets
-                  end
-    else
-      @snippets = @snippets.public
-    end
+    render_404 and return unless @user
 
-    @snippets = @snippets.page(params[:page]).per(20)
+    @snippets = SnippetsFinder.new.execute(current_user, {
+      filter: :by_user,
+      user: @user,
+      scope: params[:scope]}).
+    page(params[:page]).per(20)
 
     if @user == current_user
       render 'current_user_index'
@@ -48,7 +42,7 @@ class SnippetsController < ApplicationController
   end
 
   def create
-    @snippet = PersonalSnippet.new(params[:personal_snippet])
+    @snippet = PersonalSnippet.new(snippet_params)
     @snippet.author = current_user
 
     if @snippet.save
@@ -62,7 +56,7 @@ class SnippetsController < ApplicationController
   end
 
   def update
-    if @snippet.update_attributes(params[:personal_snippet])
+    if @snippet.update_attributes(snippet_params)
       redirect_to snippet_path(@snippet)
     else
       respond_with @snippet
@@ -83,16 +77,23 @@ class SnippetsController < ApplicationController
   def raw
     send_data(
       @snippet.content,
-      type: "text/plain",
+      type: 'text/plain; charset=utf-8',
       disposition: 'inline',
-      filename: @snippet.file_name
+      filename: @snippet.sanitized_file_name
     )
   end
 
   protected
 
   def snippet
-    @snippet ||= PersonalSnippet.where('author_id = :user_id or private is false', user_id: current_user.id).find(params[:id])
+    @snippet ||= if current_user
+                   PersonalSnippet.where("author_id = ? OR visibility_level IN (?)",
+                     current_user.id,
+                     [Snippet::PUBLIC, Snippet::INTERNAL]).
+                     find(params[:id])
+                 else
+                   PersonalSnippet.are_public.find(params[:id])
+                 end
   end
 
   def authorize_modify_snippet!
@@ -105,5 +106,13 @@ class SnippetsController < ApplicationController
 
   def set_title
     @title = 'Snippets'
+  end
+
+  def snippet_params
+    params.require(:personal_snippet).permit(:title, :content, :file_name, :private, :visibility_level)
+  end
+
+  def determine_layout
+    current_user ? 'navless' : 'public_users'
   end
 end

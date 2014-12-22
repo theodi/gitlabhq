@@ -1,4 +1,5 @@
-Feature: Snippets Feature
+@snippets
+Feature: Snippets
   Background:
     Given I sign in as a user
     And I have public "Personal snippet one" snippet
@@ -23,6 +24,5 @@ Feature: Snippets Feature
 
   Scenario: I destroy "Personal snippet one"
     Given I visit snippet page "Personal snippet one"
-    And I click link "Edit"
     And I click link "Destroy"
     Then I should not see "Personal snippet one" in snippets

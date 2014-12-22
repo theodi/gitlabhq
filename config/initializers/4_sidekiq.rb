@@ -12,6 +12,11 @@ Sidekiq.configure_server do |config|
     url: resque_url,
     namespace: 'resque:gitlab'
   }
+
+  config.server_middleware do |chain|
+    chain.add Gitlab::SidekiqMiddleware::ArgumentsLogger if ENV['SIDEKIQ_LOG_ARGUMENTS']
+    chain.add Gitlab::SidekiqMiddleware::MemoryKiller if ENV['SIDEKIQ_MEMORY_KILLER_MAX_RSS']
+  end
 end
 
 Sidekiq.configure_client do |config|

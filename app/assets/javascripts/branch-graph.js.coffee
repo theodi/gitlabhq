@@ -1,4 +1,4 @@
-class BranchGraph
+class @BranchGraph
   constructor: (@element, @options) ->
     @preparedCommits = {}
     @mtime = 0
@@ -90,11 +90,15 @@ class BranchGraph
 
   renderPartialGraph: ->
     start = Math.floor((@element.scrollTop() - @offsetY) / @unitTime) - 10
-    start = 0 if start < 0
+    if start < 0
+      isGraphEdge = true
+      start = 0
     end = start + 40
-    end = @commits.length if @commits.length < end
+    if @commits.length < end
+      isGraphEdge = true
+      end = @commits.length
 
-    if @prev_start == -1 or Math.abs(@prev_start - start) > 10
+    if @prev_start == -1 or Math.abs(@prev_start - start) > 10 or isGraphEdge
       i = start
 
       @prev_start = start
@@ -120,23 +124,32 @@ class BranchGraph
       @top.toFront()
 
   bindEvents: ->
-    drag = {}
     element = @element
 
     $(element).scroll (event) =>
       @renderPartialGraph()
 
-    $(window).on
-      keydown: (event) =>
-        # left
-        element.scrollLeft element.scrollLeft() - 50  if event.keyCode is 37
-        # top
-        element.scrollTop element.scrollTop() - 50  if event.keyCode is 38
-        # right
-        element.scrollLeft element.scrollLeft() + 50  if event.keyCode is 39
-        # bottom
-        element.scrollTop element.scrollTop() + 50  if event.keyCode is 40
-        @renderPartialGraph()
+  scrollDown: =>
+    @element.scrollTop @element.scrollTop() + 50
+    @renderPartialGraph()
+
+  scrollUp: =>
+    @element.scrollTop @element.scrollTop() - 50
+    @renderPartialGraph()
+
+  scrollLeft: =>
+    @element.scrollLeft @element.scrollLeft() - 50
+    @renderPartialGraph()
+
+  scrollRight: =>
+    @element.scrollLeft @element.scrollLeft() + 50
+    @renderPartialGraph()
+
+  scrollBottom: =>
+    @element.scrollTop @element.find('svg').height()
+
+  scrollTop: =>
+    @element.scrollTop 0
 
   appendLabel: (x, y, commit) ->
     return unless commit.refs
@@ -194,11 +207,14 @@ class BranchGraph
       fill: @colors[commit.space]
       stroke: "none"
     )
-    r.rect(@offsetX + @unitSpace * @mspace + 10, y - 10, 20, 20).attr(
-      fill: "url(#{commit.author.icon})"
+
+    avatar_box_x = @offsetX + @unitSpace * @mspace + 10
+    avatar_box_y = y - 10
+    r.rect(avatar_box_x, avatar_box_y, 20, 20).attr(
       stroke: @colors[commit.space]
       "stroke-width": 2
     )
+    r.image(gon.relative_url_root + commit.author.icon, avatar_box_x, avatar_box_y, 20, 20)
     r.text(@offsetX + @unitSpace * @mspace + 35, y, commit.message.split("\n")[0]).attr(
       "text-anchor": "start"
       font: "14px Monaco, monospace"
@@ -271,7 +287,7 @@ class BranchGraph
 Raphael::commitTooltip = (x, y, commit) ->
   boxWidth = 300
   boxHeight = 200
-  icon = @image(commit.author.icon, x, y, 20, 20)
+  icon = @image(gon.relative_url_root + commit.author.icon, x, y, 20, 20)
   nameText = @text(x + 25, y + 10, commit.author.name)
   idText = @text(x, y + 35, commit.id)
   messageText = @text(x, y + 50, commit.message)
@@ -322,5 +338,3 @@ Raphael::textWrap = (t, width) ->
   b = t.getBBox()
   h = Math.abs(b.y2) - Math.abs(b.y) + 1
   t.attr y: b.y + h
-
-@BranchGraph = BranchGraph

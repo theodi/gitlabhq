@@ -1,0 +1,25 @@
+#{@author.name} pushed to #{@branch} at #{link_to @project.name_with_namespace, project_url(@project)}
+
+\
+Commits:
+- @commits.each do |commit|
+  #{link_to commit.short_id, project_commit_url(@project, commit)} by #{commit.author_name}
+  #{commit.safe_message}
+  \- - - - -
+\
+\
+Changes:
+- @diffs.each do |diff|
+  \
+  \=====================================
+  - if diff.old_path == diff.new_path
+    = diff.new_path
+  - elsif diff.new_path && diff.old_path
+    #{diff.old_path} &rarr; #{diff.new_path}
+  - else
+    = diff.new_path || diff.old_path
+  \=====================================
+  != diff.diff
+\
+- if @compare.timeout
+  Huge diff. To prevent performance issues it was hidden

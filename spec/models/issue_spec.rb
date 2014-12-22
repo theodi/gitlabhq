@@ -14,6 +14,7 @@
 #  description  :text
 #  milestone_id :integer
 #  state        :string(255)
+#  iid          :integer
 #
 
 require 'spec_helper'
@@ -24,8 +25,6 @@ describe Issue do
   end
 
   describe "Mass assignment" do
-    it { should_not allow_mass_assignment_of(:author_id) }
-    it { should_not allow_mass_assignment_of(:project_id) }
   end
 
   describe 'modules' do
@@ -54,5 +53,15 @@ describe Issue do
 
       Issue.open_for(user).count.should eq 2
     end
+  end
+
+  it_behaves_like 'an editable mentionable' do
+    let(:subject) { create :issue, project: mproject }
+    let(:backref_text) { "issue ##{subject.iid}" }
+    let(:set_mentionable_text) { ->(txt){ subject.description = txt } }
+  end
+
+  it_behaves_like 'a Taskable' do
+    let(:subject) { create :issue }
   end
 end

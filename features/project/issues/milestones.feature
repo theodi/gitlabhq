@@ -1,4 +1,4 @@
-Feature: Project Milestones
+Feature: Project Issues Milestones
   Background:
     Given I sign in as a user
     And I own project "Shop"
@@ -22,3 +22,9 @@ Feature: Project Milestones
     Given the milestone has open and closed issues
     And I click link "v2.2"
     Then I should see 3 issues
+
+  # Markdown
+
+  Scenario: Headers inside the description should have ids generated for them.
+    Given I click link "v2.2"
+    Then Header "Description header" should have correct id and link

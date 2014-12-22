@@ -1,4 +1,5 @@
-Feature: Admin active tab
+@admin
+Feature: Admin Active Tab
   Background:
     Given I sign in as an admin
 
@@ -25,6 +26,11 @@ Feature: Admin active tab
   Scenario: On Admin Logs
     Given I visit admin logs page
     Then the active main tab should be Logs
+    And no other main tabs should be active
+
+  Scenario: On Admin Messages
+    Given I visit admin messages page
+    Then the active main tab should be Messages
     And no other main tabs should be active
 
   Scenario: On Admin Hooks

@@ -1,47 +1,86 @@
 /* Login Page */
-body.login-page{
-  background: #474D57;
-  .container .content { padding-top: 4%; }
-}
+.login-page {
+  h1 {
+    font-size: 3em;
+    font-weight: 200;
+  }
 
-.login-box{
-  width: 304px;
-  position: relative;
-  @include border-radius(5px);
-  margin: auto;
-  padding: 20px;
-  background: white;
-}
+  .login-box{
+    padding: 0 15px;
 
-.login-box .login-logo{
-  margin: 10px 0 30px 0;
-  display: block;
-}
+    .login-heading h3 {
+      font-weight: 300;
+      line-height: 2;
+    }
 
-.login-box input.text{background-color: #f1f1f1; font-size: 16px; @include border-radius(0); padding: 14px 10px; width: 280px}
+    .login-footer {
+      margin-top: 10px;
+    }
 
-.login-box input.text.top{
-  @include border-radius(5px 5px 0 0);
-  margin-bottom: 0px;
-}
+    .btn {
+      padding: 12px !important;
+      @extend .btn-block;
+    }
+  }
 
-.login-box input.text.bottom{
-  @include border-radius(0 0 5px 5px);
-  border-top: 0;
-  margin-bottom: 20px;
-}
+  .brand-image {
+    img {
+      max-width: 100%;
+      margin-bottom:  20px;
+    }
 
-.login-box input.text.middle{
-  border-top: 0;
-  margin-bottom:0px;
-}
+    &.default-brand-image {
+      margin: 0 80px;
+    }
+  }
 
-.login-box a.forgot{float: right; padding-top: 6px}
+  .login-logo {
+    margin: 10px 0 30px 0;
+    display: block;
+  }
 
-.remember_me {
-  text-align: left;
+  .form-control {
+    background-color: #F5F5F5;
+    font-size: 16px;
+    padding: 14px 10px;
+    width: 100%;
+    height: auto;
 
-  input {
-    margin: 2px;
+    &.top {
+      @include border-radius(5px 5px 0 0);
+      margin-bottom: 0px;
+    }
+
+    &.bottom {
+      @include border-radius(0 0 5px 5px);
+      border-top: 0;
+      margin-bottom: 20px;
+    }
+
+    &.middle {
+      border-top: 0;
+      margin-bottom:0px;
+      @include border-radius(0);
+    }
+
+    &:active, &:focus {
+      background-color: #FFF;
+    }
+  }
+
+  .login-box a.forgot {
+    float: right;
+    padding-top: 6px
+  }
+
+  .devise-errors {
+    h2 {
+      font-size: 14px;
+      color: #a00;
+    }
+  }
+
+  .brand-holder {
+    border-right: 1px solid #EEE;
   }
 }

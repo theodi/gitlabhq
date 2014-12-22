@@ -1,3 +1,6 @@
+require 'html/pipeline'
+require 'html/pipeline/gitlab'
+
 module Gitlab
   # Custom parser for GitLab-flavored Markdown
   #
@@ -30,13 +33,17 @@ module Gitlab
 
     attr_reader :html_options
 
+    def gfm_with_tasks(text, project = @project, html_options = {})
+      text = gfm(text, project, html_options)
+      parse_tasks(text)
+    end
+
     # Public: Parse the provided text with GitLab-Flavored Markdown
     #
     # text         - the source text
+    # project      - extra options for the reference links as given to link_to
     # html_options - extra options for the reference links as given to link_to
-    #
-    # Note: reference links will only be generated if @project is set
-    def gfm(text, html_options = {})
+    def gfm(text, project = @project, html_options = {})
       return text if text.nil?
 
       # Duplicate the string so we don't alter the original, then call to_str
@@ -56,14 +63,37 @@ module Gitlab
 
       # TODO: add popups with additional information
 
-      text = parse(text)
+      text = parse(text, project)
 
       # Insert pre block extractions
       text.gsub!(/\{gfm-extraction-(\h{32})\}/) do
         insert_piece($1)
       end
 
-      sanitize text.html_safe, attributes: ActionView::Base.sanitized_allowed_attributes + %w(id class)
+      # Used markdown pipelines in GitLab:
+      # GitlabEmojiFilter - performs emoji replacement.
+      #
+      # see https://gitlab.com/gitlab-org/html-pipeline-gitlab for more filters
+      filters = [
+        HTML::Pipeline::Gitlab::GitlabEmojiFilter
+      ]
+
+      markdown_context = {
+              asset_root: Gitlab.config.gitlab.url,
+              asset_host: Gitlab::Application.config.asset_host
+      }
+
+      markdown_pipeline = HTML::Pipeline::Gitlab.new(filters).pipeline
+
+      result = markdown_pipeline.call(text, markdown_context)
+      text = result[:output].to_html(save_with: 0)
+
+      allowed_attributes = ActionView::Base.sanitized_allowed_attributes
+      allowed_tags = ActionView::Base.sanitized_allowed_tags
+
+      sanitize text.html_safe,
+               attributes: allowed_attributes + %w(id class),
+               tags: allowed_tags + %w(table tr td th)
     end
 
     private
@@ -84,24 +114,25 @@ module Gitlab
     #
     # text - Text to parse
     #
-    # Note: reference links will only be generated if @project is set
-    #
     # Returns parsed text
-    def parse(text)
-      parse_references(text) if @project
-      parse_emoji(text)
+    def parse(text, project = @project)
+      parse_references(text, project) if project
 
       text
     end
 
+    NAME_STR = '[a-zA-Z][a-zA-Z0-9_\-\.]*'
+    PROJ_STR = "(?<project>#{NAME_STR}/#{NAME_STR})"
+
     REFERENCE_PATTERN = %r{
       (?<prefix>\W)?                         # Prefix
       (                                      # Reference
-         @(?<user>[a-zA-Z][a-zA-Z0-9_\-\.]*) # User name
-        |\#(?<issue>([a-zA-Z]+-)?\d+)        # Issue ID
-        |!(?<merge_request>\d+)              # MR ID
+         @(?<user>#{NAME_STR})               # User name
+        |(?<issue>([A-Z\-]+-)\d+)            # JIRA Issue ID
+        |#{PROJ_STR}?\#(?<issue>([a-zA-Z\-]+-)?\d+) # Issue ID
+        |#{PROJ_STR}?!(?<merge_request>\d+)  # MR ID
         |\$(?<snippet>\d+)                   # Snippet ID
-        |(?<commit>[\h]{6,40})               # Commit ID
+        |(#{PROJ_STR}@)?(?<commit>[\h]{6,40}) # Commit ID
         |(?<skip>gfm-extraction-[\h]{6,40})  # Skip gfm extractions. Otherwise will be parsed as commit
       )
       (?<suffix>\W)?                         # Suffix
@@ -109,50 +140,49 @@ module Gitlab
 
     TYPES = [:user, :issue, :merge_request, :snippet, :commit].freeze
 
-    def parse_references(text)
+    def parse_references(text, project = @project)
       # parse reference links
       text.gsub!(REFERENCE_PATTERN) do |match|
-        prefix     = $~[:prefix]
-        suffix     = $~[:suffix]
         type       = TYPES.select{|t| !$~[t].nil?}.first
 
-        if type
-          identifier = $~[type]
-
-          # Avoid HTML entities
-          if prefix && suffix && prefix[0] == '&' && suffix[-1] == ';'
-            match
-          elsif ref_link = reference_link(type, identifier)
-            "#{prefix}#{ref_link}#{suffix}"
-          else
-            match
-          end
-        else
-          match
+        actual_project = project
+        project_prefix = nil
+        project_path = $LAST_MATCH_INFO[:project]
+        if project_path
+          actual_project = ::Project.find_with_namespace(project_path)
+          project_prefix = project_path
         end
+
+        parse_result($LAST_MATCH_INFO, type,
+                     actual_project, project_prefix) || match
       end
     end
 
-    EMOJI_PATTERN = %r{(:(\S+):)}.freeze
+    # Called from #parse_references.  Attempts to build a gitlab reference
+    # link.  Returns nil if +type+ is nil, if the match string is an HTML
+    # entity, if the reference is invalid, or if the matched text includes an
+    # invalid project path.
+    def parse_result(match_info, type, project, project_prefix)
+      prefix = match_info[:prefix]
+      suffix = match_info[:suffix]
 
-    def parse_emoji(text)
-      # parse emoji
-      text.gsub!(EMOJI_PATTERN) do |match|
-        if valid_emoji?($2)
-          image_tag(url_to_image("emoji/#{$2}.png"), class: 'emoji', title: $1, alt: $1, size: "20x20")
-        else
-          match
-        end
+      return nil if html_entity?(prefix, suffix) || type.nil?
+      return nil if project.nil? && !project_prefix.nil?
+
+      identifier = match_info[type]
+      ref_link = reference_link(type, identifier, project, project_prefix)
+
+      if ref_link
+        "#{prefix}#{ref_link}#{suffix}"
+      else
+        nil
       end
     end
 
-    # Private: Checks if an emoji icon exists in the image asset directory
-    #
-    # emoji - Identifier of the emoji as a string (e.g., "+1", "heart")
-    #
-    # Returns boolean
-    def valid_emoji?(emoji)
-      Emoji.names.include? emoji
+    # Return true if the +prefix+ and +suffix+ indicate that the matched string
+    # is an HTML entity like &amp;
+    def html_entity?(prefix, suffix)
+      prefix && suffix && prefix[0] == '&' && suffix[-1] == ';'
     end
 
     # Private: Dispatches to a dedicated processing method based on reference
@@ -161,40 +191,110 @@ module Gitlab
     # identifier - Object identifier (Issue ID, SHA hash, etc.)
     #
     # Returns string rendered by the processing method
-    def reference_link(type, identifier)
-      send("reference_#{type}", identifier)
+    def reference_link(type, identifier, project = @project, prefix_text = nil)
+      send("reference_#{type}", identifier, project, prefix_text)
     end
 
-    def reference_user(identifier)
-      if member = @project.team_members.find { |user| user.username == identifier }
-        link_to("@#{identifier}", user_url(identifier), html_options.merge(class: "gfm gfm-team_member #{html_options[:class]}")) if member
+    def reference_user(identifier, project = @project, _ = nil)
+      options = html_options.merge(
+          class: "gfm gfm-team_member #{html_options[:class]}"
+        )
+
+      if identifier == "all"
+        link_to("@all", project_url(project), options)
+      elsif User.find_by(username: identifier)
+        link_to("@#{identifier}", user_url(identifier), options)
       end
     end
 
-    def reference_issue(identifier)
-      if @project.issue_exists? identifier
-        url = url_for_issue(identifier)
-        title = title_for_issue(identifier)
+    def reference_issue(identifier, project = @project, prefix_text = nil)
+      if project.used_default_issues_tracker? || !external_issues_tracker_enabled?
+        if project.issue_exists? identifier
+          url = url_for_issue(identifier, project)
+          title = title_for_issue(identifier, project)
+          options = html_options.merge(
+            title: "Issue: #{title}",
+            class: "gfm gfm-issue #{html_options[:class]}"
+          )
 
-        link_to("##{identifier}", url, html_options.merge(title: "Issue: #{title}", class: "gfm gfm-issue #{html_options[:class]}"))
+          link_to("#{prefix_text}##{identifier}", url, options)
+        end
+      else
+        config = Gitlab.config
+        external_issue_tracker = config.issues_tracker[project.issues_tracker]
+        if external_issue_tracker.present?
+          reference_external_issue(identifier, external_issue_tracker, project,
+                                   prefix_text)
+        end
       end
     end
 
-    def reference_merge_request(identifier)
-      if merge_request = @project.merge_requests.where(id: identifier).first
-        link_to("!#{identifier}", project_merge_request_url(@project, merge_request), html_options.merge(title: "Merge Request: #{merge_request.title}", class: "gfm gfm-merge_request #{html_options[:class]}"))
+    def reference_merge_request(identifier, project = @project,
+                                prefix_text = nil)
+      if merge_request = project.merge_requests.find_by(iid: identifier)
+        options = html_options.merge(
+          title: "Merge Request: #{merge_request.title}",
+          class: "gfm gfm-merge_request #{html_options[:class]}"
+        )
+        url = project_merge_request_url(project, merge_request)
+        link_to("#{prefix_text}!#{identifier}", url, options)
       end
     end
 
-    def reference_snippet(identifier)
-      if snippet = @project.snippets.where(id: identifier).first
-        link_to("$#{identifier}", project_snippet_url(@project, snippet), html_options.merge(title: "Snippet: #{snippet.title}", class: "gfm gfm-snippet #{html_options[:class]}"))
+    def reference_snippet(identifier, project = @project, _ = nil)
+      if snippet = project.snippets.find_by(id: identifier)
+        options = html_options.merge(
+          title: "Snippet: #{snippet.title}",
+          class: "gfm gfm-snippet #{html_options[:class]}"
+        )
+        link_to("$#{identifier}", project_snippet_url(project, snippet),
+                options)
       end
     end
 
-    def reference_commit(identifier)
-      if @project.valid_repo? && commit = @project.repository.commit(identifier)
-        link_to(identifier, project_commit_url(@project, commit), html_options.merge(title: commit.link_title, class: "gfm gfm-commit #{html_options[:class]}"))
+    def reference_commit(identifier, project = @project, prefix_text = nil)
+      if project.valid_repo? && commit = project.repository.commit(identifier)
+        options = html_options.merge(
+          title: commit.link_title,
+          class: "gfm gfm-commit #{html_options[:class]}"
+        )
+        prefix_text = "#{prefix_text}@" if prefix_text
+        link_to(
+          "#{prefix_text}#{identifier}",
+          project_commit_url(project, commit),
+          options
+        )
+      end
+    end
+
+    def reference_external_issue(identifier, issue_tracker, project = @project,
+                                 prefix_text = nil)
+      url = url_for_issue(identifier, project)
+      title = issue_tracker['title']
+
+      options = html_options.merge(
+        title: "Issue in #{title}",
+        class: "gfm gfm-issue #{html_options[:class]}"
+      )
+      link_to("#{prefix_text}##{identifier}", url, options)
+    end
+
+    # Turn list items that start with "[ ]" into HTML checkbox inputs.
+    def parse_tasks(text)
+      li_tag = '<li class="task-list-item">'
+      unchecked_box = '<input type="checkbox" value="on" disabled />'
+      checked_box = unchecked_box.sub(/\/>$/, 'checked="checked" />')
+
+      # Regexp captures don't seem to work when +text+ is an
+      # ActiveSupport::SafeBuffer, hence the `String.new`
+      String.new(text).gsub(Taskable::TASK_PATTERN_HTML) do
+        checked = $LAST_MATCH_INFO[:checked].downcase == 'x'
+
+        if checked
+          "#{li_tag}#{checked_box}"
+        else
+          "#{li_tag}#{unchecked_box}"
+        end
       end
     end
   end

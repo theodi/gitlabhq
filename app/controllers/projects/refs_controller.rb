@@ -2,8 +2,7 @@ class Projects::RefsController < Projects::ApplicationController
   include ExtractsPath
 
   # Authorize
-  before_filter :authorize_read_project!
-  before_filter :authorize_code_access!
+  before_filter :authorize_download_code!
   before_filter :require_non_empty_project
 
   def switch
@@ -24,16 +23,31 @@ class Projects::RefsController < Projects::ApplicationController
       format.js do
         @ref = params[:ref]
         define_tree_vars
+        tree
         render "tree"
       end
     end
   end
 
   def logs_tree
-    contents = @tree.entries
-    @logs = contents.map do |content|
-      file = params[:path] ? File.join(params[:path], content.name) : content.name
-      last_commit = @repo.commits(@commit.id, file, 1).last
+    @offset = if params[:offset].present?
+             params[:offset].to_i
+           else
+             0
+           end
+
+    @limit = 25
+
+    @path = params[:path]
+
+    contents = []
+    contents += tree.trees
+    contents += tree.blobs
+    contents += tree.submodules
+
+    @logs = contents[@offset, @limit].to_a.map do |content|
+      file = @path ? File.join(@path, content.name) : content.name
+      last_commit = @repo.last_commit_for_path(@commit.id, file)
       {
         file_name: content.name,
         commit: last_commit

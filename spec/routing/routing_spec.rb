@@ -11,11 +11,11 @@ end
 #            /:path       Grack
 describe "Mounted Apps", "routing" do
   it "to API" do
-    get("/api").should be_routable
+    get("/api/issues").should be_routable
   end
 
   it "to Grack" do
-    get("/gitlabhq.git").should be_routable
+    get("/gitlab/gitlabhq.git").should be_routable
   end
 end
 
@@ -79,42 +79,35 @@ describe HelpController, "routing" do
   end
 
   it "to #permissions" do
-    get("/help/permissions").should route_to('help#permissions')
+    get("/help/permissions/permissions").should route_to('help#show', category: "permissions", file: "permissions")
   end
 
   it "to #workflow" do
-    get("/help/workflow").should route_to('help#workflow')
+    get("/help/workflow/README").should route_to('help#show', category: "workflow", file: "README")
   end
 
   it "to #api" do
-    get("/help/api").should route_to('help#api')
+    get("/help/api/README").should route_to('help#show', category: "api", file: "README")
   end
 
   it "to #web_hooks" do
-    get("/help/web_hooks").should route_to('help#web_hooks')
+    get("/help/web_hooks/web_hooks").should route_to('help#show', category: "web_hooks", file: "web_hooks")
   end
 
   it "to #system_hooks" do
-    get("/help/system_hooks").should route_to('help#system_hooks')
+    get("/help/system_hooks/system_hooks").should route_to('help#show', category: "system_hooks", file: "system_hooks")
   end
 
   it "to #markdown" do
-    get("/help/markdown").should route_to('help#markdown')
+    get("/help/markdown/markdown").should route_to('help#show',category: "markdown", file: "markdown")
   end
 
   it "to #ssh" do
-    get("/help/ssh").should route_to('help#ssh')
+    get("/help/ssh/README").should route_to('help#show', category: "ssh", file: "README")
   end
 
   it "to #raketasks" do
-    get("/help/raketasks").should route_to('help#raketasks')
-  end
-end
-
-# errors_githost GET    /errors/githost(.:format) errors#githost
-describe ErrorsController, "routing" do
-  it "to #githost" do
-    get("/errors/githost").should route_to('errors#githost')
+    get("/help/raketasks/README").should route_to('help#show', category: "raketasks", file: "README")
   end
 end
 
@@ -128,7 +121,7 @@ end
 #              profile_update PUT    /profile/update(.:format)              profile#update
 describe ProfilesController, "routing" do
   it "to #account" do
-    get("/profile/account").should route_to('profiles#account')
+    get("/profile/account").should route_to('profiles/accounts#show')
   end
 
   it "to #history" do
@@ -183,6 +176,35 @@ describe Profiles::KeysController, "routing" do
   it "to #destroy" do
     delete("/profile/keys/1").should route_to('profiles/keys#destroy', id: '1')
   end
+
+  # get all the ssh-keys of a user
+  it "to #get_keys" do
+    get("/foo.keys").should route_to('profiles/keys#get_keys', username: 'foo')
+  end
+end
+
+#   emails GET    /emails(.:format)        emails#index
+#          POST   /keys(.:format)          emails#create
+#          DELETE /keys/:id(.:format)      keys#destroy
+describe Profiles::EmailsController, "routing" do
+  it "to #index" do
+    get("/profile/emails").should route_to('profiles/emails#index')
+  end
+
+  it "to #create" do
+    post("/profile/emails").should route_to('profiles/emails#create')
+  end
+
+  it "to #destroy" do
+    delete("/profile/emails/1").should route_to('profiles/emails#destroy', id: '1')
+  end
+end
+
+# profile_avatar DELETE /profile/avatar(.:format) profiles/avatars#destroy
+describe Profiles::AvatarsController, "routing" do
+  it "to #destroy" do
+    delete("/profile/avatar").should route_to('profiles/avatars#destroy')
+  end
 end
 
 #                dashboard GET    /dashboard(.:format)                dashboard#show
@@ -216,3 +238,14 @@ end
 describe "Authentication", "routing" do
   # pending
 end
+
+describe "Groups", "routing" do
+  it "to #show" do
+    get("/groups/1").should route_to('groups#show', id: '1')
+  end
+
+  it "also display group#show on the short path" do
+    get('/1').should route_to('namespaces#show', id: '1')
+  end
+end
+

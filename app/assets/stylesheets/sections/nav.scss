@@ -3,12 +3,11 @@
   margin: 20px 0;
   margin-top: 0;
   padding-top: 4px;
-  border-bottom: 1px solid #E1E1E1;
+  border-bottom: 1px solid #E9E9E9;
 
   ul {
+    padding: 0;
     margin: auto;
-    height: 40px;
-    overflow: hidden;
     .count {
       font-weight: normal;
       display: inline-block;
@@ -34,52 +33,64 @@
       width: 1%;
       &.active {
         a {
-          color: $style_color;
-          font-weight: bolder;
-
-          &:after {
-            content: '';
-            display: block;
-            position: relative;
-            bottom: 8px;
-            left: 50%;
-            width: 0;
-            height: 0;
-            border-color: transparent transparent #777 transparent;
-            border-style: solid;
-            border-width: 6px;
-            margin-left: -6px;
-          }
+          color: $link_color;
+          font-weight: bold;
+          border-bottom: 3px solid $link_color;
         }
       }
 
       &:hover {
         a {
-         color: $style_color;
-        }
-      }
-
-      &.home {
-        a {
-          i {
-            font-size: 20px;
-            position: relative;
-            top: 4px;
-          }
+          color: $link_hover_color;
+          border-bottom: 3px solid $link_hover_color;
         }
       }
     }
     a {
       display: block;
       text-align: center;
-      font-weight: normal;
-      height: 38px;
-      line-height: 34px;
+      font-weight: bold;
+      height: 42px;
+      line-height: 39px;
       color: #777;
       text-shadow: 0 1px 1px white;
-      padding: 0 10px;
       text-decoration: none;
-      padding-top: 2px;
+      overflow: hidden;
+      margin-bottom: -1px;
+    }
+  }
+
+  @media (max-width: $screen-xs-max) {
+    font-size: 18px;
+    margin: 0;
+    max-height: none;
+
+    &, .container {
+      padding: 0;
+      border-top: 0;
+    }
+
+    ul {
+      height: auto;
+
+      li {
+        display: list-item;
+        width: auto;
+        padding: 5px 0;
+
+        &.active {
+          background-color: $link_hover_color;
+
+          a {
+            color: #fff;
+            font-weight: normal;
+            text-shadow: none;
+            border: none;
+
+            &:after { display: none; }
+          }
+        }
+      }
     }
   }
 }

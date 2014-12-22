@@ -1,41 +1,41 @@
-ActiveRecord::Base.observers.disable :all
-
 Gitlab::Seeder.quiet do
-  (1..100).each  do |i|
-    # Random Project
-    project = Project.all.sample
+  Project.all.reject(&:empty_repo?).each do |project|
+    branches = project.repository.branch_names
 
-    # Random user
-    user = project.users.sample
+    branches.each do |branch_name|
+      break if branches.size < 2
+      source_branch = branches.pop
+      target_branch = branches.pop
 
-    next unless user
+      params = {
+        source_branch: source_branch,
+        target_branch: target_branch,
+        title: Faker::Lorem.sentence(6),
+        description: Faker::Lorem.sentences(3).join(" "),
+        milestone: project.milestones.sample,
+        assignee: project.team.users.sample
+      }
 
-    next if project.empty_repo?
-
-    branches = project.repository.branch_names.sample(2)
-
-    next if branches.uniq.size < 2
-
-    user_id = user.id
-    Thread.current[:current_user] = user
-
-    MergeRequest.seed(:id, [{
-      id: i,
-      source_branch: branches.first,
-      target_branch: branches.last,
-      source_project_id: project.id,
-      target_project_id: project.id,
-      author_id: user_id,
-      assignee_id: user_id,
-      milestone: project.milestones.sample,
-      title: Faker::Lorem.sentence(6)
-    }])
-    print('.')
+      MergeRequests::CreateService.new(project, project.team.users.sample, params).execute
+      print '.'
+    end
   end
-end
 
-puts 'Load diffs for Merge Requests (it will take some time)...'
-MergeRequest.all.each do |mr|
-  mr.reload_code
+  project = Project.find_with_namespace('gitlab-org/gitlab-test')
+
+  params = {
+    source_branch: 'feature',
+    target_branch: 'master',
+    title: 'Can be automatically merged'
+  }
+  MergeRequests::CreateService.new(project, User.admins.first, params).execute
+  print '.'
+
+  params = {
+    source_branch: 'feature_conflict',
+    target_branch: 'feature',
+    title: 'Cannot be automatically merged'
+  }
+  MergeRequests::CreateService.new(project, User.admins.first, params).execute
   print '.'
 end

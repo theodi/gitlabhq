@@ -1,16 +1,18 @@
 %h3.page-title
   Group: #{@group.name}
 
-  = link_to edit_admin_group_path(@group), class: "btn btn-small pull-right" do
-    %i.icon-edit
+  = link_to edit_admin_group_path(@group), class: "btn pull-right" do
+    %i.fa.fa-pencil-square-o
     Edit
 %hr
 .row
-  .span6
-    .ui-box
-      .title
+  .col-md-6
+    .panel.panel-default
+      .panel-heading
         Group info:
       %ul.well-list
+        %li
+          = image_tag group_icon(@group.path), class: "avatar s60"
         %li
           %span.light Name:
           %strong= @group.name
@@ -25,71 +27,60 @@
             = @group.description
 
         %li
-          %span.light Owned by:
-          %strong
-            - if @group.owner
-              = link_to @group.owner_name, admin_user_path(@group.owner)
-            - else
-              (deleted)
-          .pull-right
-            = link_to "#", class: "btn btn-small change-owner-link" do
-              %i.icon-edit
-              Change owner
-        %li.change-owner-holder.hide.bgred
-          .form-holder
-            %strong.cred New Owner:
-            = form_for [:admin, @group] do |f|
-              = users_select_tag(:"group[owner_id]")
-              .prepend-top-10
-                = f.submit 'Change Owner', class: "btn btn-remove"
-                = link_to "Cancel", "#", class: "btn change-owner-cancel-link"
-
-        %li
-          %span.light Created at:
+          %span.light Created on:
           %strong
             = @group.created_at.stamp("March 1, 1999")
 
-    .ui-box
-      .title
-        Projects
-        %small
-          (#{@group.projects.count})
+    .panel.panel-default
+      .panel-heading
+        %h3.panel-title
+          Projects
+          %span.badge
+            #{@group.projects.count}
       %ul.well-list
-        - @group.projects.sort_by(&:name).each do |project|
+        - @projects.each do |project|
           %li
             %strong
               = link_to project.name_with_namespace, [:admin, project]
+              %span.label.label-gray
+                = repository_size(project)
             %span.pull-right.light
               %span.monospace= project.path_with_namespace + ".git"
+      .panel-footer
+        = paginate @projects, param_name: 'projects_page', theme: 'gitlab'
 
-  .span6
-    .ui-box
-      .title
+  .col-md-6
+    .panel.panel-default
+      .panel-heading
         Add user(s) to the group:
-      .ui-box-body.form-holder
+      .panel-body.form-holder
         %p.light
           Read more about project permissions
-          %strong= link_to "here", help_permissions_path, class: "vlink"
+          %strong= link_to "here", help_page_path("permissions", "permissions"), class: "vlink"
 
         = form_tag project_teams_update_admin_group_path(@group), id: "new_team_member", class: "bulk_import", method: :put  do
           %div
             = users_select_tag(:user_ids, multiple: true)
           %div.prepend-top-10
-            = select_tag :group_access, options_for_select(UsersGroup.group_access_roles), class: "project-access-select chosen"
+            = select_tag :access_level, options_for_select(GroupMember.access_level_roles), class: "project-access-select select2"
           %hr
-          = submit_tag 'Add users into group', class: "btn btn-create"
-    .ui-box
-      .title
-        %strong #{@group.name}
-        Group Members
-        %small
-          (#{@group.users_groups.count})
+          = button_tag 'Add users into group', class: "btn btn-create"
+    .panel.panel-default
+      .panel-heading
+        %h3.panel-title
+          Members
+          %span.badge
+            #{@group.group_members.count}
       %ul.well-list.group-users-list
-        - @group.users_groups.order('group_access DESC').each do |member|
+        - @members.each do |member|
           - user = member.user
-          %li{class: dom_class(user)}
-            %strong
-              = link_to user.name, admin_user_path(user)
+          %li{class: dom_class(member), id: dom_id(user)}
+            .list-item-name
+              %strong
+                = link_to user.name, admin_user_path(user)
             %span.pull-right.light
               = member.human_access
-
+              = link_to group_group_member_path(@group, member), data: { confirm: remove_user_from_group_message(@group, user) }, method: :delete, remote: true, class: "btn-tiny btn btn-remove", title: 'Remove user from group' do
+                %i.fa.fa-minus.fa-inverse
+      .panel-footer
+        = paginate @members, param_name: 'members_page', theme: 'gitlab'

@@ -1,4 +1,9 @@
-%div.tree-ref-holder
+.tree-ref-holder
   = render 'shared/ref_switcher', destination: 'tree', path: @path
-%div#tree-holder.tree-holder
+
+- if can? current_user, :download_code, @project
+  .tree-download-holder
+    = render 'projects/repositories/download_archive', ref: @ref, btn_class: 'btn-group-small pull-right hidden-xs hidden-sm', split_button: true
+
+#tree-holder.tree-holder.clearfix
   = render "tree", tree: @tree

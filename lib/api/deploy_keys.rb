@@ -2,18 +2,9 @@ module API
   # Projects API
   class DeployKeys < Grape::API
     before { authenticate! }
+    before { authorize_admin_project }
 
     resource :projects do
-      helpers do
-        def handle_project_member_errors(errors)
-          if errors[:project_access].any?
-            error!(errors[:project_access], 422)
-          end
-          not_found!
-        end
-      end
-
-
       # Get a specific project's keys
       #
       # Example Request:
@@ -47,14 +38,14 @@ module API
           attrs[:key].strip!
 
           # check if key already exist in project
-          key = user_project.deploy_keys.find_by_key(attrs[:key])
+          key = user_project.deploy_keys.find_by(key: attrs[:key])
           if key
             present key, with: Entities::SSHKey
             return
           end
 
           # Check for available deploy keys in other projects
-          key = current_user.accessible_deploy_keys.find_by_key(attrs[:key])
+          key = current_user.accessible_deploy_keys.find_by(key: attrs[:key])
           if key
             user_project.deploy_keys << key
             present key, with: Entities::SSHKey
@@ -67,7 +58,7 @@ module API
         if key.valid? && user_project.deploy_keys << key
           present key, with: Entities::SSHKey
         else
-          not_found!
+          render_validation_error!(key)
         end
       end
 

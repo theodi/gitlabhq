@@ -1,9 +1,14 @@
-### Gather information about GitLab and the system it runs on
+# Maintenance
 
-This command gathers information about your GitLab installation and the System
-it runs on. These may be useful when asking for help or reporting issues.
+## Gather information about GitLab and the system it runs on
+
+This command gathers information about your GitLab installation and the System it runs on. These may be useful when asking for help or reporting issues.
 
 ```
+# omnibus-gitlab
+sudo gitlab-rake gitlab:env:info
+
+# installation from source or cookbook
 bundle exec rake gitlab:env:info RAILS_ENV=production
 ```
 
@@ -14,8 +19,8 @@ System information
 System:		Debian 6.0.7
 Current User:	git
 Using RVM:	no
-Ruby Version:	1.9.3p392
-Gem Version:	1.8.23
+Ruby Version: 2.0.0-p481
+Gem Version:  1.8.23
 Bundler Version:1.3.5
 Rake Version:	10.0.4
 
@@ -24,9 +29,9 @@ Version:	5.1.0.beta2
 Revision:	4da8b37
 Directory:	/home/git/gitlab
 DB Adapter:	mysql2
-URL:		http://localhost
-HTTP Clone URL:	http://localhost/some-project.git
-SSH Clone URL:	git@localhost:some-project.git
+URL:		http://example.com
+HTTP Clone URL:	http://example.com/some-project.git
+SSH Clone URL:	git@example.com:some-project.git
 Using LDAP:	no
 Using Omniauth:	no
 
@@ -37,23 +42,28 @@ Hooks:		/home/git/gitlab-shell/hooks/
 Git:		/usr/bin/git
 ```
 
-
-### Check GitLab configuration
+## Check GitLab configuration
 
 Runs the following rake tasks:
 
-* gitlab:env:check
-* gitlab:gitlab_shell:check
-* gitlab:sidekiq:check
-* gitlab:app:check
+- `gitlab:env:check`
+- `gitlab:gitlab_shell:check`
+- `gitlab:sidekiq:check`
+- `gitlab:app:check`
 
 It will check that each component was setup according to the installation guide and suggest fixes for issues found.
 
 You may also have a look at our [Trouble Shooting Guide](https://github.com/gitlabhq/gitlab-public-wiki/wiki/Trouble-Shooting-Guide).
 
 ```
+# omnibus-gitlab
+sudo gitlab-rake gitlab:check
+
+# installation from source or cookbook
 bundle exec rake gitlab:check RAILS_ENV=production
 ```
+
+NOTE: Use SANITIZE=true for gitlab:check if you want to omit project names from the output.
 
 Example output:
 
@@ -101,41 +111,38 @@ Redis version >= 2.0.0? ... yes
 Checking GitLab ... Finished
 ```
 
+## (Re-)Create satellite repositories
 
-### (Re-)Create satellite repos
+This will create satellite repositories for all your projects.
 
-This will create satellite repos for all your projects.
-If necessary, remove the `tmp/repo_satellites` directory and rerun the command below.
-
-```
-bundle exec rake gitlab:satellites:create RAILS_ENV=production
-```
-
-### Import bare repositories into GitLab project instance
-
-Notes:
-
-* project owner will be a first admin
-* groups will be created as needed
-* group owner will be the first admin
-* existing projects will be skipped
-
-How to use:
-
-1. copy your bare repos under git base_path (see `config/gitlab.yml` git_host -> base_path)
-2. run the command below
+If necessary, remove the `repo_satellites` directory and rerun the commands below.
 
 ```
-bundle exec rake gitlab:import:repos RAILS_ENV=production
+sudo -u git -H mkdir -p /home/git/gitlab-satellites
+sudo -u git -H bundle exec rake gitlab:satellites:create RAILS_ENV=production
+sudo chmod u+rwx,g=rx,o-rwx /home/git/gitlab-satellites
 ```
 
-Example output:
+## Rebuild authorized_keys file
+
+In some case it is necessary to rebuild the `authorized_keys` file.
+
+
+For Omnibus-packages:
+```
+sudo gitlab-rake gitlab:shell:setup
+```
+
+For installations from source:
+```
+cd /home/git/gitlab
+sudo -u git -H bundle exec rake gitlab:shell:setup RAILS_ENV=production
+```
 
 ```
-Processing abcd.git
- * Created abcd (abcd.git)
-Processing group/xyz.git
- * Created Group group (2)
- * Created xyz (group/xyz.git)
-[...]
+This will rebuild an authorized_keys file.
+You will lose any data stored in authorized_keys file.
+Do you want to continue (yes/no)? yes
+
+............................
 ```

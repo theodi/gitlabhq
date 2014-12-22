@@ -1,6 +1,6 @@
 module OauthHelper
   def ldap_enabled?
-    Devise.omniauth_providers.include?(:ldap)
+    Gitlab.config.ldap.enabled
   end
 
   def default_providers
@@ -15,5 +15,9 @@ module OauthHelper
     enabled_oauth_providers.select do |name|
       [:twitter, :github, :google_oauth2].include?(name.to_sym)
     end
+  end
+
+  def additional_providers
+    enabled_oauth_providers.reject{|provider| provider.to_s.starts_with?('ldap')}
   end
 end

@@ -3,171 +3,109 @@ require 'rspec/mocks'
 module TestEnv
   extend self
 
+  # When developing the seed repository, comment out the branch you will modify.
+  BRANCH_SHA = {
+    'feature'          => '0b4bc9a',
+    'feature_conflict' => 'bb5206f',
+    'fix'              => '12d65c8',
+    'improve/awesome'  => '5937ac0',
+    'markdown'         => '0ed8c6c',
+    'master'           => '5937ac0'
+  }
+
   # Test environment
   #
-  # all repositories and namespaces stored at
-  # RAILS_APP/tmp/test-git-base-path
-  #
-  # Next shell methods are stubbed and return true
-  # -  mv_repository
-  # -  remove_repository
-  # -  add_key
-  # -  remove_key
+  # See gitlab.yml.example test section for paths
   #
   def init(opts = {})
     RSpec::Mocks::setup(self)
 
-    # Disable observers to improve test speed
-    #
-    # You can enable it in whole test case where needed by next string:
-    #
-    #   before(:each) { enable_observers }
-    #
-    disable_observers if opts[:observers] == false
-
     # Disable mailer for spinach tests
     disable_mailer if opts[:mailer] == false
-    setup_stubs
 
+    # Clean /tmp/tests
+    tmp_test_path = Rails.root.join('tmp', 'tests')
 
-    clear_test_repo_dir if opts[:init_repos] == true
-    setup_test_repos(opts) if opts[:repos] == true
-  end
+    if File.directory?(tmp_test_path)
+      Dir.entries(tmp_test_path).each do |entry|
+        unless ['.', '..', 'gitlab-shell', factory_repo_name].include?(entry)
+          FileUtils.rm_r(File.join(tmp_test_path, entry))
+        end
+      end
+    end
 
-  def enable_observers
-    ActiveRecord::Base.observers.enable(:all)
-  end
+    FileUtils.mkdir_p(repos_path)
 
-  def disable_observers
-    ActiveRecord::Base.observers.disable(:all)
+    # Setup GitLab shell for test instance
+    setup_gitlab_shell
+
+    # Create repository for FactoryGirl.create(:project)
+    setup_factory_repo
   end
 
   def disable_mailer
     NotificationService.any_instance.stub(mailer: double.as_null_object)
   end
+
   def enable_mailer
     NotificationService.any_instance.unstub(:mailer)
   end
 
-  def setup_stubs()
-    # Use tmp dir for FS manipulations
-    repos_path = testing_path()
-    GollumWiki.any_instance.stub(:init_repo) do |path|
-      create_temp_repo(File.join(repos_path, "#{path}.git"))
+  def setup_gitlab_shell
+    `rake gitlab:shell:install`
+  end
+
+  def setup_factory_repo
+    clone_url = "https://gitlab.com/gitlab-org/#{factory_repo_name}.git"
+
+    unless File.directory?(factory_repo_path)
+      system(*%W(git clone #{clone_url} #{factory_repo_path}))
     end
 
-    Gitlab.config.gitlab_shell.stub(repos_path: repos_path)
+    Dir.chdir(factory_repo_path) do
+      BRANCH_SHA.each do |branch, sha|
+        # Try to reset without fetching to avoid using the network.
+        reset = %W(git update-ref refs/heads/#{branch} #{sha})
+        unless system(*reset)
+          if system(*%w(git fetch origin))
+            unless system(*reset)
+              raise 'The fetched test seed '\
+              'does not contain the required revision.'
+            end
+          else
+            raise 'Could not fetch test seed repository.'
+          end
+        end
+      end
+    end
 
-    Gitlab.config.satellites.stub(path: satellite_path)
-
-    Gitlab::Git::Repository.stub(repos_path: repos_path)
-
-    Gitlab::Shell.any_instance.stub(
-      add_repository: true,
-      mv_repository: true,
-      remove_repository: true,
-      update_repository_head: true,
-      add_key: true,
-      remove_key: true
-    )
-
-    Gitlab::Satellite::Satellite.any_instance.stub(
-      exists?: true,
-      destroy: true,
-      create: true,
-      lock_files_dir: repos_path
-    )
-
-    MergeRequest.any_instance.stub(
-      check_if_can_be_merged: true
-    )
-    Repository.any_instance.stub(
-      size: 12.45
-    )
+    # We must copy bare repositories because we will push to them.
+    system(*%W(git clone --bare #{factory_repo_path} #{factory_repo_path_bare}))
   end
 
-  def clear_repo_dir(namespace, name)
-    setup_stubs
-    # Clean any .wiki.git that may have been created
-    FileUtils.rm_rf File.join(testing_path(), "#{name}.wiki.git")
+  def copy_repo(project)
+    base_repo_path = File.expand_path(factory_repo_path_bare)
+    target_repo_path = File.expand_path(repos_path + "/#{project.namespace.path}/#{project.path}.git")
+    FileUtils.mkdir_p(target_repo_path)
+    FileUtils.cp_r("#{base_repo_path}/.", target_repo_path)
+    FileUtils.chmod_R 0755, target_repo_path
   end
 
-  # Create a repo and it's satellite
-  def create_repo(namespace, name)
-    setup_stubs
-    repo = repo(namespace, name)
-
-    # Symlink tmp/repositories/gitlabhq to tmp/test-git-base-path/gitlabhq
-    system("ln -s -f #{seed_repo_path()} #{repo}")
-    create_satellite(repo, namespace, name)
+  def repos_path
+    Gitlab.config.gitlab_shell.repos_path
   end
 
   private
 
-  def testing_path
-    Rails.root.join('tmp', 'test-git-base-path')
+  def factory_repo_path
+    @factory_repo_path ||= Rails.root.join('tmp', 'tests', factory_repo_name)
   end
 
-  def seed_repo_path
-    Rails.root.join('tmp', 'repositories', 'gitlabhq')
+  def factory_repo_path_bare
+    factory_repo_path.to_s + '_bare'
   end
 
-  def seed_satellite_path
-    Rails.root.join('tmp', 'satellite', 'gitlabhq')
-  end
-
-  def satellite_path
-    "#{testing_path()}/satellite"
-  end
-
-  def repo(namespace, name)
-    unless (namespace.nil? || namespace.path.nil? || namespace.path.strip.empty?)
-      repo = File.join(testing_path(), "#{namespace.path}/#{name}.git")
-    else
-      repo = File.join(testing_path(), "#{name}.git")
-    end
-  end
-
-  def satellite(namespace, name)
-    unless (namespace.nil? || namespace.path.nil? || namespace.path.strip.empty?)
-      satellite_repo = File.join(satellite_path, namespace.path, name)
-    else
-      satellite_repo = File.join(satellite_path, name)
-    end
-  end
-
-  def setup_test_repos(opts ={})
-    create_repo(nil, 'gitlabhq') #unless opts[:repo].nil? || !opts[:repo].include?('')
-    create_repo(nil, 'source_gitlabhq') #unless opts[:repo].nil? || !opts[:repo].include?('source_')
-    create_repo(nil, 'target_gitlabhq') #unless opts[:repo].nil? || !opts[:repo].include?('target_')
-  end
-
-  def clear_test_repo_dir
-    setup_stubs
-    # Use tmp dir for FS manipulations
-    repos_path = testing_path()
-    # Remove tmp/test-git-base-path
-    FileUtils.rm_rf Gitlab.config.gitlab_shell.repos_path
-
-    # Recreate tmp/test-git-base-path
-    FileUtils.mkdir_p Gitlab.config.gitlab_shell.repos_path
-
-    # Since much more is happening in satellites
-    FileUtils.mkdir_p Gitlab.config.satellites.path
-  end
-
-  # Create a testing satellite, and clone the source repo into it
-  def create_satellite(source_repo, namespace, satellite_name)
-    satellite_repo = satellite(namespace, satellite_name)
-    # Symlink tmp/satellite/gitlabhq to tmp/test-git-base-path/satellite/gitlabhq, create the directory if it doesn't exist already
-    satellite_dir = File.dirname(satellite_repo)
-    FileUtils.mkdir_p(satellite_dir) unless File.exists?(satellite_dir)
-    system("ln -s -f #{seed_satellite_path} #{satellite_repo}")
-  end
-
-  def create_temp_repo(path)
-    FileUtils.mkdir_p path
-    command = "git init --quiet --bare #{path};"
-    system(command)
+  def factory_repo_name
+    'gitlab-test'
   end
 end

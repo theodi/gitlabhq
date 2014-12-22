@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 describe Projects::TreeController do
-  let(:project) { create(:project_with_code) }
+  let(:project) { create(:project) }
   let(:user)    { create(:user) }
 
   before do
@@ -18,7 +18,7 @@ describe Projects::TreeController do
     # Make sure any errors accessing the tree in our views bubble up to this spec
     render_views
 
-    before { get :show, project_id: project.code, id: id }
+    before { get :show, project_id: project.to_param, id: id }
 
     context "valid branch, no path" do
       let(:id) { 'master' }
@@ -26,7 +26,7 @@ describe Projects::TreeController do
     end
 
     context "valid branch, valid path" do
-      let(:id) { 'master/app/' }
+      let(:id) { 'master/encoding/' }
       it { should respond_with(:success) }
     end
 
@@ -36,8 +36,21 @@ describe Projects::TreeController do
     end
 
     context "invalid branch, valid path" do
-      let(:id) { 'invalid-branch/app/' }
+      let(:id) { 'invalid-branch/encoding/' }
       it { should respond_with(:not_found) }
+    end
+  end
+
+  describe 'GET show with blob path' do
+    render_views
+
+    before do
+      get :show, project_id: project.to_param, id: id
+    end
+
+    context 'redirect to blob' do
+      let(:id) { 'master/README.md' }
+      it { should redirect_to("/#{project.path_with_namespace}/blob/master/README.md") }
     end
   end
 end

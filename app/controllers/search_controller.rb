@@ -1,26 +1,43 @@
 class SearchController < ApplicationController
+  include SearchHelper
+
   def show
-    project_id = params[:project_id]
-    group_id = params[:group_id]
+    @project = Project.find_by(id: params[:project_id]) if params[:project_id].present?
+    @group = Group.find_by(id: params[:group_id]) if params[:group_id].present?
+    @scope = params[:scope]
+    @show_snippets = params[:snippets].eql? 'true'
 
-    project_ids = current_user.authorized_projects.map(&:id)
+    @search_results = if @project
+                        return access_denied! unless can?(current_user, :download_code, @project)
 
-    if group_id.present?
-      @group = Group.find(group_id)
-      group_project_ids = @group.projects.map(&:id)
-      project_ids.select! { |id| group_project_ids.include?(id)}
-    elsif project_id.present?
-      @project = Project.find(params[:project_id])
-      project_ids.select! { |id| id == project_id.to_i}
-    end
+                        unless %w(blobs notes issues merge_requests wiki_blobs).
+                                 include?(@scope)
+                          @scope = 'blobs'
+                        end
 
-    result = SearchContext.new(project_ids, params).execute
+                        Search::ProjectService.new(@project, current_user, params).execute
+                      elsif @show_snippets
+                        unless %w(snippet_blobs snippet_titles).include?(@scope)
+                          @scope = 'snippet_blobs'
+                        end
 
-    @projects       = result[:projects]
-    @merge_requests = result[:merge_requests]
-    @issues         = result[:issues]
-    @wiki_pages     = result[:wiki_pages]
-    @blobs          = Kaminari.paginate_array(result[:blobs]).page(params[:page]).per(20)
-    @total_results = @projects.count + @merge_requests.count + @issues.count + @wiki_pages.count + @blobs.total_count
+                        Search::SnippetService.new(current_user, params).execute
+                      else
+                        unless %w(projects issues merge_requests).include?(@scope)
+                          @scope = 'projects'
+                        end
+
+                        Search::GlobalService.new(current_user, params).execute
+                      end
+
+    @objects = @search_results.objects(@scope, params[:page])
+  end
+
+  def autocomplete
+    term = params[:term]
+    @project = Project.find(params[:project_id]) if params[:project_id].present?
+    @ref = params[:project_ref] if params[:project_ref].present?
+
+    render json: search_autocomplete_opts(term).to_json
   end
 end

@@ -1,55 +1,59 @@
 module API
   # Internal access API
   class Internal < Grape::API
-
-    DOWNLOAD_COMMANDS = %w{ git-upload-pack git-upload-archive }
-    PUSH_COMMANDS = %w{ git-receive-pack }
+    before {
+      authenticate_by_gitlab_shell_token!
+    }
 
     namespace 'internal' do
-      #
-      # Check if ssh key has access to project code
+      # Check if git command is allowed to project
       #
       # Params:
-      #   key_id - SSH Key id
+      #   key_id - ssh key id for Git over SSH
+      #   user_id - user id for Git over HTTP
       #   project - project path with namespace
       #   action - git action (git-upload-pack or git-receive-pack)
       #   ref - branch name
+      #   forced_push - forced_push
       #
-      get "/allowed" do
+      post "/allowed" do
+        status 200
+        project_path = params[:project]
+
         # Check for *.wiki repositories.
         # Strip out the .wiki from the pathname before finding the
         # project. This applies the correct project permissions to
         # the wiki repository as well.
-        project_path = params[:project]
-        project_path.gsub!(/\.wiki/,'') if project_path =~ /\.wiki/
+        access =
+          if project_path =~ /\.wiki\Z/
+            project_path.sub!(/\.wiki\Z/, '')
+            Gitlab::GitAccessWiki.new
+          else
+            Gitlab::GitAccess.new
+          end
 
-        key = Key.find(params[:key_id])
         project = Project.find_with_namespace(project_path)
-        git_cmd = params[:action]
-        return false unless project
 
-
-        if key.is_a? DeployKey
-          key.projects.include?(project) && DOWNLOAD_COMMANDS.include?(git_cmd)
-        else
-          user = key.user
-
-          return false if user.blocked?
-
-          action = case git_cmd
-                   when *DOWNLOAD_COMMANDS
-                     then :download_code
-                   when *PUSH_COMMANDS
-                     then
-                     if project.protected_branch?(params[:ref])
-                       :push_code_to_protected_branches
-                     else
-                       :push_code
-                     end
-                   end
-
-          user.can?(action, project)
+        unless project
+          return Gitlab::GitAccessStatus.new(false, 'No such project')
         end
+
+        actor = if params[:key_id]
+                  Key.find_by(id: params[:key_id])
+                elsif params[:user_id]
+                  User.find_by(id: params[:user_id])
+                end
+
+        unless actor
+          return Gitlab::GitAccessStatus.new(false, 'No such user or key')
+        end
+
+        access.check(
+          actor,
+          params[:action],
+          project,
+          params[:changes]
+        )
       end
 
       #
@@ -70,4 +74,3 @@ module API
     end
   end
 end
-

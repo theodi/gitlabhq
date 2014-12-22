@@ -17,7 +17,8 @@
     &.navbar-gitlab {
       .navbar-inner {
         background: #373737;
-        .app_logo {
+        border-bottom: 1px solid #272727;
+        .app_logo, .navbar-toggle {
           &:hover {
             background-color: #272727;
           }

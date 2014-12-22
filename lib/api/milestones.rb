@@ -42,11 +42,11 @@ module API
       post ":id/milestones" do
         authorize! :admin_milestone, user_project
         required_attributes! [:title]
-
         attrs = attributes_for_keys [:title, :description, :due_date]
-        @milestone = user_project.milestones.new attrs
-        if @milestone.save
-          present @milestone, with: Entities::Milestone
+        milestone = ::Milestones::CreateService.new(user_project, current_user, attrs).execute
+
+        if milestone.valid?
+          present milestone, with: Entities::Milestone
         else
           not_found!
         end
@@ -65,11 +65,12 @@ module API
       #   PUT /projects/:id/milestones/:milestone_id
       put ":id/milestones/:milestone_id" do
         authorize! :admin_milestone, user_project
-
-        @milestone = user_project.milestones.find(params[:milestone_id])
         attrs = attributes_for_keys [:title, :description, :due_date, :state_event]
-        if @milestone.update_attributes attrs
-          present @milestone, with: Entities::Milestone
+        milestone = user_project.milestones.find(params[:milestone_id])
+        milestone = ::Milestones::UpdateService.new(user_project, current_user, attrs).execute(milestone)
+
+        if milestone.valid?
+          present milestone, with: Entities::Milestone
         else
           not_found!
         end

@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 describe Projects::BlobController do
-  let(:project) { create(:project_with_code) }
+  let(:project) { create(:project) }
   let(:user)    { create(:user) }
 
   before do
@@ -17,7 +17,7 @@ describe Projects::BlobController do
   describe "GET show" do
     render_views
 
-    before { get :show, project_id: project.code, id: id }
+    before { get :show, project_id: project.to_param, id: id }
 
     context "valid branch, valid file" do
       let(:id) { 'master/README.md' }
@@ -32,6 +32,20 @@ describe Projects::BlobController do
     context "invalid branch, valid file" do
       let(:id) { 'invalid-branch/README.md' }
       it { should respond_with(:not_found) }
+    end
+  end
+
+  describe 'GET show with tree path' do
+    render_views
+
+    before do
+      get :show, project_id: project.to_param, id: id
+      controller.instance_variable_set(:@blob, nil)
+    end
+
+    context 'redirect to tree' do
+      let(:id) { 'markdown/doc' }
+      it { should redirect_to("/#{project.path_with_namespace}/tree/markdown/doc") }
     end
   end
 end
