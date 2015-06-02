@@ -14,11 +14,6 @@ Feature: Project Commits Comments
     Then I should not see the cancel comment button
 
   @javascript
-  Scenario: I can't preview without text
-    Given I haven't written any comment text
-    Then The comment preview tab should say there is nothing to do
-
-  @javascript
   Scenario: I can preview with text
     Given I write a comment like ":+1: Nice"
     Then The comment preview tab should be display rendered Markdown
@@ -46,3 +41,9 @@ Feature: Project Commits Comments
     Given I leave a comment like "XML attached"
     And I delete a comment
     Then I should not see a comment saying "XML attached"
+
+  @javascript
+  Scenario: I can edit a comment with +1
+    Given I leave a comment like "XML attached"
+    And I edit the last comment with a +1
+    Then I should see +1 in the description

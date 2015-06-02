@@ -6,7 +6,7 @@
 
 * [Newlines](#newlines)
 * [Multiple underscores in words](#multiple-underscores-in-words)
-* [URL autolinking](#url-autolinking)
+* [URL auto-linking](#url-auto-linking)
 * [Code and Syntax Highlighting](#code-and-syntax-highlighting)
 * [Emoji](#emoji)
 * [Special GitLab references](#special-gitlab-references)
@@ -40,20 +40,21 @@ You can use GFM in
 - milestones
 - wiki pages
 
-You can also use other rich text files in GitLab. You might have to install a depency to do so. Please see the [github-markup gem readme](https://github.com/gitlabhq/markup#markups) for more information.
+You can also use other rich text files in GitLab. You might have to install a dependency to do so. Please see the [github-markup gem readme](https://github.com/gitlabhq/markup#markups) for more information.
 
 ## Newlines
 
 GFM honors the markdown specification in how [paragraphs and line breaks are handled](http://daringfireball.net/projects/markdown/syntax#p).
 
-A paragraph is simply one or more consecutive lines of text, separated by one or more blank lines.:
+A paragraph is simply one or more consecutive lines of text, separated by one or more blank lines.  
+Line-breaks, or softreturns, are rendered if you end a line with two or more spaces
 
-    Roses are red
+    Roses are red [followed by two or more spaces]  
     Violets are blue
 
     Sugar is sweet
 
-Roses are red
+Roses are red  
 Violets are blue
 
 Sugar is sweet
@@ -65,16 +66,26 @@ It is not reasonable to italicize just _part_ of a word, especially when you're 
     perform_complicated_task
     do_this_and_do_that_and_another_thing
 
-perform_complicated_task
+perform_complicated_task  
 do_this_and_do_that_and_another_thing
 
-## URL autolinking
+## URL auto-linking
 
-GFM will autolink standard URLs you copy and paste into your text. So if you want to link to a URL (instead of a textural link), you can simply put the URL in verbatim and it will be turned into a link to that URL.
+GFM will autolink almost any URL you copy and paste into your text.
 
-    http://www.google.com
+    * http://www.google.com
+    * https://google.com/
+    * ftp://ftp.us.debian.org/debian/
+    * smb://foo/bar/baz
+    * irc://irc.freenode.net/gitlab
+    * http://localhost:3000
 
-http://www.google.com
+* http://www.google.com
+* https://google.com/
+* ftp://ftp.us.debian.org/debian/
+* smb://foo/bar/baz
+* irc://irc.freenode.net/gitlab
+* http://localhost:3000
 
 ## Code and Syntax Highlighting
 
@@ -140,29 +151,29 @@ But let's throw in a <b>tag</b>.
 
 ## Emoji
 
-	Sometimes you want to be a :ninja: and add some :glowing_star: to your :speech_balloon:. Well we have a gift for you:
+	Sometimes you want to :monkey: around a bit and add some :star2: to your :speech_balloon:. Well we have a gift for you:
 
-	:high_voltage_sign: You can use emoji anywhere GFM is supported. :victory_hand:
+	:zap: You can use emoji anywhere GFM is supported. :v:
 
-	You can use it to point out a :bug: or warn about :speak_no_evil_monkey: patches. And if someone improves your really :snail: code, send them some :cake:. People will :heart: you for that.
+	You can use it to point out a :bug: or warn about :speak_no_evil: patches. And if someone improves your really :snail: code, send them some :birthday:. People will :heart: you for that.
 
-	If you are new to this, don't be :fearful_face:. You can easily join the emoji :family:. All you need to do is to look up on the supported codes.
+	If you are new to this, don't be :fearful:. You can easily join the emoji :family:. All you need to do is to look up on the supported codes.
 
-	Consult the [Emoji Cheat Sheet](https://www.dropbox.com/s/b9xaqb977s6d8w1/cheat_sheet.pdf) for a list of all supported emoji codes. :thumbsup:
+	Consult the [Emoji Cheat Sheet](http://emoji.codes) for a list of all supported emoji codes. :thumbsup:
 
-Sometimes you want to be a :ninja: and add some :glowing_star: to your :speech_balloon:. Well we have a gift for you:
+Sometimes you want to :monkey: around a bit and add some :star2: to your :speech_balloon:. Well we have a gift for you:
 
-:high_voltage_sign: You can use emoji anywhere GFM is supported. :victory_hand:
+:zap: You can use emoji anywhere GFM is supported. :v:
 
-You can use it to point out a :bug: or warn about :speak_no_evil_monkey: patches. And if someone improves your really :snail: code, send them some :cake:. People will :heart: you for that.
+You can use it to point out a :bug: or warn about :speak_no_evil: patches. And if someone improves your really :snail: code, send them some :birthday:. People will :heart: you for that.
 
-If you are new to this, don't be :fearful_face:. You can easily join the emoji :family:. All you need to do is to look up on the supported codes.
+If you are new to this, don't be :fearful:. You can easily join the emoji :family:. All you need to do is to look up on the supported codes.
 
-Consult the [Emoji Cheat Sheet](https://www.dropbox.com/s/b9xaqb977s6d8w1/cheat_sheet.pdf) for a list of all supported emoji codes. :thumbsup:
+Consult the [Emoji Cheat Sheet](http://emoji.codes) for a list of all supported emoji codes. :thumbsup:
 
 ## Special GitLab References
 
-GFM recognized special references.
+GFM recognizes special references.
 
 You can easily reference e.g. an issue, a commit, a team member or even the whole team within a project.
 
@@ -170,31 +181,50 @@ GFM will turn that reference into a link so you can navigate between them easily
 
 GFM will recognize the following:
 
-- @foo : for team members
-- @all : for the whole team
-- #123 : for issues
-- !123 : for merge requests
-- $123 : for snippets
-- 1234567 : for commits
-- \[file\](path/to/file) : for file references
+| input                  | references                 |
+|:-----------------------|:---------------------------|
+| `@user_name`           | specific user              |
+| `@group_name`          | specific group             |
+| `@all`                 | entire team                |
+| `#123`                 | issue                      |
+| `!123`                 | merge request              |
+| `$123`                 | snippet                    |
+| `~123`                 | label by ID                |
+| `~bug`                 | one-word label by name     |
+| `~"feature request"`   | multi-word label by name   |
+| `9ba12248`             | specific commit            |
+| `9ba12248...b19a04f5`  | commit range comparison    |
+| `[README](doc/README)` | repository file references |
 
-GFM also recognizes references to commits, issues, and merge requests in other projects:
+GFM also recognizes certain cross-project references:
 
-- namespace/project#123 : for issues
-- namespace/project!123 : for merge requests
-- namespace/project@1234567 : for commits
+| input                                   | references              |
+|:----------------------------------------|:------------------------|
+| `namespace/project#123`                 | issue                   |
+| `namespace/project!123`                 | merge request           |
+| `namespace/project$123`                 | snippet                 |
+| `namespace/project@9ba12248`            | specific commit         |
+| `namespace/project@9ba12248...b19a04f5` | commit range comparison |
 
 ## Task Lists
 
-You can add task lists to merge request and issue descriptions to keep track of to-do items.  To create a task, add an unordered list to the description in an issue or merge request, formatted like so:
+You can add task lists to issues, merge requests and comments. To create a task list, add a specially-formatted Markdown list, like so:
 
 ```no-highlight
-* [x] Completed task
-* [ ] Unfinished task
-    * [x] Nested task
+- [x] Completed task
+- [ ] Incomplete task
+    - [ ] Sub-task 1
+    - [x] Sub-task 2
+    - [ ] Sub-task 3
 ```
 
-Task lists can only be created in descriptions, not in titles or comments.  Task item state can be managed by editing the description's Markdown or by clicking the rendered checkboxes.
+- [x] Completed task
+- [ ] Incomplete task
+    - [ ] Sub-task 1
+    - [x] Sub-task 2
+    - [ ] Sub-task 3
+
+Task lists can only be created in descriptions, not in titles. Task item state can be managed by editing the description's Markdown or by toggling the rendered check boxes.
 
 # Standard Markdown
 
@@ -234,51 +264,38 @@ Alt-H2
 
 ### Header IDs and links
 
-All markdown rendered headers automatically get IDs, except for comments.
+All Markdown-rendered headers automatically get IDs, except in comments.
 
 On hover a link to those IDs becomes visible to make it easier to copy the link to the header to give it to someone else.
 
 The IDs are generated from the content of the header according to the following rules:
 
-1. remove the heading hashes `#` and process the rest of the line as it would be processed if it were not a header
-2. from the result, remove all HTML tags, but keep their inner content
-3. convert all characters to lowercase
-4. convert all characters except `[a-z0-9_-]` into hyphens `-`
-5. transform multiple adjacent hyphens into a single hyphen
-6. remove trailing and heading hyphens
+1. All text is converted to lowercase
+1. All non-word text (e.g., punctuation, HTML) is removed
+1. All spaces are converted to hyphens
+1. Two or more hyphens in a row are converted to one
+1. If a header with the same ID has already been generated, a unique
+   incrementing number is appended.
 
 For example:
 
 ```
-###### ..Ab_c-d. e [anchor](url) ![alt text](url)..
+# This header has spaces in it
+## This header has a :thumbsup: in it
+# This header has Unicode in it: 한글
+## This header has spaces in it
+### This header has spaces in it
 ```
 
-which renders as:
+Would generate the following link IDs:
 
-###### ..Ab_c-d. e [anchor](url) ![alt text](url)..
+1. `this-header-has-spaces-in-it`
+1. `this-header-has-a-in-it`
+1. `this-header-has-unicode-in-it-한글`
+1. `this-header-has-spaces-in-it-1`
+1. `this-header-has-spaces-in-it-2`
 
-will first be converted by step 1) into a string like:
-
-```
-..Ab_c-d. e &lt;a href="url">anchor&lt;/a> &lt;img src="url" alt="alt text"/>..
-```
-
-After removing the tags in step 2) we get:
-
-```
-..Ab_c-d. e anchor ..
-```
-
-And applying all the other steps gives the id:
-
-```
-ab_c-d-e-anchor
-```
-
-Note in particular how:
-
-- for markdown anchors `[text](url)`, only the `text` is used
-- markdown images `![alt](url)` are completely ignored
+Note that the Emoji processing happens before the header IDs are generated, so the Emoji is converted to an image which then gets removed from the ID.
 
 ## Emphasis
 
@@ -310,8 +327,6 @@ Strikethrough uses two tildes. ~~Scratch this.~~
   1. Ordered sub-list
 4. And another item.
 
-   Some text that should be aligned with the above item.
-
 * Unordered list can use asterisks
 - Or minuses
 + Or pluses
@@ -323,8 +338,6 @@ Strikethrough uses two tildes. ~~Scratch this.~~
 1. Actual numbers don't matter, just that it's a number
   1. Ordered sub-list
 4. And another item.
-
-   Some text that should be aligned with the above item.
 
 * Unordered list can use asterisks
 - Or minuses
@@ -420,6 +433,8 @@ Quote break.
 
 You can also use raw HTML in your Markdown, and it'll mostly work pretty well.
 
+See the documentation for HTML::Pipeline's [SanitizationFilter](http://www.rubydoc.info/gems/html-pipeline/HTML/Pipeline/SanitizationFilter#WHITELIST-constant) class for the list of allowed HTML tags and attributes.  In addition to the default `SanitizationFilter` whitelist, GitLab allows `span` elements.
+
 ```no-highlight
 <dl>
   <dt>Definition list</dt>
@@ -483,6 +498,10 @@ This line is separated from the one above by two newlines, so it will be a *sepa
 
 This line is also a separate paragraph, but...
 This line is only separated by a single newline, so it's a separate line in the *same paragraph*.
+
+This line is also a separate paragraph, and...  
+This line is on its own line, because the previous line ends with two
+spaces.
 ```
 
 Here's a line for us to start with.
@@ -491,6 +510,10 @@ This line is separated from the one above by two newlines, so it will be a *sepa
 
 This line is also begins a separate paragraph, but...
 This line is only separated by a single newline, so it's a separate line in the *same paragraph*.
+
+This line is also a separate paragraph, and...  
+This line is on its own line, because the previous line ends with two
+spaces.
 
 ## Tables
 
@@ -513,6 +536,20 @@ Code above produces next output:
 **Note**
 
 The row of dashes between the table header and body must have at least three dashes in each column.
+
+By including colons in the header row, you can align the text within that column:
+
+```
+| Left Aligned | Centered | Right Aligned | Left Aligned | Centered | Right Aligned |
+| :----------- | :------: | ------------: | :----------- | :------: | ------------: |
+| Cell 1       | Cell 2   | Cell 3        | Cell 4       | Cell 5   | Cell 6        |
+| Cell 7       | Cell 8   | Cell 9        | Cell 10      | Cell 11  | Cell 12       |
+```
+
+| Left Aligned | Centered | Right Aligned | Left Aligned | Centered | Right Aligned |
+| :----------- | :------: | ------------: | :----------- | :------: | ------------: |
+| Cell 1       | Cell 2   | Cell 3        | Cell 4       | Cell 5   | Cell 6        |
+| Cell 7       | Cell 8   | Cell 9        | Cell 10      | Cell 11  | Cell 12       |
 
 ## References
 

@@ -1,16 +1,17 @@
 class Admin::UsersController < Admin::ApplicationController
-  before_filter :user, only: [:show, :edit, :update, :destroy]
+  before_action :user, only: [:show, :edit, :update, :destroy]
 
   def index
-    @users = User.filter(params[:filter])
+    @users = User.order_name_asc.filter(params[:filter])
     @users = @users.search(params[:name]) if params[:name].present?
     @users = @users.sort(@sort = params[:sort])
-    @users = @users.alphabetically.page(params[:page])
+    @users = @users.page(params[:page])
   end
 
   def show
     @personal_projects = user.personal_projects
     @joined_projects = user.projects.joined(@user)
+    @keys = user.keys
   end
 
   def new
@@ -23,7 +24,7 @@ class Admin::UsersController < Admin::ApplicationController
 
   def block
     if user.block
-      redirect_to :back, alert: "Successfully blocked"
+      redirect_to :back, notice: "Successfully blocked"
     else
       redirect_to :back, alert: "Error occurred. User was not blocked"
     end
@@ -31,7 +32,7 @@ class Admin::UsersController < Admin::ApplicationController
 
   def unblock
     if user.activate
-      redirect_to :back, alert: "Successfully unblocked"
+      redirect_to :back, notice: "Successfully unblocked"
     else
       redirect_to :back, alert: "Error occurred. User was not unblocked"
     end
@@ -71,8 +72,8 @@ class Admin::UsersController < Admin::ApplicationController
     end
 
     respond_to do |format|
+      user.skip_reconfirmation!
       if user.update_attributes(user_params_with_pass)
-        user.confirm!
         format.html { redirect_to [:admin, user], notice: 'User was successfully updated.' }
         format.json { head :ok }
       else
@@ -85,11 +86,7 @@ class Admin::UsersController < Admin::ApplicationController
   end
 
   def destroy
-    # 1. Remove groups where user is the only owner
-    user.solo_owned_groups.map(&:destroy)
-
-    # 2. Remove user with all authored content including personal projects
-    user.destroy
+    DeleteUserService.new.execute(user)
 
     respond_to do |format|
       format.html { redirect_to admin_users_path }
@@ -100,6 +97,8 @@ class Admin::UsersController < Admin::ApplicationController
   def remove_email
     email = user.emails.find(params[:email_id])
     email.destroy
+
+    user.update_secondary_emails!
 
     respond_to do |format|
       format.html { redirect_to :back, notice: "Successfully removed email." }
@@ -117,8 +116,8 @@ class Admin::UsersController < Admin::ApplicationController
     params.require(:user).permit(
       :email, :remember_me, :bio, :name, :username,
       :skype, :linkedin, :twitter, :website_url, :color_scheme_id, :theme_id, :force_random_password,
-      :extern_uid, :provider, :password_expires_at, :avatar, :hide_no_ssh_key,
-      :projects_limit, :can_create_group, :admin
+      :extern_uid, :provider, :password_expires_at, :avatar, :hide_no_ssh_key, :hide_no_password,
+      :projects_limit, :can_create_group, :admin, :key_id
     )
   end
 end

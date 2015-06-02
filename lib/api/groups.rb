@@ -4,36 +4,23 @@ module API
     before { authenticate! }
 
     resource :groups do
-      helpers do
-        def find_group(id)
-          group = Group.find(id)
-
-          if can?(current_user, :read_group, group)
-            group
-          else
-            render_api_error!("403 Forbidden - #{current_user.username} lacks sufficient access to #{group.name}", 403)
-          end
-        end
-
-        def validate_access_level?(level)
-          Gitlab::Access.options_with_owner.values.include? level.to_i
-        end
-      end
-
       # Get a groups list
       #
       # Example Request:
       #  GET /groups
       get do
-        if current_user.admin
-          @groups = paginate Group
-        else
-          @groups = paginate current_user.groups
-        end
+        @groups = if current_user.admin
+                    Group.all
+                  else
+                    current_user.groups
+                  end
+
+        @groups = @groups.search(params[:search]) if params[:search].present?
+        @groups = paginate @groups
         present @groups, with: Entities::Group
       end
 
-      # Create group. Available only for admin
+      # Create group. Available only for users who can create groups.
       #
       # Parameters:
       #   name (required) - The name of the group
@@ -41,17 +28,17 @@ module API
       # Example Request:
       #   POST /groups
       post do
-        authenticated_as_admin!
+        authorize! :create_group, current_user
         required_attributes! [:name, :path]
 
-        attrs = attributes_for_keys [:name, :path]
+        attrs = attributes_for_keys [:name, :path, :description]
         @group = Group.new(attrs)
-        @group.owner = current_user
 
         if @group.save
+          @group.add_owner(current_user)
           present @group, with: Entities::Group
         else
-          not_found!
+          render_api_error!("Failed to save group #{@group.errors.messages}", 400)
         end
       end
 
@@ -74,7 +61,7 @@ module API
       #   DELETE /groups/:id
       delete ":id" do
         group = find_group(params[:id])
-        authorize! :manage_group, group
+        authorize! :admin_group, group
         group.destroy
       end
 
@@ -94,7 +81,7 @@ module API
         if result
           present group
         else
-          not_found!
+          render_api_error!("Failed to transfer project #{project.errors.messages}", 400)
         end
       end
     end

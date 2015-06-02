@@ -7,9 +7,21 @@ class Spinach::Features::ProjectDeployKeys < Spinach::FeatureSteps
     create(:deploy_keys_project, project: @project)
   end
 
-  step 'I should see project deploy keys' do
+  step 'I should see project deploy key' do
     within '.enabled-keys' do
       page.should have_content deploy_key.title
+    end
+  end
+
+  step 'I should see other project deploy key' do
+    within '.available-keys' do
+      page.should have_content other_deploy_key.title
+    end
+  end
+
+  step 'I should see public deploy key' do
+    within '.available-keys' do
+      page.should have_content public_deploy_key.title
     end
   end
 
@@ -24,7 +36,7 @@ class Spinach::Features::ProjectDeployKeys < Spinach::FeatureSteps
   end
 
   step 'I should be on deploy keys page' do
-    current_path.should == project_deploy_keys_path(@project)
+    current_path.should == namespace_project_deploy_keys_path(@project.namespace, @project)
   end
 
   step 'I should see newly created deploy key' do
@@ -33,10 +45,24 @@ class Spinach::Features::ProjectDeployKeys < Spinach::FeatureSteps
     end
   end
 
-  step 'other project has deploy key' do
-    @second_project = create :project, namespace: create(:group)
+  step 'other projects have deploy keys' do
+    @second_project = create(:project, namespace: create(:group))
     @second_project.team << [current_user, :master]
     create(:deploy_keys_project, project: @second_project)
+
+    @third_project = create(:project, namespace: create(:group))
+    @third_project.team << [current_user, :master]
+    create(:deploy_keys_project, project: @third_project, deploy_key: @second_project.deploy_keys.first)
+  end
+
+  step 'I should only see the same deploy key once' do
+    within '.available-keys' do
+      page.should have_selector('ul li', count: 1)
+    end
+  end
+
+  step 'public deploy key exists' do
+    create(:deploy_key, public: true)
   end
 
   step 'I click attach deploy key' do
@@ -49,5 +75,13 @@ class Spinach::Features::ProjectDeployKeys < Spinach::FeatureSteps
 
   def deploy_key
     @project.deploy_keys.last
+  end
+
+  def other_deploy_key
+    @second_project.deploy_keys.last
+  end
+
+  def public_deploy_key
+    DeployKey.are_public.last
   end
 end

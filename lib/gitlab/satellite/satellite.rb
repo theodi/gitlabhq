@@ -1,5 +1,14 @@
 module Gitlab
   module Satellite
+    autoload :DeleteFileAction, 'gitlab/satellite/files/delete_file_action'
+    autoload :EditFileAction,   'gitlab/satellite/files/edit_file_action'
+    autoload :FileAction,       'gitlab/satellite/files/file_action'
+    autoload :NewFileAction,    'gitlab/satellite/files/new_file_action'
+
+    class CheckoutFailed < StandardError; end
+    class CommitFailed < StandardError; end
+    class PushFailed < StandardError; end
+
     class Satellite
       include Gitlab::Popen
 
@@ -95,16 +104,12 @@ module Gitlab
         heads = repo.heads.map(&:name)
 
         # update or create the parking branch
-        if heads.include? PARKING_BRANCH
-          repo.git.checkout({}, PARKING_BRANCH)
-        else
-          repo.git.checkout(default_options({b: true}), PARKING_BRANCH)
-        end
+        repo.git.checkout(default_options({ B: true }), PARKING_BRANCH)
 
         # remove the parking branch from the list of heads ...
         heads.delete(PARKING_BRANCH)
         # ... and delete all others
-        heads.each { |head| repo.git.branch(default_options({D: true}), head) }
+        heads.each { |head| repo.git.branch(default_options({ D: true }), head) }
       end
 
       # Deletes all remotes except origin
@@ -126,7 +131,7 @@ module Gitlab
       end
 
       def default_options(options = {})
-        {raise: true, timeout: true}.merge(options)
+        { raise: true, timeout: true }.merge(options)
       end
 
       # Create directory for storing

@@ -1,11 +1,12 @@
 class Repository
   include Gitlab::ShellAdapter
 
-  attr_accessor :raw_repository, :path_with_namespace
+  attr_accessor :raw_repository, :path_with_namespace, :project
 
-  def initialize(path_with_namespace, default_branch = nil)
+  def initialize(path_with_namespace, default_branch = nil, project = nil)
     @path_with_namespace = path_with_namespace
     @raw_repository = Gitlab::Git::Repository.new(path_to_repo) if path_with_namespace
+    @project = project
   rescue Gitlab::Git::Repository::NoRepository
     nil
   end
@@ -28,9 +29,9 @@ class Repository
   def commit(id = 'HEAD')
     return nil unless raw_repository
     commit = Gitlab::Git::Commit.find(raw_repository, id)
-    commit = Commit.new(commit) if commit
+    commit = Commit.new(commit, @project) if commit
     commit
-  rescue Rugged::OdbError => ex
+  rescue Rugged::OdbError
     nil
   end
 
@@ -42,13 +43,13 @@ class Repository
       limit: limit,
       offset: offset,
     )
-    commits = Commit.decorate(commits) if commits.present?
+    commits = Commit.decorate(commits, @project) if commits.present?
     commits
   end
 
   def commits_between(from, to)
     commits = Gitlab::Git::Commit.between(raw_repository, from, to)
-    commits = Commit.decorate(commits) if commits.present?
+    commits = Commit.decorate(commits, @project) if commits.present?
     commits
   end
 
@@ -61,25 +62,29 @@ class Repository
   end
 
   def add_branch(branch_name, ref)
-    Rails.cache.delete(cache_key(:branch_names))
+    cache.expire(:branch_names)
+    @branches = nil
 
     gitlab_shell.add_branch(path_with_namespace, branch_name, ref)
   end
 
   def add_tag(tag_name, ref, message = nil)
-    Rails.cache.delete(cache_key(:tag_names))
+    cache.expire(:tag_names)
+    @tags = nil
 
     gitlab_shell.add_tag(path_with_namespace, tag_name, ref, message)
   end
 
   def rm_branch(branch_name)
-    Rails.cache.delete(cache_key(:branch_names))
+    cache.expire(:branch_names)
+    @branches = nil
 
     gitlab_shell.rm_branch(path_with_namespace, branch_name)
   end
 
   def rm_tag(tag_name)
-    Rails.cache.delete(cache_key(:tag_names))
+    cache.expire(:tag_names)
+    @tags = nil
 
     gitlab_shell.rm_tag(path_with_namespace, tag_name)
   end
@@ -97,19 +102,15 @@ class Repository
   end
 
   def branch_names
-    Rails.cache.fetch(cache_key(:branch_names)) do
-      raw_repository.branch_names
-    end
+    cache.fetch(:branch_names) { raw_repository.branch_names }
   end
 
   def tag_names
-    Rails.cache.fetch(cache_key(:tag_names)) do
-      raw_repository.tag_names
-    end
+    cache.fetch(:tag_names) { raw_repository.tag_names }
   end
 
   def commit_count
-    Rails.cache.fetch(cache_key(:commit_count)) do
+    cache.fetch(:commit_count) do
       begin
         raw_repository.commit_count(self.root_ref)
       rescue
@@ -121,45 +122,45 @@ class Repository
   # Return repo size in megabytes
   # Cached in redis
   def size
-    Rails.cache.fetch(cache_key(:size)) do
-      raw_repository.size
-    end
+    cache.fetch(:size) { raw_repository.size }
   end
 
   def expire_cache
-    Rails.cache.delete(cache_key(:size))
-    Rails.cache.delete(cache_key(:branch_names))
-    Rails.cache.delete(cache_key(:tag_names))
-    Rails.cache.delete(cache_key(:commit_count))
-    Rails.cache.delete(cache_key(:graph_log))
-    Rails.cache.delete(cache_key(:readme))
-    Rails.cache.delete(cache_key(:version))
-    Rails.cache.delete(cache_key(:contribution_guide))
+    %i(size branch_names tag_names commit_count graph_log
+       readme version contribution_guide changelog license).each do |key|
+      cache.expire(key)
+    end
   end
 
   def graph_log
-    Rails.cache.fetch(cache_key(:graph_log)) do
+    cache.fetch(:graph_log) do
       commits = raw_repository.log(limit: 6000, skip_merges: true,
                                    ref: root_ref)
+
       commits.map do |rugged_commit|
         commit = Gitlab::Git::Commit.new(rugged_commit)
 
         {
-          author_name: commit.author_name.force_encoding('UTF-8'),
-          author_email: commit.author_email.force_encoding('UTF-8'),
+          author_name: commit.author_name,
+          author_email: commit.author_email,
           additions: commit.stats.additions,
-          deletions: commit.stats.deletions
+          deletions: commit.stats.deletions,
         }
       end
     end
   end
 
-  def cache_key(type)
-    "#{type}:#{path_with_namespace}"
+  def lookup_cache
+    @lookup_cache ||= {}
   end
 
   def method_missing(m, *args, &block)
-    raw_repository.send(m, *args, &block)
+    if m == :lookup && !block_given?
+      lookup_cache[m] ||= {}
+      lookup_cache[m][args.join(":")] ||= raw_repository.send(m, *args, &block)
+    else
+      raw_repository.send(m, *args, &block)
+    end
   end
 
   def respond_to?(method)
@@ -177,13 +178,11 @@ class Repository
   end
 
   def readme
-    Rails.cache.fetch(cache_key(:readme)) do
-      tree(:head).readme
-    end
+    cache.fetch(:readme) { tree(:head).readme }
   end
 
   def version
-    Rails.cache.fetch(cache_key(:version)) do
+    cache.fetch(:version) do
       tree(:head).blobs.find do |file|
         file.name.downcase == 'version'
       end
@@ -191,18 +190,44 @@ class Repository
   end
 
   def contribution_guide
-    Rails.cache.fetch(cache_key(:contribution_guide)) do
-      tree(:head).contribution_guide
+    cache.fetch(:contribution_guide) do
+      tree(:head).blobs.find do |file|
+        file.contributing?
+      end
+    end
+  end
+
+  def changelog
+    cache.fetch(:changelog) do
+      tree(:head).blobs.find do |file|
+        file.name =~ /\A(changelog|history)/i
+      end
+    end
+  end
+
+  def license
+    cache.fetch(:license) do
+      tree(:head).blobs.find do |file|
+        file.name =~ /\Alicense/i
+      end
     end
   end
 
   def head_commit
-    commit(self.root_ref)
+    @head_commit ||= commit(self.root_ref)
+  end
+
+  def head_tree
+    @head_tree ||= Tree.new(self, head_commit.sha, nil)
   end
 
   def tree(sha = :head, path = nil)
     if sha == :head
-      sha = head_commit.sha
+      if path.nil?
+        return head_tree
+      else
+        sha = head_commit.sha
+      end
     end
 
     Tree.new(self, sha, path)
@@ -235,7 +260,7 @@ class Repository
   end
 
   def last_commit_for_path(sha, path)
-    args = %W(git rev-list --max-count 1 #{sha} -- #{path})
+    args = %W(git rev-list --max-count=1 #{sha} -- #{path})
     sha = Gitlab::Popen.popen(args, path_to_repo).first.strip
     commit(sha)
   end
@@ -243,6 +268,9 @@ class Repository
   # Remove archives older than 2 hours
   def clean_old_archives
     repository_downloads_path = Gitlab.config.gitlab.repository_downloads_path
+
+    return unless File.directory?(repository_downloads_path)
+
     Gitlab::Popen.popen(%W(find #{repository_downloads_path} -not -path #{repository_downloads_path} -mmin +120 -delete))
   end
 
@@ -311,5 +339,87 @@ class Repository
     else
       []
     end
+  end
+
+  def tag_names_contains(sha)
+    args = %W(git tag --contains #{sha})
+    names = Gitlab::Popen.popen(args, path_to_repo).first
+
+    if names.respond_to?(:split)
+      names = names.split("\n").map(&:strip)
+
+      names.each do |name|
+        name.slice! '* '
+      end
+
+      names
+    else
+      []
+    end
+  end
+
+  def branches
+    @branches ||= raw_repository.branches
+  end
+
+  def tags
+    @tags ||= raw_repository.tags
+  end
+
+  def root_ref
+    @root_ref ||= raw_repository.root_ref
+  end
+
+  def commit_file(user, path, content, message, ref)
+    path[0] = '' if path[0] == '/'
+
+    committer = user_to_comitter(user)
+    options = {}
+    options[:committer] = committer
+    options[:author] = committer
+    options[:commit] = {
+      message: message,
+      branch: ref
+    }
+
+    options[:file] = {
+      content: content,
+      path: path
+    }
+
+    Gitlab::Git::Blob.commit(raw_repository, options)
+  end
+
+  def remove_file(user, path, message, ref)
+    path[0] = '' if path[0] == '/'
+
+    committer = user_to_comitter(user)
+    options = {}
+    options[:committer] = committer
+    options[:author] = committer
+    options[:commit] = {
+      message: message,
+      branch: ref
+    }
+
+    options[:file] = {
+      path: path
+    }
+
+    Gitlab::Git::Blob.remove(raw_repository, options)
+  end
+
+  private
+
+  def user_to_comitter(user)
+    {
+      email: user.email,
+      name: user.name,
+      time: Time.now
+    }
+  end
+
+  def cache
+    @cache ||= RepositoryCache.new(path_with_namespace)
   end
 end

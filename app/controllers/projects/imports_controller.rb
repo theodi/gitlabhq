@@ -1,8 +1,8 @@
 class Projects::ImportsController < Projects::ApplicationController
   # Authorize
-  before_filter :authorize_admin_project!
-  before_filter :require_no_repo
-  before_filter :redirect_if_progress, except: :show
+  before_action :authorize_admin_project!
+  before_action :require_no_repo
+  before_action :redirect_if_progress, except: :show
 
   def new
   end
@@ -20,15 +20,16 @@ class Projects::ImportsController < Projects::ApplicationController
       end
     end
 
-    redirect_to project_import_path(@project)
+    redirect_to namespace_project_import_path(@project.namespace, @project)
   end
 
   def show
     unless @project.import_in_progress?
       if @project.import_finished?
-        redirect_to(@project) and return
+        redirect_to(project_path(@project)) and return
       else
-        redirect_to new_project_import_path(@project) and return
+        redirect_to new_namespace_project_import_path(@project.namespace,
+                                                      @project) && return
       end
     end
   end
@@ -36,14 +37,15 @@ class Projects::ImportsController < Projects::ApplicationController
   private
 
   def require_no_repo
-    if @project.repository_exists?
-      redirect_to(@project) and return
+    if @project.repository_exists? && !@project.import_in_progress?
+      redirect_to(namespace_project_path(@project.namespace, @project)) and return
     end
   end
 
   def redirect_if_progress
     if @project.import_in_progress?
-      redirect_to project_import_path(@project) and return
+      redirect_to namespace_project_import_path(@project.namespace, @project) &&
+        return
     end
   end
 end

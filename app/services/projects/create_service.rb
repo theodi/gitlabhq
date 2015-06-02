@@ -5,19 +5,29 @@ module Projects
     end
 
     def execute
+      forked_from_project_id = params.delete(:forked_from_project_id)
+
       @project = Project.new(params)
 
-      # Reset visibility levet if is not allowed to set it
-      unless Gitlab::VisibilityLevel.allowed_for?(current_user, params[:visibility_level])
-        @project.visibility_level = default_features.visibility_level
+      # Make sure that the user is allowed to use the specified visibility
+      # level
+      unless Gitlab::VisibilityLevel.allowed_for?(current_user,
+                                                  params[:visibility_level])
+        deny_visibility_level(@project)
+        return @project
       end
 
-      # Parametrize path for project
-      #
-      # Ex.
-      #  'GitLab HQ'.parameterize => "gitlab-hq"
-      #
-      @project.path = @project.name.dup.parameterize unless @project.path.present?
+      # Set project name from path
+      if @project.name.present? && @project.path.present?
+        # if both name and path set - everything is ok
+      elsif @project.path.present?
+        # Set project name from path
+        @project.name = @project.path.dup
+      elsif @project.name.present?
+        # For compatibility - set path from name
+        # TODO: remove this in 8.0
+        @project.path = @project.name.dup.parameterize
+      end
 
       # get namespace id
       namespace_id = params[:namespace_id]
@@ -37,23 +47,21 @@ module Projects
 
       @project.creator = current_user
 
+      if forked_from_project_id
+        @project.build_forked_project_link(forked_from_project_id: forked_from_project_id)
+      end
+
       Project.transaction do
         @project.save
 
-        unless @project.import?
+        if @project.persisted? && !@project.import?
           unless @project.create_repository
             raise 'Failed to create repository'
           end
         end
       end
 
-      if @project.persisted?
-        if @project.wiki_enabled?
-          @project.create_wiki
-        end
-
-        after_create_actions
-      end
+      after_create_actions if @project.persisted?
 
       @project
     rescue => ex
@@ -74,10 +82,14 @@ module Projects
 
     def after_create_actions
       log_info("#{@project.owner.name} created a new project \"#{@project.name_with_namespace}\"")
+
+      @project.create_wiki if @project.wiki_enabled?
+
+      event_service.create_project(@project, current_user)
       system_hook_service.execute_hooks_for(@project, :create)
 
       unless @project.group
-        @project.team << [current_user, :master]
+        @project.team << [current_user, :master, current_user]
       end
 
       @project.update_column(:last_activity_at, @project.created_at)

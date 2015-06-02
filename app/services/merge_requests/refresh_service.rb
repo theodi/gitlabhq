@@ -1,15 +1,16 @@
 module MergeRequests
   class RefreshService < MergeRequests::BaseService
     def execute(oldrev, newrev, ref)
-      return true unless ref =~ /heads/
+      return true unless Gitlab::Git.branch_ref?(ref)
 
       @oldrev, @newrev = oldrev, newrev
-      @branch_name = ref.gsub("refs/heads/", "")
+      @branch_name = Gitlab::Git.ref_name(ref)
       @fork_merge_requests = @project.fork_merge_requests.opened
       @commits = @project.repository.commits_between(oldrev, newrev)
 
       close_merge_requests
       reload_merge_requests
+      execute_mr_web_hooks
       comment_mr_with_commits
 
       true
@@ -32,7 +33,9 @@ module MergeRequests
 
 
       merge_requests.uniq.select(&:source_project).each do |merge_request|
-        MergeRequests::MergeService.new.execute(merge_request, @current_user, nil)
+        MergeRequests::MergeService.
+          new(merge_request.target_project, @current_user).
+          execute(merge_request, nil)
       end
     end
 
@@ -74,8 +77,29 @@ module MergeRequests
       merge_requests = filter_merge_requests(merge_requests)
 
       merge_requests.each do |merge_request|
-        Note.create_new_commits_note(merge_request, merge_request.project,
-                                     @current_user, @commits)
+        mr_commit_ids = Set.new(merge_request.commits.map(&:id))
+
+        new_commits, existing_commits = @commits.partition do |commit|
+          mr_commit_ids.include?(commit.id)
+        end
+
+        SystemNoteService.add_commits(merge_request, merge_request.project,
+                                      @current_user, new_commits,
+                                      existing_commits, @oldrev)
+      end
+    end
+
+    # Call merge request webhook with update branches
+    def execute_mr_web_hooks
+      merge_requests = @project.origin_merge_requests.opened
+        .where(source_branch: @branch_name)
+        .to_a
+      merge_requests += @fork_merge_requests.where(source_branch: @branch_name)
+        .to_a
+      merge_requests = filter_merge_requests(merge_requests)
+
+      merge_requests.each do |merge_request|
+        execute_hooks(merge_request, 'update')
       end
     end
 

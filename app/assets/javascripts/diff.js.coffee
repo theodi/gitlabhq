@@ -1,6 +1,7 @@
 class @Diff
   UNFOLD_COUNT = 20
   constructor: ->
+    $(document).off('click', '.js-unfold')
     $(document).on('click', '.js-unfold', (event) =>
       target = $(event.target)
       unfoldBottom = target.hasClass('js-unfold-bottom')

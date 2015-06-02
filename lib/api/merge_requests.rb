@@ -24,7 +24,10 @@ module API
       #
       # Parameters:
       #   id (required) - The ID of a project
+      #   iid (optional) - Return the project MR having the given `iid`
       #   state (optional) - Return requests "merged", "opened" or "closed"
+      #   order_by (optional) - Return requests ordered by `created_at` or `updated_at` fields. Default is `created_at`
+      #   sort (optional) - Return requests sorted in `asc` or `desc` order. Default is `desc`
       #
       # Example:
       #   GET /projects/:id/merge_requests
@@ -34,28 +37,26 @@ module API
       #   GET /projects/:id/merge_requests?order_by=updated_at
       #   GET /projects/:id/merge_requests?sort=desc
       #   GET /projects/:id/merge_requests?sort=asc
+      #   GET /projects/:id/merge_requests?iid=42
       #
       get ":id/merge_requests" do
         authorize! :read_merge_request, user_project
+        merge_requests = user_project.merge_requests
 
-        mrs = case params["state"]
-              when "opened" then user_project.merge_requests.opened
-              when "closed" then user_project.merge_requests.closed
-              when "merged" then user_project.merge_requests.merged
-              else user_project.merge_requests
-              end
+        unless params[:iid].nil?
+          merge_requests = filter_by_iid(merge_requests, params[:iid])
+        end
 
-        sort = case params["sort"]
-               when 'desc' then 'DESC'
-               else 'ASC'
-               end
+        merge_requests =
+          case params["state"]
+          when "opened" then merge_requests.opened
+          when "closed" then merge_requests.closed
+          when "merged" then merge_requests.merged
+          else merge_requests
+          end
 
-        mrs = case params["order_by"]
-              when 'updated_at' then mrs.order("updated_at #{sort}")
-              else  mrs.order("created_at #{sort}")
-              end
-
-        present paginate(mrs), with: Entities::MergeRequest
+        merge_requests.reorder(issuable_order_by => issuable_sort)
+        present paginate(merge_requests), with: Entities::MergeRequest
       end
 
       # Show MR
@@ -73,6 +74,22 @@ module API
         authorize! :read_merge_request, merge_request
 
         present merge_request, with: Entities::MergeRequest
+      end
+
+      # Show MR changes
+      #
+      # Parameters:
+      #   id (required)               - The ID of a project
+      #   merge_request_id (required) - The ID of MR
+      #
+      # Example:
+      #   GET /projects/:id/merge_request/:merge_request_id/changes
+      #
+      get ':id/merge_request/:merge_request_id/changes' do
+        merge_request = user_project.merge_requests.
+          find(params[:merge_request_id])
+        authorize! :read_merge_request, merge_request
+        present merge_request, with: Entities::MergeRequestChanges
       end
 
       # Create MR
@@ -120,7 +137,6 @@ module API
       # Parameters:
       #   id (required)               - The ID of a project
       #   merge_request_id (required) - ID of MR
-      #   source_branch               - The source branch
       #   target_branch               - The target branch
       #   assignee_id                 - Assignee user ID
       #   title                       - Title of MR
@@ -131,9 +147,14 @@ module API
       #   PUT /projects/:id/merge_request/:merge_request_id
       #
       put ":id/merge_request/:merge_request_id" do
-        attrs = attributes_for_keys [:source_branch, :target_branch, :assignee_id, :title, :state_event, :description]
+        attrs = attributes_for_keys [:target_branch, :assignee_id, :title, :state_event, :description]
         merge_request = user_project.merge_requests.find(params[:merge_request_id])
         authorize! :modify_merge_request, merge_request
+
+        # Ensure source_branch is not specified
+        if params[:source_branch].present?
+          render_api_error!('Source branch cannot be changed', 400)
+        end
 
         # Validate label names in advance
         if (errors = validate_label_params(params)).any?
@@ -158,8 +179,8 @@ module API
       # Merge MR
       #
       # Parameters:
-      #   id (required)               - The ID of a project
-      #   merge_request_id (required) - ID of MR
+      #   id (required)                   - The ID of a project
+      #   merge_request_id (required)     - ID of MR
       #   merge_commit_message (optional) - Custom merge commit message
       # Example:
       #   PUT /projects/:id/merge_request/:merge_request_id/merge
@@ -167,18 +188,15 @@ module API
       put ":id/merge_request/:merge_request_id/merge" do
         merge_request = user_project.merge_requests.find(params[:merge_request_id])
 
-        action = if user_project.protected_branch?(merge_request.target_branch)
-                   :push_code_to_protected_branches
-                 else
-                   :push_code
-                 end
+        allowed = ::Gitlab::GitAccess.new(current_user, user_project).
+          can_push_to_branch?(merge_request.target_branch)
 
-        if can?(current_user, action, user_project)
+        if allowed
           if merge_request.unchecked?
             merge_request.check_if_can_be_merged
           end
 
-          if merge_request.open?
+          if merge_request.open? && !merge_request.work_in_progress?
             if merge_request.can_be_merged?
               merge_request.automerge!(current_user, params[:merge_commit_message] || merge_request.merge_commit_message)
               present merge_request, with: Entities::MergeRequest
@@ -187,7 +205,7 @@ module API
             end
           else
             # Merge request can not be merged
-            # because it is already closed/merged
+            # because it is already closed/merged or marked as WIP
             not_allowed!
           end
         else
@@ -201,7 +219,7 @@ module API
       # Get a merge request's comments
       #
       # Parameters:
-      #   id (required) - The ID of a project
+      #   id (required)               - The ID of a project
       #   merge_request_id (required) - ID of MR
       # Examples:
       #   GET /projects/:id/merge_request/:merge_request_id/comments
@@ -217,9 +235,9 @@ module API
       # Post comment to merge request
       #
       # Parameters:
-      #   id (required) - The ID of a project
+      #   id (required)               - The ID of a project
       #   merge_request_id (required) - ID of MR
-      #   note (required) - Text of comment
+      #   note (required)             - Text of comment
       # Examples:
       #   POST /projects/:id/merge_request/:merge_request_id/comments
       #
@@ -233,7 +251,7 @@ module API
         if note.save
           present note, with: Entities::MRNote
         else
-          render_validation_error!(note)
+          render_api_error!("Failed to save note #{note.errors.messages}", 400)
         end
       end
     end

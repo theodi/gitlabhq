@@ -1,44 +1,24 @@
 @Api =
-  users_path: "/api/:version/users.json"
-  user_path: "/api/:version/users/:id.json"
-  notes_path: "/api/:version/projects/:id/notes.json"
+  groups_path: "/api/:version/groups.json"
+  group_path: "/api/:version/groups/:id.json"
   namespaces_path: "/api/:version/namespaces.json"
-  project_users_path: "/api/:version/projects/:id/users.json"
 
-  # Get 20 (depends on api) recent notes
-  # and sort the ascending from oldest to newest
-  notes: (project_id, callback) ->
-    url = Api.buildUrl(Api.notes_path)
-    url = url.replace(':id', project_id)
-
-    $.ajax(
-      url: url,
-      data:
-        private_token: gon.api_token
-        gfm: true
-        recent: true
-      dataType: "json"
-    ).done (notes) ->
-      notes.sort (a, b) ->
-        return a.id - b.id
-      callback(notes)
-
-  user: (user_id, callback) ->
-    url = Api.buildUrl(Api.user_path)
-    url = url.replace(':id', user_id)
+  group: (group_id, callback) ->
+    url = Api.buildUrl(Api.group_path)
+    url = url.replace(':id', group_id)
 
     $.ajax(
       url: url
       data:
         private_token: gon.api_token
       dataType: "json"
-    ).done (user) ->
-      callback(user)
+    ).done (group) ->
+      callback(group)
 
-  # Return users list. Filtered by query
-  # Only active users retrieved
-  users: (query, callback) ->
-    url = Api.buildUrl(Api.users_path)
+  # Return groups list. Filtered by query
+  # Only active groups retrieved
+  groups: (query, skip_ldap, callback) ->
+    url = Api.buildUrl(Api.groups_path)
 
     $.ajax(
       url: url
@@ -46,27 +26,9 @@
         private_token: gon.api_token
         search: query
         per_page: 20
-        active: true
       dataType: "json"
-    ).done (users) ->
-      callback(users)
-
-  # Return project users list. Filtered by query
-  # Only active users retrieved
-  projectUsers: (project_id, query, callback) ->
-    url = Api.buildUrl(Api.project_users_path)
-    url = url.replace(':id', project_id)
-
-    $.ajax(
-      url: url
-      data:
-        private_token: gon.api_token
-        search: query
-        per_page: 20
-        active: true
-      dataType: "json"
-    ).done (users) ->
-      callback(users)
+    ).done (groups) ->
+      callback(groups)
 
   # Return namespaces list. Filtered by query
   namespaces: (query, callback) ->

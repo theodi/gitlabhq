@@ -14,6 +14,24 @@ module SharedProject
     @project.team << [@user, :master]
   end
 
+  step 'I disable snippets in project' do
+    @project.snippets_enabled = false
+    @project.save
+  end
+
+  step 'I disable issues and merge requests in project' do
+    @project.issues_enabled = false
+    @project.merge_requests_enabled = false
+    @project.save
+  end
+
+  # Add another user to project "Shop"
+  step 'I add a user to project "Shop"' do
+    @project = Project.find_by(name: "Shop")
+    other_user = create(:user, name: 'Alpha')
+    @project.team << [other_user, :master]
+  end
+
   # Create another specific project called "Forum"
   step 'I own project "Forum"' do
     @project = Project.find_by(name: "Forum")
@@ -26,6 +44,11 @@ module SharedProject
     @project = create(:empty_project,
                       name: 'Empty Project', namespace: @user.namespace)
     @project.team << [@user, :master]
+  end
+
+  step 'I visit my empty project page' do
+    project = Project.find_by(name: 'Empty Project')
+    visit namespace_project_path(project.namespace, project)
   end
 
   step 'project "Shop" has push event' do
@@ -60,7 +83,7 @@ module SharedProject
   end
 
   step 'I should see project settings' do
-    current_path.should == edit_project_path(@project)
+    current_path.should == edit_namespace_project_path(@project.namespace, @project)
     page.should have_content("Project name")
     page.should have_content("Features:")
   end

@@ -14,21 +14,27 @@
 #
 
 class Namespace < ActiveRecord::Base
+  include Sortable
   include Gitlab::ShellAdapter
 
   has_many :projects, dependent: :destroy
   belongs_to :owner, class_name: "User"
 
   validates :owner, presence: true, unless: ->(n) { n.type == "Group" }
-  validates :name, presence: true, uniqueness: true,
-            length: { within: 0..255 },
-            format: { with: Gitlab::Regex.name_regex,
-                      message: Gitlab::Regex.name_regex_message }
+  validates :name,
+    presence: true, uniqueness: true,
+    length: { within: 0..255 },
+    format: { with: Gitlab::Regex.namespace_name_regex,
+              message: Gitlab::Regex.namespace_name_regex_message }
+
   validates :description, length: { within: 0..255 }
-  validates :path, uniqueness: { case_sensitive: false }, presence: true, length: { within: 1..255 },
-            exclusion: { in: Gitlab::Blacklist.path },
-            format: { with: Gitlab::Regex.path_regex,
-                      message: Gitlab::Regex.path_regex_message }
+  validates :path,
+    uniqueness: { case_sensitive: false },
+    presence: true,
+    length: { within: 1..255 },
+    exclusion: { in: Gitlab::Blacklist.path },
+    format: { with: Gitlab::Regex.namespace_regex,
+              message: Gitlab::Regex.namespace_regex_message }
 
   delegate :name, to: :owner, allow_nil: true, prefix: true
 
@@ -38,12 +44,46 @@ class Namespace < ActiveRecord::Base
 
   scope :root, -> { where('type IS NULL') }
 
-  def self.search(query)
-    where("name LIKE :query OR path LIKE :query", query: "%#{query}%")
-  end
+  class << self
+    def by_path(path)
+      where('lower(path) = :value', value: path.downcase).first
+    end
 
-  def self.global_id
-    'GLN'
+    # Case insensetive search for namespace by path or name
+    def find_by_path_or_name(path)
+      find_by("lower(path) = :path OR lower(name) = :path", path: path.downcase)
+    end
+
+    def search(query)
+      where("name LIKE :query OR path LIKE :query", query: "%#{query}%")
+    end
+
+    def clean_path(path)
+      path = path.dup
+      # Get the email username by removing everything after an `@` sign.
+      path.gsub!(/@.*\z/,             "")
+      # Usernames can't end in .git, so remove it.
+      path.gsub!(/\.git\z/,           "")
+      # Remove dashes at the start of the username.
+      path.gsub!(/\A-+/,              "")
+      # Remove periods at the end of the username.
+      path.gsub!(/\.+\z/,             "")
+      # Remove everything that's not in the list of allowed characters.
+      path.gsub!(/[^a-zA-Z0-9_\-\.]/, "")
+
+      # Users with the great usernames of "." or ".." would end up with a blank username.
+      # Work around that by setting their username to "blank", followed by a counter. 
+      path = "blank" if path.blank?
+
+      counter = 0
+      base = path
+      while Namespace.find_by_path_or_name(path)
+        counter += 1
+        path = "#{base}#{counter}"
+      end
+
+      path
+    end
   end
 
   def to_param

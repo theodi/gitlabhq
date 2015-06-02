@@ -20,13 +20,18 @@ Please treat our volunteers with courtesy and respect, it will go a long way tow
 
 Issues and merge requests should be in English and contain appropriate language for audiences of all ages.
 
+## Helping others
+
+Please help other GitLab users when you can.
+The channnels people will reach out on can be found on the [getting help page](https://about.gitlab.com/getting-help/).
+Sign up for the mailinglist, answer GitLab questions on StackOverflow or respond in the irc channel.
+You can also sign up on [CodeTriage](http://www.codetriage.com/gitlabhq/gitlabhq) to help with one issue every day.
+
 ## Issue tracker
 
-To get support for your particular problem please use the channels as detailed in the [getting help section of the readme](https://gitlab.com/gitlab-org/gitlab-ce/blob/master/README.md#getting-help). Professional [support subscriptions](http://about.gitlab.com/subscription/) and [consulting services](http://about.gitlab.com/consultancy/) are available from [GitLab.com](http://about.gitlab.com/).
+To get support for your particular problem please use the [getting help channels](https://about.gitlab.com/getting-help/).
 
-The [issue tracker](https://gitlab.com/gitlab-org/gitlab-ce/issues) is only for obvious errors in the latest [stable or development release of GitLab](MAINTENANCE.md). If something is wrong but it is not a regression compared to older versions of GitLab please do not open an issue but a feature request. When submitting an issue please conform to the issue submission guidelines listed below. Not all issues will be addressed and your issue is more likely to be addressed if you submit a merge request which partially or fully addresses the issue.
-
-Issues can be filed either at [gitlab.com](https://gitlab.com/gitlab-org/gitlab-ce/issues) or [github.com](https://github.com/gitlabhq/gitlabhq/issues).
+The [GitLab CE issue tracker on GitLab.com](https://gitlab.com/gitlab-org/gitlab-ce/issues) is only for obvious errors in the latest [stable or development release of GitLab](MAINTENANCE.md). If something is wrong but it is not a regression compared to older versions of GitLab please do not open an issue but a feature request. When submitting an issue please conform to the issue submission guidelines listed below. Not all issues will be addressed and your issue is more likely to be addressed if you submit a merge request which partially or fully addresses the issue.
 
 Do not use the issue tracker for feature requests. We have a specific [feature request forum](http://feedback.gitlab.com) for this purpose. Please keep feature requests as small and simple as possible, complex ones might be edited to make them small and simple.
 
@@ -56,14 +61,16 @@ Merge requests can be filed either at [gitlab.com](https://gitlab.com/gitlab-org
 
 If you are new to GitLab development (or web development in general), search for the label `easyfix` ([gitlab.com](https://gitlab.com/gitlab-org/gitlab-ce/issues?label_name=easyfix), [github](https://github.com/gitlabhq/gitlabhq/labels/easyfix)). Those are issues easy to fix, marked by the GitLab core-team. If you are unsure how to proceed but want to help, mention one of the core-team members to give you a hint.
 
+To start with GitLab download the [GitLab Development Kit](https://gitlab.com/gitlab-org/gitlab-development-kit) and see [Development section](doc/development/README.md) in the help file.
+
 ### Merge request guidelines
 
 If you can, please submit a merge request with the fix or improvements including tests. If you don't know how to fix the issue but can write a test that exposes the issue we will accept that as well. In general bug fixes that include a regression test are merged quickly while new features without proper tests are least likely to receive timely feedback. The workflow to make a merge request is as follows:
 
 1. Fork the project on GitLab Cloud
 1. Create a feature branch
-1. Write [tests](README.md#run-the-tests) and code
-1. Add your changes to the [CHANGELOG](CHANGELOG) insert your line at a [random point](doc/workflow/gitlab_flow.md#do-not-order-commits-with-rebase) in the current version
+1. Write [tests](https://gitlab.com/gitlab-org/gitlab-development-kit#running-the-tests) and code
+1. Add your changes to the [CHANGELOG](CHANGELOG)
 1. If you are changing the README, some documentation or other things which have no effect on the tests, add `[ci skip]` somewhere in the commit message
 1. If you have multiple commits please combine them into one commit by [squashing them](http://git-scm.com/book/en/Git-Tools-Rewriting-History#Squashing-Commits)
 1. Push the commit to your fork
@@ -77,7 +84,9 @@ If you can, please submit a merge request with the fix or improvements including
 1. If your MR touches code that executes shell commands, make sure it adheres to the [shell command guidelines](    doc/development/shell_commands.md).
 1. Also have a look at the [shell command guidelines](doc/development/shell_commands.md) if your code reads or opens files, or handles paths to files on disk.
 
-The **official merge window** is in the beginning of the month from the 1st to the 7th day of the month. The best time to submit a MR and get feedback fast. Before this time the GitLab B.V. team is still dealing with work that is created by the monthly release such as assisting subscribers with upgrade issues, the release of Enterprise Edition and the upgrade of GitLab Cloud. After the 7th it is already getting closer to the release date of the next version. This means there is less time to fix the issues created by merging large new features.
+The **official merge window** is in the beginning of the month from the 1st to the 7th day of the month. The best time to submit a MR and get feedback fast.
+Before this time the GitLab B.V. team is still dealing with work that is created by the monthly release such as regressions requiring patch releases.
+After the 7th it is already getting closer to the release date of the next version. This means there is less time to fix the issues created by merging large new features.
 
 Please keep the change in a single MR **as small as possible**. If you want to contribute a large feature think very hard what the minimum viable change is. Can you split functionality? Can you only submit the backend/API code? Can you start with a very simple UI? Can you do part of the refactor? The increased reviewability of small MR's that leads to higher code quality is more important to us than having a minimal commit log. The smaller a MR is the more likely it is it will be merged (quickly), after that you can send more MR's to enhance it.
 
@@ -101,6 +110,16 @@ Please ensure you support the feature you contribute through all of these steps.
 1. Community questions answered
 1. Answers to questions radiated (in docs/wiki/etc.)
 
+If you add a dependency in GitLab (such as an operating system package) please consider updating the following and note the applicability of each in your merge request:
+
+1. Note the addition in the release blog post (create one if it doesn't exist yet) https://gitlab.com/gitlab-com/www-gitlab-com/merge_requests/
+1. Upgrade guide, for example https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/update/7.5-to-7.6.md
+1. Upgrader https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/update/upgrader.md#2-run-gitlab-upgrade-tool
+1. Installation guide https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/install/installation.md#1-packages-dependencies
+1. GitLab Development Kit https://gitlab.com/gitlab-org/gitlab-development-kit
+1. Test suite https://gitlab.com/gitlab-org/gitlab-ci/blob/master/doc/examples/configure_a_runner_to_run_the_gitlab_ce_test_suite.md
+1. Omnibus package creator https://gitlab.com/gitlab-org/omnibus-gitlab
+
 ## Merge request description format
 
 1. What does this MR do?
@@ -118,6 +137,7 @@ Please ensure you support the feature you contribute through all of these steps.
 1. Can merge without problems (if not please merge `master`, never rebase commits pushed to the remote server)
 1. Does not break any existing functionality
 1. Fixes one specific issue or implements one specific feature (do not combine things, send separate merge requests if needed)
+1. Migrations should do only one thing (eg: either create a table, move data to a new table or remove an old table) to aid retrying on failure
 1. Keeps the GitLab code base clean and well structured
 1. Contains functionality we think other users will benefit from too
 1. Doesn't add configuration options since they complicate future changes
@@ -140,6 +160,9 @@ Please ensure you support the feature you contribute through all of these steps.
 1.  [CoffeeScript](https://github.com/thoughtbot/guides/tree/master/style#coffeescript)
 1.  [Shell commands](doc/development/shell_commands.md) created by GitLab contributors to enhance security
 1.  [Markdown](http://www.cirosantilli.com/markdown-styleguide)
+1.  [Database Migrations](doc/development/migration_style_guide.md)
+1.  [Documentation styleguide](doc_styleguide.md)
+1.  Interface text should be written subjectively instead of objectively. It should be the gitlab core team addressing a person. It should be written in present time and never use past tense (has been/was). For example instead of "prohibited this user from being saved due to the following errors:" the text should be "sorry, we could not create your account because:". Also these [excellent writing guidelines](https://github.com/NARKOZ/guides#writing).
 
 This is also the style used by linting tools such as [RuboCop](https://github.com/bbatsov/rubocop), [PullReview](https://www.pullreview.com/) and [Hound CI](https://houndci.com).
 

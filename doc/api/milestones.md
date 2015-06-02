@@ -6,6 +6,7 @@ Returns a list of project milestones.
 
 ```
 GET /projects/:id/milestones
+GET /projects/:id/milestones?iid=42
 ```
 
 ```json
@@ -27,6 +28,7 @@ GET /projects/:id/milestones
 Parameters:
 
 - `id` (required) - The ID of a project
+- `iid` (optional) - Return the milestone having the given `iid`
 
 ## Get single milestone
 
@@ -72,3 +74,16 @@ Parameters:
 - `description` (optional) - The description of a milestone
 - `due_date` (optional) - The due date of the milestone
 - `state_event` (optional) - The state event of the milestone (close|activate)
+
+## Get all issues assigned to a single milestone
+
+Gets all issues assigned to a single project milestone.
+
+```
+GET /projects/:id/milestones/:milestone_id/issues
+```
+
+Parameters:
+
+- `id` (required) - The ID of a project
+- `milestone_id` (required) - The ID of a project milestone

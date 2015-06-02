@@ -29,6 +29,7 @@ namespace :gitlab do
       check_redis_version
       check_ruby_version
       check_git_version
+      check_active_users
 
       finished_checking "GitLab"
     end
@@ -281,7 +282,8 @@ namespace :gitlab do
     def check_redis_version
       print "Redis version >= 2.0.0? ... "
 
-      if run_and_match(%W(redis-cli --version), /redis-cli 2.\d.\d/)
+      redis_version = run(%W(redis-cli --version))
+      if redis_version.try(:match, /redis-cli 2.\d.\d/) || redis_version.try(:match, /redis-cli 3.\d.\d/)
         puts "yes".green
       else
         puts "no".red
@@ -328,16 +330,20 @@ namespace :gitlab do
       if correct_options.all?
         puts "yes".green
       else
-        puts "no".red
-        try_fixing_it(
-          sudo_gitlab("\"#{Gitlab.config.git.bin_path}\" config --global user.name  \"#{options["user.name"]}\""),
-          sudo_gitlab("\"#{Gitlab.config.git.bin_path}\" config --global user.email \"#{options["user.email"]}\""),
-          sudo_gitlab("\"#{Gitlab.config.git.bin_path}\" config --global core.autocrlf \"#{options["core.autocrlf"]}\"")
-        )
-        for_more_information(
-          see_installation_guide_section "GitLab"
-        )
-        fix_and_rerun
+        print "Trying to fix Git error automatically. ..."
+        if auto_fix_git_config(options)
+          puts "Success".green
+        else
+          puts "Failed".red
+          try_fixing_it(
+            sudo_gitlab("\"#{Gitlab.config.git.bin_path}\" config --global user.name  \"#{options["user.name"]}\""),
+            sudo_gitlab("\"#{Gitlab.config.git.bin_path}\" config --global user.email \"#{options["user.email"]}\""),
+            sudo_gitlab("\"#{Gitlab.config.git.bin_path}\" config --global core.autocrlf \"#{options["core.autocrlf"]}\"")
+          )
+          for_more_information(
+            see_installation_guide_section "GitLab"
+          )
+        end
       end
     end
   end
@@ -682,6 +688,23 @@ namespace :gitlab do
     end
   end
 
+  namespace :repo do
+    desc "GITLAB | Check the integrity of the repositories managed by GitLab"
+    task check: :environment do
+      namespace_dirs = Dir.glob(
+        File.join(Gitlab.config.gitlab_shell.repos_path, '*')
+      )
+
+      namespace_dirs.each do |namespace_dir|
+        repo_dirs = Dir.glob(File.join(namespace_dir, '*'))
+        repo_dirs.each do |dir|
+          puts "\nChecking repo at #{dir}"
+          system(*%w(git fsck), chdir: dir)
+        end
+      end
+    end
+  end
+
   # Helper methods
   ##########################
 
@@ -781,6 +804,10 @@ namespace :gitlab do
     end
   end
 
+  def check_active_users
+    puts "Active users: #{User.active.count}"
+  end
+
   def omnibus_gitlab?
     Dir.pwd == '/opt/gitlab/embedded/service/gitlab-rails'
   end
@@ -801,3 +828,4 @@ namespace :gitlab do
     end
   end
 end
+

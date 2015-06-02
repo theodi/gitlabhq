@@ -43,7 +43,8 @@ module API
           :push_events,
           :issues_events,
           :merge_requests_events,
-          :tag_push_events
+          :tag_push_events,
+          :note_events
         ]
         @hook = user_project.hooks.new(attrs)
 
@@ -53,7 +54,7 @@ module API
           if @hook.errors[:url].present?
             error!("Invalid url given", 422)
           end
-          not_found!
+          not_found!("Project hook #{@hook.errors.messages}")
         end
       end
 
@@ -73,7 +74,8 @@ module API
           :push_events,
           :issues_events,
           :merge_requests_events,
-          :tag_push_events
+          :tag_push_events,
+          :note_events
         ]
 
         if @hook.update_attributes attrs
@@ -82,7 +84,7 @@ module API
           if @hook.errors[:url].present?
             error!("Invalid url given", 422)
           end
-          not_found!
+          not_found!("Project hook #{@hook.errors.messages}")
         end
       end
 

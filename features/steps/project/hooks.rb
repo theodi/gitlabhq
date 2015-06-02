@@ -23,13 +23,13 @@ class Spinach::Features::ProjectHooks < Spinach::FeatureSteps
   end
 
   step 'I submit new hook' do
-    @url = Faker::Internet.uri("http")
+    @url = FFaker::Internet.uri("http")
     fill_in "hook_url", with: @url
     expect { click_button "Add Web Hook" }.to change(ProjectHook, :count).by(1)
   end
 
   step 'I should see newly created hook' do
-    current_path.should == project_hooks_path(current_project)
+    current_path.should == namespace_project_hooks_path(current_project.namespace, current_project)
     page.should have_content(@url)
   end
 
@@ -44,7 +44,7 @@ class Spinach::Features::ProjectHooks < Spinach::FeatureSteps
   end
 
   step 'hook should be triggered' do
-    current_path.should == project_hooks_path(current_project)
+    current_path.should == namespace_project_hooks_path(current_project.namespace, current_project)
     page.should have_selector '.flash-notice',
                               text: 'Hook successfully executed.'
   end

@@ -5,8 +5,9 @@ module ApplicationHelper
   COLOR_SCHEMES = {
     1 => 'white',
     2 => 'dark',
-    3 => 'solarized-dark',
-    4 => 'monokai',
+    3 => 'solarized-light',
+    4 => 'solarized-dark',
+    5 => 'monokai',
   }
   COLOR_SCHEMES.default = 'white'
 
@@ -49,12 +50,39 @@ module ApplicationHelper
     args.any? { |v| v.to_s.downcase == action_name }
   end
 
-  def group_icon(group_path)
-    group = Group.find_by(path: group_path)
-    if group && group.avatar.present?
-      group.avatar.url
-    else
-      image_path('no_group_avatar.png')
+  def project_icon(project_id, options = {})
+    project =
+      if project_id.is_a?(Project)
+        project = project_id
+      else
+        Project.find_with_namespace(project_id)
+      end
+
+    if project.avatar_url
+      image_tag project.avatar_url, options
+    else # generated icon
+      project_identicon(project, options)
+    end
+  end
+
+  def project_identicon(project, options = {})
+    allowed_colors = {
+      red: 'FFEBEE',
+      purple: 'F3E5F5',
+      indigo: 'E8EAF6',
+      blue: 'E3F2FD',
+      teal: 'E0F2F1',
+      orange: 'FBE9E7',
+      gray: 'EEEEEE'
+    }
+
+    options[:class] ||= ''
+    options[:class] << ' identicon'
+    bg_key = project.id % 7
+    style = "background-color: ##{ allowed_colors.values[bg_key] }; color: #555"
+
+    content_tag(:div, class: options[:class], style: style) do
+      project.name[0, 1].upcase
     end
   end
 
@@ -81,24 +109,24 @@ module ApplicationHelper
     if project.repo_exists?
       time_ago_with_tooltip(project.repository.commit.committed_date)
     else
-      "Never"
+      'Never'
     end
   rescue
-    "Never"
+    'Never'
   end
 
   def grouped_options_refs
     repository = @project.repository
 
     options = [
-      ["Branches", repository.branch_names],
-      ["Tags", VersionSorter.rsort(repository.tag_names)]
+      ['Branches', repository.branch_names],
+      ['Tags', VersionSorter.rsort(repository.tag_names)]
     ]
 
     # If reference is commit id - we should add it to branch/tag selectbox
     if(@ref && !options.flatten.include?(@ref) &&
-       @ref =~ /^[0-9a-zA-Z]{6,52}$/)
-      options << ["Commit", [@ref]]
+       @ref =~ /\A[0-9a-zA-Z]{6,52}\z/)
+      options << ['Commit', [@ref]]
     end
 
     grouped_options_for_select(options, @ref || @project.default_branch)
@@ -146,21 +174,15 @@ module ApplicationHelper
     Digest::SHA1.hexdigest string
   end
 
-  def authbutton(provider, size = 64)
-    file_name = "#{provider.to_s.split('_').first}_#{size}.png"
-    image_tag(image_path("authbuttons/#{file_name}"), alt: "Sign in with #{provider.to_s.titleize}")
-  end
-
   def simple_sanitize(str)
     sanitize(str, tags: %w(a span))
   end
-
 
   def body_data_page
     path = controller.controller_path.split('/')
     namespace = path.first if path.second
 
-    [namespace, controller.controller_name, controller.action_name].compact.join(":")
+    [namespace, controller.controller_name, controller.action_name].compact.join(':')
   end
 
   # shortcut for gitlab config
@@ -175,13 +197,13 @@ module ApplicationHelper
 
   def search_placeholder
     if @project && @project.persisted?
-      "Search in this project"
+      'Search in this project'
     elsif @snippet || @snippets || @show_snippets
       'Search snippets'
     elsif @group && @group.persisted?
-      "Search in this group"
+      'Search in this group'
     else
-      "Search"
+      'Search'
     end
   end
 
@@ -189,24 +211,10 @@ module ApplicationHelper
     BroadcastMessage.current
   end
 
-  def highlight_js(&block)
-    string = capture(&block)
-
-    content_tag :div, class: "highlighted-data #{user_color_scheme_class}" do
-      content_tag :div, class: 'highlight' do
-        content_tag :pre do
-          content_tag :code do
-            string.html_safe
-          end
-        end
-      end
-    end
-  end
-
   def time_ago_with_tooltip(date, placement = 'top', html_class = 'time_ago')
     capture_haml do
       haml_tag :time, date.to_s,
-        class: html_class, datetime: date.getutc.iso8601, title: date.stamp("Aug 21, 2011 9:23pm"),
+        class: html_class, datetime: date.getutc.iso8601, title: date.in_time_zone.stamp('Aug 21, 2011 9:23pm'),
         data: { toggle: 'tooltip', placement: placement }
 
       haml_tag :script, "$('." + html_class + "').timeago().tooltip()"
@@ -214,54 +222,61 @@ module ApplicationHelper
   end
 
   def render_markup(file_name, file_content)
-    GitHub::Markup.render(file_name, file_content).
-      force_encoding(file_content.encoding).html_safe
+    if gitlab_markdown?(file_name)
+      Haml::Helpers.preserve(markdown(file_content))
+    elsif asciidoc?(file_name)
+      asciidoc(file_content)
+    else
+      GitHub::Markup.render(file_name, file_content).
+        force_encoding(file_content.encoding).html_safe
+    end
   rescue RuntimeError
     simple_format(file_content)
   end
 
   def markup?(filename)
-    Gitlab::MarkdownHelper.markup?(filename)
+    Gitlab::MarkupHelper.markup?(filename)
   end
 
   def gitlab_markdown?(filename)
-    Gitlab::MarkdownHelper.gitlab_markdown?(filename)
+    Gitlab::MarkupHelper.gitlab_markdown?(filename)
   end
 
-  def spinner(text = nil, visible = false)
-    css_class = "loading"
-    css_class << " hide" unless visible
-
-    content_tag :div, class: css_class do
-      content_tag(:i, nil, class: 'fa fa-spinner fa-spin') + text
-    end
+  def asciidoc?(filename)
+    Gitlab::MarkupHelper.asciidoc?(filename)
   end
 
-  def link_to(name = nil, options = nil, html_options = nil, &block)
-    begin
-      uri = URI(options)
-      host = uri.host
-      absolute_uri = uri.absolute?
-    rescue URI::InvalidURIError, ArgumentError
-      host = nil
-      absolute_uri = nil
-    end
-
-    # Add "nofollow" only to external links
-    if host && host != Gitlab.config.gitlab.host && absolute_uri
-      if html_options
-        if html_options[:rel]
-          html_options[:rel] << " nofollow"
-        else
-          html_options.merge!(rel: "nofollow")
-        end
-      else
-        html_options = Hash.new
-        html_options[:rel] = "nofollow"
+  # Overrides ActionView::Helpers::UrlHelper#link_to to add `rel="nofollow"` to
+  # external links
+  def link_to(name = nil, options = nil, html_options = {})
+    if options.kind_of?(String)
+      if !options.start_with?('#', '/')
+        html_options = add_nofollow(options, html_options)
       end
     end
 
     super
+  end
+
+  # Add `"rel=nofollow"` to external links
+  #
+  # link         - String link to check
+  # html_options - Hash of `html_options` passed to `link_to`
+  #
+  # Returns `html_options`, adding `rel: nofollow` for external links
+  def add_nofollow(link, html_options = {})
+    begin
+      uri = URI(link)
+
+      if uri && uri.absolute? && uri.host != Gitlab.config.gitlab.host
+        rel = html_options.fetch(:rel, '')
+        html_options[:rel] = (rel + ' nofollow').strip
+      end
+    rescue URI::Error
+      # noop
+    end
+
+    html_options
   end
 
   def escaped_autolink(text)
@@ -274,5 +289,70 @@ module ApplicationHelper
 
   def promo_url
     'https://' + promo_host
+  end
+
+  def page_filter_path(options = {})
+    without = options.delete(:without)
+
+    exist_opts = {
+      state: params[:state],
+      scope: params[:scope],
+      label_name: params[:label_name],
+      milestone_id: params[:milestone_id],
+      assignee_id: params[:assignee_id],
+      author_id: params[:author_id],
+      sort: params[:sort],
+    }
+
+    options = exist_opts.merge(options)
+
+    if without.present?
+      without.each do |key|
+        options.delete(key)
+      end
+    end
+
+    path = request.path
+    path << "?#{options.to_param}"
+    path
+  end
+
+  def outdated_browser?
+    browser.ie? && browser.version.to_i < 10
+  end
+
+  def path_to_key(key, admin = false)
+    if admin
+      admin_user_key_path(@user, key)
+    else
+      profile_key_path(key)
+    end
+  end
+
+  def state_filters_text_for(entity, project)
+    titles = {
+      opened: "Open",
+      merged:  "Accepted"
+    }
+    
+    entity_title = titles[entity] || entity.to_s.humanize
+
+    count =
+      if project.nil?
+        nil
+      elsif current_controller?(:issues)
+        project.issues.send(entity).count
+      elsif current_controller?(:merge_requests)
+        project.merge_requests.send(entity).count
+      end
+
+    html = content_tag :span, entity_title
+
+    if count.present?
+      html += " "
+      html += content_tag :span, number_with_delimiter(count), class: 'badge'
+    end
+
+    html.html_safe
   end
 end

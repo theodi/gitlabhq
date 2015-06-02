@@ -1,4 +1,4 @@
-# This calls helps to authenticate to LDAP by providing username and password
+# These calls help to authenticate to LDAP by providing username and password
 #
 # Since multiple LDAP servers are supported, it will loop through all of them
 # until a valid bind is found
@@ -50,7 +50,7 @@ module Gitlab
       end
 
       def user_filter(login)
-        filter = Net::LDAP::Filter.eq(config.uid, login)
+        filter = Net::LDAP::Filter.equals(config.uid, login)
 
         # Apply LDAP user filter if present
         if config.user_filter.present?

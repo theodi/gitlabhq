@@ -25,6 +25,12 @@ Feature: Project Issues
     Given I click link "Release 0.4"
     Then I should see issue "Release 0.4"
 
+  @javascript
+  Scenario: I visit issue page
+    Given I add a user to project "Shop"
+    And I click "author" dropdown
+    Then I see current user as the first user
+
   Scenario: I submit new unassigned issue
     Given I click link "New Issue"
     And I submit new issue "500 error on profile"
@@ -42,6 +48,7 @@ Feature: Project Issues
     Given I visit issue page "Release 0.4"
     And I leave a comment like "XML attached"
     Then I should see comment "XML attached"
+    And I should see an error alert section within the comment form
 
   @javascript
   Scenario: I search issue
@@ -127,38 +134,14 @@ Feature: Project Issues
     And I should see "Release 0.4" in issues
     And I should not see "Tweet control" in issues
 
-  Scenario: Issue description should render task checkboxes
-    Given project "Shop" has "Tasks-open" open issue with task markdown
-    When I visit issue page "Tasks-open"
-    Then I should see task checkboxes in the description
-
   @javascript
-  Scenario: Issue notes should not render task checkboxes
-    Given project "Shop" has "Tasks-open" open issue with task markdown
-    When I visit issue page "Tasks-open"
-    And I leave a comment with task markdown
-    Then I should not see task checkboxes in the comment
-
-  # Task status in issues list
-
-  Scenario: Issues list should display task status
-    Given project "Shop" has "Tasks-open" open issue with task markdown
-    When I visit project "Shop" issues page
-    Then I should see the task status for the Taskable
-
-  # Toggling task items
-
-  @javascript
-  Scenario: Task checkboxes should be enabled for an open issue
-    Given project "Shop" has "Tasks-open" open issue with task markdown
-    When I visit issue page "Tasks-open"
-    Then Task checkboxes should be enabled
-
-  @javascript
-  Scenario: Task checkboxes should be disabled for a closed issue
-    Given project "Shop" has "Tasks-closed" closed issue with task markdown
-    When I visit issue page "Tasks-closed"
-    Then Task checkboxes should be disabled
+  Scenario: Issue notes should be editable with +1
+    Given project "Shop" have "Release 0.4" open issue
+    When I visit issue page "Release 0.4"
+    And I leave a comment with a header containing "Comment with a header"
+    Then The comment with the header should not have an ID
+    And I edit the last comment with a +1
+    Then I should see +1 in the description
 
   # Issue description preview
 
@@ -193,3 +176,11 @@ Feature: Project Issues
     And I click link "Edit" for the issue
     And I preview a description text like "Bug fixed :smile:"
     Then I should see the Markdown write tab
+
+  @javascript
+  Scenario: I can unsubscribe from issue
+    Given project "Shop" have "Release 0.4" open issue
+    When I visit issue page "Release 0.4"
+    Then I should see that I am subscribed
+    When I click button "Unsubscribe"
+    Then I should see that I am unsubscribed

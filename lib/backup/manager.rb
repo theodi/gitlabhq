@@ -1,7 +1,5 @@
 module Backup
   class Manager
-    BACKUP_CONTENTS = %w{repositories/ db/ uploads/ backup_information.yml}
-
     def pack
       # saving additional informations
       s = {}
@@ -9,24 +7,30 @@ module Backup
       s[:backup_created_at]  = Time.now
       s[:gitlab_version]     = Gitlab::VERSION
       s[:tar_version]        = tar_version
+      s[:skipped]            = ENV["SKIP"]
       tar_file = "#{s[:backup_created_at].to_i}_gitlab_backup.tar"
 
-      Dir.chdir(Gitlab.config.backup.path)
+      Dir.chdir(Gitlab.config.backup.path) do
+        File.open("#{Gitlab.config.backup.path}/backup_information.yml",
+                  "w+") do |file|
+          file << s.to_yaml.gsub(/^---\n/,'')
+        end
 
-      File.open("#{Gitlab.config.backup.path}/backup_information.yml", "w+") do |file|
-        file << s.to_yaml.gsub(/^---\n/,'')
+        FileUtils.chmod(0700, folders_to_backup)
+
+        # create archive
+        $progress.print "Creating backup archive: #{tar_file} ... "
+        orig_umask = File.umask(0077)
+        if Kernel.system('tar', '-cf', tar_file, *backup_contents)
+          $progress.puts "done".green
+        else
+          puts "creating archive #{tar_file} failed".red
+          abort 'Backup failed'
+        end
+        File.umask(orig_umask)
+
+        upload(tar_file)
       end
-
-      # create archive
-      $progress.print "Creating backup archive: #{tar_file} ... "
-      if Kernel.system('tar', '-cf', tar_file, *BACKUP_CONTENTS)
-        $progress.puts "done".green
-      else
-        puts "creating archive #{tar_file} failed".red
-        abort 'Backup failed'
-      end
-
-      upload(tar_file)
     end
 
     def upload(tar_file)
@@ -41,6 +45,7 @@ module Backup
 
       connection = ::Fog::Storage.new(connection_settings)
       directory = connection.directories.get(remote_directory)
+
       if directory.files.create(key: tar_file, body: File.open(tar_file), public: false)
         $progress.puts "done".green
       else
@@ -51,11 +56,16 @@ module Backup
 
     def cleanup
       $progress.print "Deleting tmp directories ... "
-      if Kernel.system('rm', '-rf', *BACKUP_CONTENTS)
-        $progress.puts "done".green
-      else
-        puts "deleting tmp directory failed".red
-        abort 'Backup failed'
+      
+      backup_contents.each do |dir|
+        next unless File.exist?(File.join(Gitlab.config.backup.path, dir))
+
+        if FileUtils.rm_rf(File.join(Gitlab.config.backup.path, dir))
+          $progress.puts "done".green
+        else
+          puts "deleting tmp directory '#{dir}' failed".red
+          abort 'Backup failed'
+        end
       end
     end
 
@@ -63,19 +73,22 @@ module Backup
       # delete backups
       $progress.print "Deleting old backups ... "
       keep_time = Gitlab.config.backup.keep_time.to_i
-      path = Gitlab.config.backup.path
 
       if keep_time > 0
         removed = 0
-        file_list = Dir.glob(Rails.root.join(path, "*_gitlab_backup.tar"))
-        file_list.map! { |f| $1.to_i if f =~ /(\d+)_gitlab_backup.tar/ }
-        file_list.sort.each do |timestamp|
-          if Time.at(timestamp) < (Time.now - keep_time)
-            if Kernel.system(*%W(rm #{timestamp}_gitlab_backup.tar))
-              removed += 1
+        
+        Dir.chdir(Gitlab.config.backup.path) do
+          file_list = Dir.glob('*_gitlab_backup.tar')
+          file_list.map! { |f| $1.to_i if f =~ /(\d+)_gitlab_backup.tar/ }
+          file_list.sort.each do |timestamp|
+            if Time.at(timestamp) < (Time.now - keep_time)
+              if Kernel.system(*%W(rm #{timestamp}_gitlab_backup.tar))
+                removed += 1
+              end
             end
           end
         end
+
         $progress.puts "done. (#{removed} removed)".green
       else
         $progress.puts "skipping".yellow
@@ -88,6 +101,7 @@ module Backup
       # check for existing backups in the backup dir
       file_list = Dir.glob("*_gitlab_backup.tar").each.map { |f| f.split(/_/).first.to_i }
       puts "no backups found" if file_list.count == 0
+
       if file_list.count > 1 && ENV["BACKUP"].nil?
         puts "Found more than one backup, please specify which one you want to restore:"
         puts "rake gitlab:backup:restore BACKUP=timestamp_of_backup"
@@ -102,6 +116,7 @@ module Backup
       end
 
       $progress.print "Unpacking backup ... "
+
       unless Kernel.system(*%W(tar -xf #{tar_file}))
         puts "unpacking backup failed".red
         exit 1
@@ -109,7 +124,6 @@ module Backup
         $progress.puts "done".green
       end
 
-      settings = YAML.load_file("backup_information.yml")
       ENV["VERSION"] = "#{settings[:db_version]}" if settings[:db_version].to_i > 0
 
       # restoring mismatching backups can lead to unexpected problems
@@ -127,6 +141,30 @@ module Backup
     def tar_version
       tar_version, _ = Gitlab::Popen.popen(%W(tar --version))
       tar_version.force_encoding('locale').split("\n").first
+    end
+
+    def skipped?(item)
+      settings[:skipped] && settings[:skipped].include?(item)
+    end
+
+    private
+
+    def backup_contents
+      folders_to_backup + ["backup_information.yml"]
+    end
+
+    def folders_to_backup
+      folders = %w{repositories db uploads}
+
+      if ENV["SKIP"]
+        return folders.reject{ |folder| ENV["SKIP"].include?(folder) }
+      end
+
+      folders
+    end
+
+    def settings
+      @settings ||= YAML.load_file("backup_information.yml")
     end
   end
 end

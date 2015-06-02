@@ -1,3 +1,4 @@
+- page_title @project.name_with_namespace, "Projects"
 %h3.page-title
   Project: #{@project.name_with_namespace}
   = link_to edit_project_path(@project), class: "btn pull-right" do
@@ -42,11 +43,11 @@
         %li
           %span.light http:
           %strong
-            = link_to @project.http_url_to_repo
+            = link_to @project.http_url_to_repo, project_path(@project)
         %li
           %span.light ssh:
           %strong
-            = link_to @project.ssh_url_to_repo
+            = link_to @project.ssh_url_to_repo, project_path(@project)
         - if @project.repository.exists?
           %li
             %span.light fs:
@@ -68,6 +69,11 @@
             %strong.cred
               does not exist
 
+        - if @project.archived?
+          %li
+            %span.light archived:
+            %strong repository is read-only
+
         %li
           %span.light access:
           %strong
@@ -79,11 +85,11 @@
       .panel-heading
         Transfer project
       .panel-body
-        = form_for @project, url: transfer_admin_project_path(@project), method: :put, html: { class: 'form-horizontal' } do |f|
+        = form_for @project, url: transfer_admin_namespace_project_path(@project.namespace, @project), method: :put, html: { class: 'form-horizontal' } do |f|
           .form-group
-            = f.label :namespace_id, "Namespace", class: 'control-label'
+            = f.label :new_namespace_id, "Namespace", class: 'control-label'
             .col-sm-10
-              = namespace_select_tag :namespace_id, selected: params[:namespace_id], class: 'input-large'
+              = namespace_select_tag :new_namespace_id, selected: params[:namespace_id], class: 'input-large'
 
           .form-group
             .col-sm-2
@@ -97,7 +103,7 @@
           %strong #{@group.name}
           group members (#{@group.group_members.count})
           .pull-right
-            = link_to admin_group_path(@group), class: 'btn btn-small' do
+            = link_to admin_group_path(@group), class: 'btn btn-xs' do
               %i.fa.fa-pencil-square-o
         %ul.well-list
           - @group_members.each do |member|
@@ -111,22 +117,27 @@
         %small
           (#{@project.users.count})
         .pull-right
-          = link_to project_team_index_path(@project), class: "btn btn-tiny" do
+          = link_to namespace_project_project_members_path(@project.namespace, @project), class: "btn btn-xs" do
             %i.fa.fa-pencil-square-o
             Manage Access
-      %ul.well-list.team_members
+      %ul.well-list.project_members
         - @project_members.each do |project_member|
           - user = project_member.user
           %li.project_member
             .list-item-name
-              %strong
-                = link_to user.name, admin_user_path(user)
+              - if user
+                %strong
+                  = link_to user.name, admin_user_path(user)
+              - else
+                %strong
+                  = project_member.invite_email
+                (invited)
             .pull-right
               - if project_member.owner?
                 %span.light Owner
               - else
                 %span.light= project_member.human_access
-                = link_to project_team_member_path(@project, user), data: { confirm: remove_from_project_team_message(@project, user)}, method: :delete, remote: true, class: "btn btn-small btn-remove" do
+                = link_to namespace_project_project_member_path(@project.namespace, @project, project_member), data: { confirm: remove_from_project_team_message(@project, project_member)}, method: :delete, remote: true, class: "btn btn-sm btn-remove" do
                   %i.fa.fa-times
       .panel-footer
         = paginate @project_members, param_name: 'project_members_page', theme: 'gitlab'

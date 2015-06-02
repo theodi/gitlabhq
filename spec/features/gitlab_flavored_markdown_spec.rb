@@ -11,10 +11,10 @@ describe "GitLab Flavored Markdown", feature: true do
   end
 
   before do
-    Commit.any_instance.stub(title: "fix ##{issue.iid}\n\nask @#{fred.username} for details")
+    Commit.any_instance.stub(title: "fix #{issue.to_reference}\n\nask #{fred.to_reference} for details")
   end
 
-  let(:commit) { project.repository.commit }
+  let(:commit) { project.commit }
 
   before do
     login_as :user
@@ -23,27 +23,27 @@ describe "GitLab Flavored Markdown", feature: true do
 
   describe "for commits" do
     it "should render title in commits#index" do
-      visit project_commits_path(project, 'master', limit: 1)
+      visit namespace_project_commits_path(project.namespace, project, 'master', limit: 1)
 
-      page.should have_link("##{issue.iid}")
+      expect(page).to have_link(issue.to_reference)
     end
 
     it "should render title in commits#show" do
-      visit project_commit_path(project, commit)
+      visit namespace_project_commit_path(project.namespace, project, commit)
 
-      page.should have_link("##{issue.iid}")
+      expect(page).to have_link(issue.to_reference)
     end
 
     it "should render description in commits#show" do
-      visit project_commit_path(project, commit)
+      visit namespace_project_commit_path(project.namespace, project, commit)
 
-      page.should have_link("@#{fred.username}")
+      expect(page).to have_link(fred.to_reference)
     end
 
     it "should render title in repositories#branches" do
-      visit project_branches_path(project)
+      visit namespace_project_branches_path(project.namespace, project)
 
-      page.should have_link("##{issue.iid}")
+      expect(page).to have_link(issue.to_reference)
     end
   end
 
@@ -57,45 +57,45 @@ describe "GitLab Flavored Markdown", feature: true do
                       author: @user,
                       assignee: @user,
                       project: project,
-                      title: "fix ##{@other_issue.iid}",
-                      description: "ask @#{fred.username} for details")
+                      title: "fix #{@other_issue.to_reference}",
+                      description: "ask #{fred.to_reference} for details")
     end
 
     it "should render subject in issues#index" do
-      visit project_issues_path(project)
+      visit namespace_project_issues_path(project.namespace, project)
 
-      page.should have_link("##{@other_issue.iid}")
+      expect(page).to have_link(@other_issue.to_reference)
     end
 
     it "should render subject in issues#show" do
-      visit project_issue_path(project, @issue)
+      visit namespace_project_issue_path(project.namespace, project, @issue)
 
-      page.should have_link("##{@other_issue.iid}")
+      expect(page).to have_link(@other_issue.to_reference)
     end
 
     it "should render details in issues#show" do
-      visit project_issue_path(project, @issue)
+      visit namespace_project_issue_path(project.namespace, project, @issue)
 
-      page.should have_link("@#{fred.username}")
+      expect(page).to have_link("@#{fred.username}")
     end
   end
 
 
   describe "for merge requests" do
     before do
-      @merge_request = create(:merge_request, source_project: project, target_project: project, title: "fix ##{issue.iid}")
+      @merge_request = create(:merge_request, source_project: project, target_project: project, title: "fix #{issue.to_reference}")
     end
 
     it "should render title in merge_requests#index" do
-      visit project_merge_requests_path(project)
+      visit namespace_project_merge_requests_path(project.namespace, project)
 
-      page.should have_link("##{issue.iid}")
+      expect(page).to have_link(issue.to_reference)
     end
 
     it "should render title in merge_requests#show" do
-      visit project_merge_request_path(project, @merge_request)
+      visit namespace_project_merge_request_path(project.namespace, project, @merge_request)
 
-      page.should have_link("##{issue.iid}")
+      expect(page).to have_link(issue.to_reference)
     end
   end
 
@@ -104,26 +104,26 @@ describe "GitLab Flavored Markdown", feature: true do
     before do
       @milestone = create(:milestone,
                           project: project,
-                          title: "fix ##{issue.iid}",
-                          description: "ask @#{fred.username} for details")
+                          title: "fix #{issue.to_reference}",
+                          description: "ask #{fred.to_reference} for details")
     end
 
     it "should render title in milestones#index" do
-      visit project_milestones_path(project)
+      visit namespace_project_milestones_path(project.namespace, project)
 
-      page.should have_link("##{issue.iid}")
+      expect(page).to have_link(issue.to_reference)
     end
 
     it "should render title in milestones#show" do
-      visit project_milestone_path(project, @milestone)
+      visit namespace_project_milestone_path(project.namespace, project, @milestone)
 
-      page.should have_link("##{issue.iid}")
+      expect(page).to have_link(issue.to_reference)
     end
 
     it "should render description in milestones#show" do
-      visit project_milestone_path(project, @milestone)
+      visit namespace_project_milestone_path(project.namespace, project, @milestone)
 
-      page.should have_link("@#{fred.username}")
+      expect(page).to have_link(fred.to_reference)
     end
   end
 end

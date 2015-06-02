@@ -43,7 +43,7 @@ class WikiPage
     @attributes[:slug]
   end
 
-  alias :to_param :slug
+  alias_method :to_param, :slug
 
   # The formatted title of this page.
   def title
@@ -179,7 +179,8 @@ class WikiPage
     if valid? && project_wiki.send(method, *args)
 
       page_details = if method == :update_page
-                       @page.path
+                       # Use url_path instead of path to omit format extension
+                       @page.url_path
                      else
                        title
                      end

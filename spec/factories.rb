@@ -2,30 +2,37 @@ include ActionDispatch::TestProcess
 
 FactoryGirl.define do
   sequence :sentence, aliases: [:title, :content] do
-    Faker::Lorem.sentence
+    FFaker::Lorem.sentence
   end
 
   sequence :name do
-    Faker::Name.name
+    FFaker::Name.name
   end
 
   sequence :file_name do
-    Faker::Internet.user_name
+    FFaker::Internet.user_name
   end
 
-  sequence(:url) { Faker::Internet.uri('http') }
+  sequence(:url) { FFaker::Internet.uri('http') }
 
   factory :user, aliases: [:author, :assignee, :owner, :creator] do
-    email { Faker::Internet.email }
+    email { FFaker::Internet.email }
     name
-    sequence(:username) { |n| "#{Faker::Internet.user_name}#{n}" }
+    sequence(:username) { |n| "#{FFaker::Internet.user_name}#{n}" }
     password "12345678"
-    password_confirmation { password }
     confirmed_at { Time.now }
     confirmation_token { nil }
+    can_create_group true
 
     trait :admin do
       admin true
+    end
+
+    trait :two_factor do
+      before(:create) do |user|
+        user.otp_required_for_login = true
+        user.otp_secret = User.generate_otp_secret(32)
+      end
     end
 
     factory :omniauth_user do
@@ -102,21 +109,12 @@ FactoryGirl.define do
       user
     end
 
-    factory :key_with_a_space_in_the_middle do
-      key do
-        "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAIEAiPWx6WM4lhHNedGfBpPJNPpZ7yKu+dnn1SJejgt4596k6YjzGGphH2TUxwKzxcKDKKezwkpfnxPkSMkuEspGRt/aZZ9wa ++Oi7Qkr8prgHc4soW6NUlfDzpvZK2H5E7eQaSeP3SAwGmQKUFHCddNaP0L+hM7zhFNzjFvpaMgJw0="
-      end
-    end
-
     factory :another_key do
       key do
         "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDmTillFzNTrrGgwaCKaSj+QCz81E6jBc/s9av0+3b1Hwfxgkqjl4nAK/OD2NjgyrONDTDfR8cRN4eAAy6nY8GLkOyYBDyuc5nTMqs5z3yVuTwf3koGm/YQQCmo91psZ2BgDFTor8SVEE5Mm1D1k3JDMhDFxzzrOtRYFPci9lskTJaBjpqWZ4E9rDTD2q/QZntCqbC3wE9uSemRQB5f8kik7vD/AD8VQXuzKladrZKkzkONCPWsXDspUitjM8HkQdOf0PsYn1CMUC1xKYbCxkg5TkEosIwGv6CoEArUrdu/4+10LVslq494mAvEItywzrluCLCnwELfW+h/m8UHoVhZ"
       end
-    end
 
-    factory :invalid_key do
-      key do
-        "ssh-rsa this_is_invalid_key=="
+      factory :another_deploy_key, class: 'DeployKey' do
       end
     end
   end
@@ -124,12 +122,12 @@ FactoryGirl.define do
   factory :email do
     user
     email do
-      Faker::Internet.email('alias')
+      FFaker::Internet.email('alias')
     end
 
     factory :another_email do
       email do
-        Faker::Internet.email('another.alias')
+        FFaker::Internet.email('another.alias')
       end
     end
   end

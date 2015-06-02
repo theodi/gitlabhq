@@ -18,53 +18,75 @@
 #  iid               :integer
 #  description       :text
 #  position          :integer          default(0)
+#  locked_at         :datetime
 #
 
 require 'spec_helper'
 
 describe MergeRequest do
-  describe "Validation" do
-    it { should validate_presence_of(:target_branch) }
-    it { should validate_presence_of(:source_branch) }
-  end
+  subject { create(:merge_request) }
 
-  describe "Mass assignment" do
-  end
+  describe 'associations' do
+    it { is_expected.to belong_to(:target_project).with_foreign_key(:target_project_id).class_name('Project') }
+    it { is_expected.to belong_to(:source_project).with_foreign_key(:source_project_id).class_name('Project') }
 
-  describe "Respond to" do
-    it { should respond_to(:unchecked?) }
-    it { should respond_to(:can_be_merged?) }
-    it { should respond_to(:cannot_be_merged?) }
+    it { is_expected.to have_one(:merge_request_diff).dependent(:destroy) }
   end
 
   describe 'modules' do
-    it { should include_module(Issuable) }
+    subject { described_class }
+
+    it { is_expected.to include_module(InternalId) }
+    it { is_expected.to include_module(Issuable) }
+    it { is_expected.to include_module(Referable) }
+    it { is_expected.to include_module(Sortable) }
+    it { is_expected.to include_module(Taskable) }
+  end
+
+  describe 'validation' do
+    it { is_expected.to validate_presence_of(:target_branch) }
+    it { is_expected.to validate_presence_of(:source_branch) }
+  end
+
+  describe 'respond to' do
+    it { is_expected.to respond_to(:unchecked?) }
+    it { is_expected.to respond_to(:can_be_merged?) }
+    it { is_expected.to respond_to(:cannot_be_merged?) }
+  end
+
+  describe '#to_reference' do
+    it 'returns a String reference to the object' do
+      expect(subject.to_reference).to eq "!#{subject.iid}"
+    end
+
+    it 'supports a cross-project reference' do
+      cross = double('project')
+      expect(subject.to_reference(cross)).to eq "#{subject.source_project.to_reference}!#{subject.iid}"
+    end
   end
 
   describe "#mr_and_commit_notes" do
     let!(:merge_request) { create(:merge_request) }
 
     before do
-      merge_request.stub(:commits) { [merge_request.source_project.repository.commit] }
+      allow(merge_request).to receive(:commits) { [merge_request.source_project.repository.commit] }
       create(:note, commit_id: merge_request.commits.first.id, noteable_type: 'Commit', project: merge_request.project)
       create(:note, noteable: merge_request, project: merge_request.project)
     end
 
     it "should include notes for commits" do
-      merge_request.commits.should_not be_empty
-      merge_request.mr_and_commit_notes.count.should == 2
+      expect(merge_request.commits).not_to be_empty
+      expect(merge_request.mr_and_commit_notes.count).to eq(2)
     end
   end
-
-  subject { create(:merge_request) }
 
   describe '#is_being_reassigned?' do
     it 'returns true if the merge_request assignee has changed' do
       subject.assignee = create(:user)
-      subject.is_being_reassigned?.should be_true
+      expect(subject.is_being_reassigned?).to be_truthy
     end
     it 'returns false if the merge request assignee has not changed' do
-      subject.is_being_reassigned?.should be_false
+      expect(subject.is_being_reassigned?).to be_falsey
     end
   end
 
@@ -73,11 +95,11 @@ describe MergeRequest do
       subject.source_project = create(:project, namespace: create(:group))
       subject.target_project = create(:project, namespace: create(:group))
 
-      subject.for_fork?.should be_true
+      expect(subject.for_fork?).to be_truthy
     end
 
     it 'returns false if is not for a fork' do
-      subject.for_fork?.should be_false
+      expect(subject.for_fork?).to be_falsey
     end
   end
 
@@ -95,32 +117,59 @@ describe MergeRequest do
     it 'accesses the set of issues that will be closed on acceptance' do
       subject.project.stub(default_branch: subject.target_branch)
 
-      subject.closes_issues.should == [issue0, issue1].sort_by(&:id)
+      expect(subject.closes_issues).to eq([issue0, issue1].sort_by(&:id))
     end
 
     it 'only lists issues as to be closed if it targets the default branch' do
       subject.project.stub(default_branch: 'master')
       subject.target_branch = 'something-else'
 
-      subject.closes_issues.should be_empty
+      expect(subject.closes_issues).to be_empty
     end
 
     it 'detects issues mentioned in the description' do
       issue2 = create(:issue, project: subject.project)
-      subject.description = "Closes ##{issue2.iid}"
+      subject.description = "Closes #{issue2.to_reference}"
       subject.project.stub(default_branch: subject.target_branch)
 
-      subject.closes_issues.should include(issue2)
+      expect(subject.closes_issues).to include(issue2)
+    end
+  end
+
+  describe "#work_in_progress?" do
+    it "detects the 'WIP ' prefix" do
+      subject.title = "WIP #{subject.title}"
+      expect(subject).to be_work_in_progress
+    end
+
+    it "detects the 'WIP: ' prefix" do
+      subject.title = "WIP: #{subject.title}"
+      expect(subject).to be_work_in_progress
+    end
+
+    it "detects the '[WIP] ' prefix" do
+      subject.title = "[WIP] #{subject.title}"
+      expect(subject).to be_work_in_progress
+    end
+
+    it "doesn't detect WIP for words starting with WIP" do
+      subject.title = "Wipwap #{subject.title}"
+      expect(subject).not_to be_work_in_progress
+    end
+
+    it "doesn't detect WIP by default" do
+      expect(subject).not_to be_work_in_progress
     end
   end
 
   it_behaves_like 'an editable mentionable' do
-    let(:subject) { create :merge_request, source_project: mproject, target_project: mproject }
+    subject { create(:merge_request, source_project: project, target_project: project) }
+
     let(:backref_text) { "merge request !#{subject.iid}" }
     let(:set_mentionable_text) { ->(txt){ subject.title = txt } }
   end
 
   it_behaves_like 'a Taskable' do
-    let(:subject) { create :merge_request, :simple }
+    subject { create :merge_request, :simple }
   end
 end

@@ -1,6 +1,6 @@
 class Projects::HooksController < Projects::ApplicationController
   # Authorize
-  before_filter :authorize_admin_project!
+  before_action :authorize_admin_project!
 
   respond_to :html
 
@@ -16,7 +16,7 @@ class Projects::HooksController < Projects::ApplicationController
     @hook.save
 
     if @hook.valid?
-      redirect_to project_hooks_path(@project)
+      redirect_to namespace_project_hooks_path(@project.namespace, @project)
     else
       @hooks = @project.hooks.select(&:persisted?)
       render :index
@@ -43,7 +43,7 @@ class Projects::HooksController < Projects::ApplicationController
   def destroy
     hook.destroy
 
-    redirect_to project_hooks_path(@project)
+    redirect_to namespace_project_hooks_path(@project.namespace, @project)
   end
 
   private
@@ -53,6 +53,6 @@ class Projects::HooksController < Projects::ApplicationController
   end
 
   def hook_params
-    params.require(:hook).permit(:url, :push_events, :issues_events, :merge_requests_events, :tag_push_events)
+    params.require(:hook).permit(:url, :push_events, :issues_events, :merge_requests_events, :tag_push_events, :note_events)
   end
 end

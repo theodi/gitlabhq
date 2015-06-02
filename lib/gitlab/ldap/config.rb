@@ -27,8 +27,6 @@ module Gitlab
       def initialize(provider)
         if self.class.valid_provider?(provider)
           @provider = provider
-        elsif provider == 'ldap'
-          @provider = self.class.providers.first
         else
           self.class.invalid_provider(provider)
         end
@@ -80,6 +78,10 @@ module Gitlab
 
       def active_directory
         options['active_directory']
+      end
+
+      def block_auto_created_users
+        options['block_auto_created_users']
       end
 
       protected

@@ -18,8 +18,21 @@ class Spinach::Features::ProjectIssues < Spinach::FeatureSteps
     page.should_not have_content "Tweet control"
   end
 
+  step 'I should see that I am subscribed' do
+    find(".subscribe-button span").text.should == "Unsubscribe"
+  end
+
+  step 'I should see that I am unsubscribed' do
+    sleep 0.2
+    find(".subscribe-button span").text.should == "Subscribe"
+  end
+
   step 'I click link "Closed"' do
     click_link "Closed"
+  end
+
+  step 'I click button "Unsubscribe"' do
+    click_on "Unsubscribe"
   end
 
   step 'I should see "Release 0.3" in issues' do
@@ -44,6 +57,18 @@ class Spinach::Features::ProjectIssues < Spinach::FeatureSteps
 
   step 'I click link "New Issue"' do
     click_link "New Issue"
+  end
+
+  step 'I click "author" dropdown' do
+    first('.ajax-users-select').click
+  end
+
+  step 'I see current user as the first user' do
+    expect(page).to have_selector('.user-result', visible: true, count: 4)
+    users = page.all('.user-name')
+    users[0].text.should == 'Any'
+    users[1].text.should == 'Unassigned'
+    users[2].text.should == current_user.name
   end
 
   step 'I submit new issue "500 error on profile"' do
@@ -154,21 +179,13 @@ class Spinach::Features::ProjectIssues < Spinach::FeatureSteps
            author: project.users.first)
   end
 
-  step 'project "Shop" has "Tasks-open" open issue with task markdown' do
-    create_taskable(:issue, 'Tasks-open')
-  end
-
-  step 'project "Shop" has "Tasks-closed" closed issue with task markdown' do
-    create_taskable(:closed_issue, 'Tasks-closed')
-  end
-
   step 'empty project "Empty Project"' do
     create :empty_project, name: 'Empty Project', namespace: @user.namespace
   end
 
   When 'I visit empty project page' do
     project = Project.find_by(name: 'Empty Project')
-    visit project_path(project)
+    visit namespace_project_path(project.namespace, project)
   end
 
   step 'I see empty project details with ssh clone info' do
@@ -180,7 +197,7 @@ class Spinach::Features::ProjectIssues < Spinach::FeatureSteps
 
   When "I visit empty project's issues page" do
     project = Project.find_by(name: 'Empty Project')
-    visit project_issues_path(project)
+    visit namespace_project_issues_path(project.namespace, project)
   end
 
   step 'I leave a comment with code block' do
@@ -188,6 +205,12 @@ class Spinach::Features::ProjectIssues < Spinach::FeatureSteps
       fill_in "note[note]", with: "```\nCommand [1]: /usr/local/bin/git , see [text](doc/text)\n```"
       click_button "Add Comment"
       sleep 0.05
+    end
+  end
+
+  step 'I should see an error alert section within the comment form' do
+    within(".js-main-target-form") do
+      find(".error-alert")
     end
   end
 

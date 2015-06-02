@@ -10,14 +10,6 @@ Feature: Groups
     Then I should see group "Owned" projects list
     And I should see projects activity feed
 
-  Scenario: Create a group from dasboard
-    When I visit group "Owned" page
-    And I visit dashboard page
-    And I click new group link
-    And submit form with new group "Samurai" info
-    Then I should be redirected to group "Samurai" page
-    And I should see newly created group "Samurai"
-
   Scenario: I should see group "Owned" issues list
     Given project from group "Owned" has issues assigned to me
     When I visit group "Owned" issues page
@@ -54,6 +46,21 @@ Feature: Groups
     And I remove group "Owned" avatar
     Then I should not see group "Owned" avatar
     And I should not see the "Remove avatar" button
+
+  @javascript
+  Scenario: Add user to group
+    Given gitlab user "Mike"
+    When I visit group "Owned" members page
+    And I click link "Add members"
+    When I select "Mike" as "Reporter"
+    Then I should see "Mike" in team list as "Reporter"
+
+  @javascript
+  Scenario: Invite user to group
+    When I visit group "Owned" members page
+    And I click link "Add members"
+    When I select "sjobs@apple.com" as "Reporter"
+    Then I should see "sjobs@apple.com" in team list as invited "Reporter"
 
   # Leave
 

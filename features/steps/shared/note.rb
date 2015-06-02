@@ -64,7 +64,7 @@ module SharedNote
 
   step 'I should not see the comment text field' do
     within(".js-main-target-form") do
-      page.should have_css(".js-note-text", visible: false)
+      expect(find('.js-note-text')).not_to be_visible
     end
   end
 
@@ -116,23 +116,26 @@ module SharedNote
   end
 
   step 'The comment with the header should not have an ID' do
-    within(".note-text") do
+    within(".note-body > .note-text") do
       page.should     have_content("Comment with a header")
       page.should_not have_css("#comment-with-a-header")
     end
   end
 
-  step 'I leave a comment with task markdown' do
-    within('.js-main-target-form') do
-      fill_in 'note[note]', with: '* [x] Task item'
-      click_button 'Add Comment'
+  step 'I edit the last comment with a +1' do
+    find(".note").hover
+    find('.js-note-edit').click
+
+    within(".current-note-edit-form") do
+      fill_in 'note[note]', with: '+1 Awesome!'
+      click_button 'Save Comment'
       sleep 0.05
     end
   end
 
-  step 'I should not see task checkboxes in the comment' do
-    expect(page).not_to have_selector(
-      'li.note div.timeline-content input[type="checkbox"]'
-    )
+  step 'I should see +1 in the description' do
+    within(".note") do
+      page.should have_content("+1 Awesome!")
+    end
   end
 end

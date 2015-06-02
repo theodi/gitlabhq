@@ -1,16 +1,20 @@
-class ProfilesController < ApplicationController
+class ProfilesController < Profiles::ApplicationController
   include ActionView::Helpers::SanitizeHelper
 
-  before_filter :user
-  before_filter :authorize_change_username!, only: :update_username
-  skip_before_filter :require_email, only: [:show, :update]
-
-  layout 'profile'
+  before_action :user
+  before_action :authorize_change_username!, only: :update_username
+  skip_before_action :require_email, only: [:show, :update]
 
   def show
   end
 
   def design
+  end
+
+  def applications
+    @applications = current_user.oauth_applications
+    @authorized_tokens = current_user.oauth_authorized_tokens
+    @authorized_apps = @authorized_tokens.map(&:application).uniq
   end
 
   def update
@@ -19,7 +23,8 @@ class ProfilesController < ApplicationController
     if @user.update_attributes(user_params)
       flash[:notice] = "Profile was successfully updated"
     else
-      flash[:alert] = "Failed to update profile"
+      messages = @user.errors.full_messages.uniq.join('. ')
+      flash[:alert] = "Failed to update profile. #{messages}"
     end
 
     respond_to do |format|
@@ -37,7 +42,7 @@ class ProfilesController < ApplicationController
   end
 
   def history
-    @events = current_user.recent_events.page(params[:page]).per(20)
+    @events = current_user.recent_events.page(params[:page]).per(PER_PAGE)
   end
 
   def update_username
@@ -60,9 +65,10 @@ class ProfilesController < ApplicationController
 
   def user_params
     params.require(:user).permit(
-      :email, :password, :password_confirmation, :bio, :name, :username,
-      :skype, :linkedin, :twitter, :website_url, :color_scheme_id, :theme_id,
-      :avatar, :hide_no_ssh_key,
+      :email, :password, :password_confirmation, :bio, :name,
+      :username, :skype, :linkedin, :twitter, :website_url,
+      :color_scheme_id, :theme_id, :avatar, :hide_no_ssh_key,
+      :hide_no_password, :location, :public_email
     )
   end
 end

@@ -1,37 +1,38 @@
-.dashboard
-  %section.activities.col-md-8.hidden-sm.hidden-xs
-    - if current_user
-      = render "events/event_last_push", event: @last_push
-      = link_to dashboard_path, class: 'btn btn-tiny' do
-        &larr; To dashboard
-      &nbsp;
-    %span.cgray
-      Currently you are only seeing events from the
-      = @group.name
-      group
-    %hr
-    = render 'shared/event_filter'
-    - if @events.any?
-      .content_list
-    - else
-      .nothing-here-block Project activity will be displayed here
-    = spinner
-  %aside.side.col-md-4
-    .light-well.append-bottom-20
-      = image_tag group_icon(@group.path), class: "avatar s90"
-      .clearfix.light
-        %h3.page-title
-          = @group.name
-        - if @group.description.present?
-          %p
-            = escaped_autolink(@group.description)
-    = render "projects", projects: @projects
-    - if current_user
-      .prepend-top-20
-        = link_to group_path(@group, { format: :atom, private_token: current_user.private_token }), title: "Feed" do
-          %strong
-            %i.fa.fa-rss
-            News Feed
+= content_for :meta_tags do
+  - if current_user
+    = auto_discovery_link_tag(:atom, group_url(@group, format: :atom, private_token: current_user.private_token), title: "#{@group.name} activity")
 
-    %hr
-    = render 'shared/promo'
+.dashboard
+  .header-with-avatar.clearfix
+    = image_tag group_icon(@group), class: "avatar group-avatar s90"
+    %h3
+      = @group.name
+    .username
+      @#{@group.path}
+    - if @group.description.present?
+      .description
+        = escaped_autolink(@group.description)
+  %hr
+
+  = render 'shared/show_aside'
+
+  .row
+    %section.activities.col-md-8
+      .hidden-xs
+        - if current_user
+          = render "events/event_last_push", event: @last_push
+
+          - if current_user
+            %ul.nav.nav-pills.event_filter.pull-right
+              %li
+                = link_to group_path(@group, { format: :atom, private_token: current_user.private_token }), title: "Feed", class: 'rss-btn' do
+                  %i.fa.fa-rss
+                  Activity Feed
+
+          = render 'shared/event_filter'
+          %hr
+
+      .content_list
+      = spinner
+    %aside.side.col-md-4
+      = render "projects", projects: @projects

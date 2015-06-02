@@ -1,26 +1,10 @@
-responsive_resize = ->
-  current_width = $(window).width()
-  if current_width < 985
-    $('.responsive-side').addClass("ui right wide sidebar")
-  else
-    $('.responsive-side').removeClass("ui right wide sidebar")
+$(document).on("click", '.toggle-nav-collapse', (e) ->
+  e.preventDefault()
+  collapsed = 'page-sidebar-collapsed'
+  expanded = 'page-sidebar-expanded'
 
-$ ->
-  # Depending on window size, set the sidebar offscreen.
-  responsive_resize()
-
-  $('.sidebar-expand-button').click ->
-    $('.ui.sidebar')
-      .sidebar({overlay: true})
-      .sidebar('toggle')
-
-  # Hide sidebar on click outside of sidebar
-  $(document).mouseup (e) ->
-    container = $(".ui.sidebar")
-    container.sidebar "hide"  if not container.is(e.target) and container.has(e.target).length is 0
-    return
-
-# On resize, check if sidebar should be offscreen.
-$(window).resize ->
-  responsive_resize()
-  return
+  $('.page-with-sidebar').toggleClass("#{collapsed} #{expanded}")
+  $('header').toggleClass("header-collapsed header-expanded")
+  $('.toggle-nav-collapse i').toggleClass("fa-angle-right fa-angle-left")
+  $.cookie("collapsed_nav", $('.page-with-sidebar').hasClass(collapsed), { path: '/' })
+)

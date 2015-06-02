@@ -6,7 +6,7 @@
 # omnibus-gitlab
 sudo gitlab-rake gitlab:import:user_to_projects[username@domain.tld]
 
-# installation from source or cookbook
+# installation from source
 bundle exec rake gitlab:import:user_to_projects[username@domain.tld] RAILS_ENV=production
 ```
 
@@ -20,7 +20,7 @@ Notes:
 # omnibus-gitlab
 sudo gitlab-rake gitlab:import:all_users_to_all_projects
 
-# installation from source or cookbook
+# installation from source
 bundle exec rake gitlab:import:all_users_to_all_projects RAILS_ENV=production
 ```
 
@@ -30,7 +30,7 @@ bundle exec rake gitlab:import:all_users_to_all_projects RAILS_ENV=production
 # omnibus-gitlab
 sudo gitlab-rake gitlab:import:user_to_groups[username@domain.tld]
 
-# installation from source or cookbook
+# installation from source
 bundle exec rake gitlab:import:user_to_groups[username@domain.tld] RAILS_ENV=production
 ```
 
@@ -44,6 +44,15 @@ Notes:
 # omnibus-gitlab
 sudo gitlab-rake gitlab:import:all_users_to_all_groups
 
-# installation from source or cookbook
+# installation from source
 bundle exec rake gitlab:import:all_users_to_all_groups RAILS_ENV=production
+```
+
+## Maintain tight control over the number of active users on your GitLab installation
+
+- Enable this setting to keep new users blocked until they have been cleared by the admin (default: false).
+
+
+```
+block_auto_created_users: false
 ```

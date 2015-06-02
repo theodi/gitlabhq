@@ -1,18 +1,18 @@
 class Projects::SnippetsController < Projects::ApplicationController
-  before_filter :module_enabled
-  before_filter :snippet, only: [:show, :edit, :destroy, :update, :raw]
+  before_action :module_enabled
+  before_action :snippet, only: [:show, :edit, :destroy, :update, :raw]
 
   # Allow read any snippet
-  before_filter :authorize_read_project_snippet!
+  before_action :authorize_read_project_snippet!
 
   # Allow write(create) snippet
-  before_filter :authorize_write_project_snippet!, only: [:new, :create]
+  before_action :authorize_write_project_snippet!, only: [:new, :create]
 
   # Allow modify snippet
-  before_filter :authorize_modify_project_snippet!, only: [:edit, :update]
+  before_action :authorize_modify_project_snippet!, only: [:edit, :update]
 
   # Allow destroy snippet
-  before_filter :authorize_admin_project_snippet!, only: [:destroy]
+  before_action :authorize_admin_project_snippet!, only: [:destroy]
 
   respond_to :html
 
@@ -28,25 +28,22 @@ class Projects::SnippetsController < Projects::ApplicationController
   end
 
   def create
-    @snippet = @project.snippets.build(snippet_params)
-    @snippet.author = current_user
-
-    if @snippet.save
-      redirect_to project_snippet_path(@project, @snippet)
-    else
-      respond_with(@snippet)
-    end
+    @snippet = CreateSnippetService.new(@project, current_user,
+                                        snippet_params).execute
+    respond_with(@snippet,
+                 location: namespace_project_snippet_path(@project.namespace,
+                                                          @project, @snippet))
   end
 
   def edit
   end
 
   def update
-    if @snippet.update_attributes(snippet_params)
-      redirect_to project_snippet_path(@project, @snippet)
-    else
-      respond_with(@snippet)
-    end
+    UpdateSnippetService.new(project, current_user, @snippet,
+                             snippet_params).execute
+    respond_with(@snippet,
+                 location: namespace_project_snippet_path(@project.namespace,
+                                                          @project, @snippet))
   end
 
   def show
@@ -60,7 +57,7 @@ class Projects::SnippetsController < Projects::ApplicationController
 
     @snippet.destroy
 
-    redirect_to project_snippets_path(@project)
+    redirect_to namespace_project_snippets_path(@project.namespace, @project)
   end
 
   def raw

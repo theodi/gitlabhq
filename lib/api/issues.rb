@@ -27,7 +27,9 @@ module API
       # Parameters:
       #   state (optional) - Return "opened" or "closed" issues
       #   labels (optional) - Comma-separated list of label names
-
+      #   order_by (optional) - Return requests ordered by `created_at` or `updated_at` fields. Default is `created_at`
+      #   sort (optional) - Return requests sorted in `asc` or `desc` order. Default is `desc`
+      #
       # Example Requests:
       #   GET /issues
       #   GET /issues?state=opened
@@ -39,8 +41,7 @@ module API
         issues = current_user.issues
         issues = filter_issues_state(issues, params[:state]) unless params[:state].nil?
         issues = filter_issues_labels(issues, params[:labels]) unless params[:labels].nil?
-        issues = issues.order('issues.id DESC')
-
+        issues.reorder(issuable_order_by => issuable_sort)
         present paginate(issues), with: Entities::Issue
       end
     end
@@ -50,9 +51,12 @@ module API
       #
       # Parameters:
       #   id (required) - The ID of a project
+      #   iid (optional) - Return the project issue having the given `iid`
       #   state (optional) - Return "opened" or "closed" issues
       #   labels (optional) - Comma-separated list of label names
       #   milestone (optional) - Milestone title
+      #   order_by (optional) - Return requests ordered by `created_at` or `updated_at` fields. Default is `created_at`
+      #   sort (optional) - Return requests sorted in `asc` or `desc` order. Default is `desc`
       #
       # Example Requests:
       #   GET /projects/:id/issues
@@ -63,15 +67,18 @@ module API
       #   GET /projects/:id/issues?labels=foo,bar&state=opened
       #   GET /projects/:id/issues?milestone=1.0.0
       #   GET /projects/:id/issues?milestone=1.0.0&state=closed
+      #   GET /issues?iid=42
       get ":id/issues" do
         issues = user_project.issues
         issues = filter_issues_state(issues, params[:state]) unless params[:state].nil?
         issues = filter_issues_labels(issues, params[:labels]) unless params[:labels].nil?
+        issues = filter_by_iid(issues, params[:iid]) unless params[:iid].nil?
+
         unless params[:milestone].nil?
           issues = filter_issues_milestone(issues, params[:milestone])
         end
-        issues = issues.order('issues.id DESC')
 
+        issues.reorder(issuable_order_by => issuable_sort)
         present paginate(issues), with: Entities::Issue
       end
 

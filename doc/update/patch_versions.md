@@ -1,4 +1,5 @@
 # Universal update guide for patch versions
+*Make sure you view this [upgrade guide](https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/update/patch_versions.md) from the `master` branch for the most up to date instructions.*
 
 For example from 6.2.0 to 6.2.1, also see the [semantic versioning specification](http://semver.org/).
 

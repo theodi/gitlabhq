@@ -1,4 +1,7 @@
 class OmniauthCallbacksController < Devise::OmniauthCallbacksController
+
+  protect_from_forgery except: [:kerberos, :saml]
+
   Gitlab.config.omniauth.providers.each do |provider|
     define_method provider['name'] do
       handle_omniauth
@@ -44,7 +47,7 @@ class OmniauthCallbacksController < Devise::OmniauthCallbacksController
     if current_user
       # Add new authentication method
       current_user.identities.find_or_create_by(extern_uid: oauth['uid'], provider: oauth['provider'])
-      redirect_to profile_path
+      redirect_to profile_account_path, notice: 'Authentication method updated'
     else
       @user = Gitlab::OAuth::User.new(oauth)
       @user.save
@@ -65,8 +68,15 @@ class OmniauthCallbacksController < Devise::OmniauthCallbacksController
         redirect_to omniauth_error_path(oauth['provider'], error: error_message) and return
       end
     end
-  rescue ForbiddenAction => e
-    flash[:notice] = e.message
+  rescue Gitlab::OAuth::SignupDisabledError => e
+    message = "Signing in using your #{oauth['provider']} account without a pre-existing GitLab account is not allowed."
+
+    if current_application_settings.signup_enabled?
+      message << " Create a GitLab account first, and then connect it to your #{oauth['provider']} account."
+    end
+
+    flash[:notice] = message
+    
     redirect_to new_user_session_path
   end
 

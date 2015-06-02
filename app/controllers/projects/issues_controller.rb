@@ -1,28 +1,34 @@
 class Projects::IssuesController < Projects::ApplicationController
-  before_filter :module_enabled
-  before_filter :issue, only: [:edit, :update, :show]
+  before_action :module_enabled
+  before_action :issue, only: [:edit, :update, :show, :toggle_subscription]
 
   # Allow read any issue
-  before_filter :authorize_read_issue!
+  before_action :authorize_read_issue!
 
   # Allow write(create) issue
-  before_filter :authorize_write_issue!, only: [:new, :create]
+  before_action :authorize_write_issue!, only: [:new, :create]
 
   # Allow modify issue
-  before_filter :authorize_modify_issue!, only: [:edit, :update]
+  before_action :authorize_modify_issue!, only: [:edit, :update]
 
   # Allow issues bulk update
-  before_filter :authorize_admin_issues!, only: [:bulk_update]
+  before_action :authorize_admin_issues!, only: [:bulk_update]
 
   respond_to :html
 
   def index
     terms = params['issue_search']
-    set_filter_variables(@project.issues)
+    @issues = get_issues_collection
 
-    @issues = IssuesFinder.new.execute(current_user, params.merge(project_id: @project.id))
-    @issues = @issues.full_search(terms) if terms.present?
-    @issues = @issues.page(params[:page]).per(20)
+    if terms.present?
+      if terms =~ /\A#(\d+)\z/
+        @issues = @issues.where(iid: $1)
+      else
+        @issues = @issues.full_search(terms)
+      end
+    end
+
+    @issues = @issues.page(params[:page]).per(PER_PAGE)
 
     respond_to do |format|
       format.html
@@ -62,7 +68,7 @@ class Projects::IssuesController < Projects::ApplicationController
     respond_to do |format|
       format.html do
         if @issue.valid?
-          redirect_to project_issue_path(@project, @issue)
+          redirect_to issue_path(@issue)
         else
           render :new
         end
@@ -80,7 +86,7 @@ class Projects::IssuesController < Projects::ApplicationController
       format.js
       format.html do
         if @issue.valid?
-          redirect_to [@project, @issue]
+          redirect_to issue_path(@issue)
         else
           render :edit
         end
@@ -95,8 +101,14 @@ class Projects::IssuesController < Projects::ApplicationController
   end
 
   def bulk_update
-    result = Issues::BulkUpdateService.new(project, current_user, params).execute
+    result = Issues::BulkUpdateService.new(project, current_user, bulk_update_params).execute
     redirect_to :back, notice: "#{result[:count]} issues updated"
+  end
+
+  def toggle_subscription
+    @issue.toggle_subscription(current_user)
+
+    render nothing: true
   end
 
   protected
@@ -130,7 +142,7 @@ class Projects::IssuesController < Projects::ApplicationController
     issue = @project.issues.find_by(id: params[:id])
 
     if issue
-      redirect_to project_issue_path(@project, issue)
+      redirect_to issue_path(issue)
       return
     else
       raise ActiveRecord::RecordNotFound.new
@@ -141,6 +153,15 @@ class Projects::IssuesController < Projects::ApplicationController
     params.require(:issue).permit(
       :title, :assignee_id, :position, :description,
       :milestone_id, :state_event, :task_num, label_ids: []
+    )
+  end
+
+  def bulk_update_params
+    params.require(:update).permit(
+      :issues_ids,
+      :assignee_id,
+      :milestone_id,
+      :state_event
     )
   end
 end

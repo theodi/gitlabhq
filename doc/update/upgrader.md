@@ -1,5 +1,11 @@
 # GitLab Upgrader
 
+*DEPRECATED* We recommend to [switch to the Omnibus package and repository server](https://about.gitlab.com/update/) instead of using this script.
+
+Although deprecated, if someone wants to make this script into a gem or otherwise improve it merge requests are welcome.
+
+*Make sure you view this [upgrade guide from the 'master' branch](../../../master/doc/update/upgrader.md) for the most up to date instructions.*
+
 GitLab Upgrader - a ruby script that allows you easily upgrade GitLab to latest minor version.
 
 For example it can update your application from 6.4 to latest GitLab 6 version (like 6.6.1).
@@ -23,14 +29,15 @@ If you have local changes to your GitLab repository the script will stash them a
 
 ## 2. Run GitLab upgrade tool
 
-Note: GitLab 7.2 adds `pkg-config` and `cmake` as dependency. Please check the dependencies in the [installation guide.](https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/install/installation.md#1-packages-dependencies)
+Please replace X.X.X with the [latest GitLab release](https://packages.gitlab.com/gitlab/gitlab-ce).
 
-    # Starting with GitLab version 7.0 upgrader script has been moved to bin directory
+GitLab 7.9 adds `nodejs` as a dependency. GitLab 7.6 adds `libkrb5-dev` as a dependency (installed by default on Ubuntu and OSX). GitLab 7.2 adds `pkg-config` and `cmake` as dependency. Please check the dependencies in the [installation guide.](https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/install/installation.md#1-packages-dependencies)
+
     cd /home/git/gitlab
-    if [ -f bin/upgrade.rb ]; then sudo -u git -H ruby bin/upgrade.rb; else sudo -u git -H ruby script/upgrade.rb; fi
+    sudo -u git -H ruby -Ilib -e 'require "gitlab/upgrader"' -e 'class Gitlab::Upgrader' -e 'def latest_version_raw' -e '"vX.X.X"' -e 'end' -e 'end' -e 'Gitlab::Upgrader.new.execute'
 
     # to perform a non-interactive install (no user input required) you can add -y
-    # if [ -f bin/upgrade.rb ]; then sudo -u git -H ruby bin/upgrade.rb -y; else sudo -u git -H ruby script/upgrade.rb -y; fi
+    # sudo -u git -H ruby -Ilib -e 'require "gitlab/upgrader"' -e 'class Gitlab::Upgrader' -e 'def latest_version_raw' -e '"vX.X.X"' -e 'end' -e 'end' -e 'Gitlab::Upgrader.new.execute' -- -y
 
 ## 3. Start application
 
@@ -59,17 +66,20 @@ sudo -u git -H git checkout v`cat /home/git/gitlab/GITLAB_SHELL_VERSION`
 
 You've read through the entire guide and probably already did all the steps one by one.
 
-Here is a one line command with step 1 to 5 for the next time you upgrade:
+Below is a one line command with step 1 to 5 for the next time you upgrade.
+
+Please replace X.X.X with the [latest GitLab release](https://packages.gitlab.com/gitlab/gitlab-ce).
 
 ```bash
 cd /home/git/gitlab; \
   sudo -u git -H bundle exec rake gitlab:backup:create RAILS_ENV=production; \
   sudo service gitlab stop; \
-  if [ -f bin/upgrade.rb ]; then sudo -u git -H ruby bin/upgrade.rb -y; else sudo -u git -H ruby script/upgrade.rb -y; fi; \
+  sudo -u git -H ruby -Ilib -e 'require "gitlab/upgrader"' -e 'class Gitlab::Upgrader' -e 'def latest_version_raw' -e '"vX.X.X"' -e 'end' -e 'end' -e 'Gitlab::Upgrader.new.execute' -- -y; \
   cd /home/git/gitlab-shell; \
   sudo -u git -H git fetch; \
   sudo -u git -H git checkout v`cat /home/git/gitlab/GITLAB_SHELL_VERSION`; \
   cd /home/git/gitlab; \
   sudo service gitlab start; \
-  sudo service nginx restart; sudo -u git -H bundle exec rake gitlab:check RAILS_ENV=production
+  sudo service nginx restart; \
+  sudo -u git -H bundle exec rake gitlab:check RAILS_ENV=production
 ```

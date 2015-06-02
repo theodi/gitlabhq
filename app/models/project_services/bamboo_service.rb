@@ -1,15 +1,41 @@
+# == Schema Information
+#
+# Table name: services
+#
+#  id                    :integer          not null, primary key
+#  type                  :string(255)
+#  title                 :string(255)
+#  project_id            :integer
+#  created_at            :datetime
+#  updated_at            :datetime
+#  active                :boolean          default(FALSE), not null
+#  properties            :text
+#  template              :boolean          default(FALSE)
+#  push_events           :boolean          default(TRUE)
+#  issues_events         :boolean          default(TRUE)
+#  merge_requests_events :boolean          default(TRUE)
+#  tag_push_events       :boolean          default(TRUE)
+#  note_events           :boolean          default(TRUE), not null
+#
+
 class BambooService < CiService
   include HTTParty
 
   prop_accessor :bamboo_url, :build_key, :username, :password
 
-  validates :bamboo_url, presence: true,
-            format: { with: URI::regexp }, if: :activated?
+  validates :bamboo_url,
+    presence: true,
+    format: { with: /\A#{URI.regexp}\z/ },
+    if: :activated?
   validates :build_key, presence: true, if: :activated?
-  validates :username, presence: true,
-            if: ->(service) { service.password? }, if: :activated?
-  validates :password, presence: true,
-            if: ->(service) { service.username? }, if: :activated?
+  validates :username,
+    presence: true,
+    if: ->(service) { service.password? },
+    if: :activated?
+  validates :password,
+    presence: true,
+    if: ->(service) { service.username? },
+    if: :activated?
 
   attr_accessor :response
 
@@ -48,6 +74,10 @@ class BambooService < CiService
     ]
   end
 
+  def supported_events
+    %w(push)
+  end
+  
   def build_info(sha)
     url = URI.parse("#{bamboo_url}/rest/api/latest/result?label=#{sha}")
 
@@ -63,7 +93,7 @@ class BambooService < CiService
     end
   end
 
-  def build_page(sha)
+  def build_page(sha, ref)
     build_info(sha) if @response.nil? || !@response.code
 
     if @response.code != 200 || @response['results']['results']['size'] == '0'
@@ -76,7 +106,7 @@ class BambooService < CiService
     end
   end
 
-  def commit_status(sha)
+  def commit_status(sha, ref)
     build_info(sha) if @response.nil? || !@response.code
     return :error unless @response.code == 200 || @response.code == 404
 
@@ -97,7 +127,9 @@ class BambooService < CiService
     end
   end
 
-  def execute(_data)
+  def execute(data)
+    return unless supported_events.include?(data[:object_kind])
+
     # Bamboo requires a GET and does not take any data.
     self.class.get("#{bamboo_url}/updateAndBuild.action?buildKey=#{build_key}",
                    verify: false)

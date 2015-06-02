@@ -2,14 +2,20 @@
 #
 # Table name: services
 #
-#  id         :integer          not null, primary key
-#  type       :string(255)
-#  title      :string(255)
-#  project_id :integer          not null
-#  created_at :datetime
-#  updated_at :datetime
-#  active     :boolean          default(FALSE), not null
-#  properties :text
+#  id                    :integer          not null, primary key
+#  type                  :string(255)
+#  title                 :string(255)
+#  project_id            :integer
+#  created_at            :datetime
+#  updated_at            :datetime
+#  active                :boolean          default(FALSE), not null
+#  properties            :text
+#  template              :boolean          default(FALSE)
+#  push_events           :boolean          default(TRUE)
+#  issues_events         :boolean          default(TRUE)
+#  merge_requests_events :boolean          default(TRUE)
+#  tag_push_events       :boolean          default(TRUE)
+#  note_events           :boolean          default(TRUE), not null
 #
 
 # Base class for CI services
@@ -20,12 +26,16 @@ class CiService < Service
     :ci
   end
 
+  def supported_events
+    %w(push)
+  end
+
   # Return complete url to build page
   #
   # Ex.
   #   http://jenkins.example.com:8888/job/test1/scm/bySHA1/12d65c
   #
-  def build_page(sha)
+  def build_page(sha, ref)
     # implement inside child
   end
 
@@ -42,7 +52,7 @@ class CiService < Service
   #   # => 'running'
   #
   #
-  def commit_status(sha)
+  def commit_status(sha, ref)
     # implement inside child
   end
 end

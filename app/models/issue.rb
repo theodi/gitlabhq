@@ -21,8 +21,10 @@ require 'carrierwave/orm/activerecord'
 require 'file_size_validator'
 
 class Issue < ActiveRecord::Base
-  include Issuable
   include InternalId
+  include Issuable
+  include Referable
+  include Sortable
   include Taskable
 
   ActsAsTaggableOn.strict_case_match = true
@@ -31,7 +33,6 @@ class Issue < ActiveRecord::Base
   validates :project, presence: true
 
   scope :of_group, ->(group) { where(project_id: group.project_ids) }
-  scope :of_user_team, ->(team) { where(project_id: team.project_ids, assignee_id: team.member_ids) }
   scope :cared, ->(user) { where(assignee_id: user) }
   scope :open_for, ->(user) { opened.assigned_to(user) }
 
@@ -53,10 +54,28 @@ class Issue < ActiveRecord::Base
     attributes
   end
 
-  # Mentionable overrides.
+  def self.reference_prefix
+    '#'
+  end
 
-  def gfm_reference
-    "issue ##{iid}"
+  # Pattern used to extract `#123` issue references from text
+  #
+  # This pattern supports cross-project references.
+  def self.reference_pattern
+    %r{
+      (#{Project.reference_pattern})?
+      #{Regexp.escape(reference_prefix)}(?<issue>\d+)
+    }x
+  end
+
+  def to_reference(from_project = nil)
+    reference = "#{self.class.reference_prefix}#{iid}"
+
+    if cross_project_reference?(from_project)
+      reference = project.to_reference + reference
+    end
+
+    reference
   end
 
   # Reset issue events cache

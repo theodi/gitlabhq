@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 describe Gitlab::GitAccessWiki do
-  let(:access) { Gitlab::GitAccessWiki.new }
+  let(:access) { Gitlab::GitAccessWiki.new(user, project) }
   let(:project) { create(:project) }
   let(:user) { create(:user) }
 
@@ -11,9 +11,9 @@ describe Gitlab::GitAccessWiki do
       project.team << [user, :developer]
     end
 
-    subject { access.push_access_check(user, project, changes) }
+    subject { access.push_access_check(changes) }
 
-    it { subject.allowed?.should be_true }
+    it { expect(subject.allowed?).to be_truthy }
   end
 
   def changes

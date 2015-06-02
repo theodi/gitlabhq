@@ -4,10 +4,10 @@
       Write
   %li
     = link_to '#md-preview-holder', class: 'js-md-preview-button',
-        data: { url: markdown_preview_project_path(@project) } do
+        data: { url: markdown_preview_namespace_project_path(@project.namespace, @project) } do
       Preview
 %div
   .md-write-holder
     = yield
-  .md-preview-holder.hide
-    .js-md-preview
+  .md.md-preview-holder.hide
+    .js-md-preview{class: (preview_class if defined?(preview_class))}

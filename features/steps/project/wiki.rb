@@ -3,6 +3,7 @@ class Spinach::Features::ProjectWiki < Spinach::FeatureSteps
   include SharedProject
   include SharedNote
   include SharedPaths
+  include WikiHelper
 
   step 'I click on the Cancel button' do
     within(:css, ".form-actions") do
@@ -11,7 +12,7 @@ class Spinach::Features::ProjectWiki < Spinach::FeatureSteps
   end
 
   step 'I should be redirected back to the Edit Home Wiki page' do
-    current_path.should == project_wiki_path(project, :home)
+    current_path.should == namespace_project_wiki_path(project.namespace, project, :home)
   end
 
   step 'I create the Wiki Home page' do
@@ -33,7 +34,7 @@ class Spinach::Features::ProjectWiki < Spinach::FeatureSteps
   end
 
   step 'I browse to that Wiki page' do
-    visit project_wiki_path(project, @page)
+    visit namespace_project_wiki_path(project.namespace, project, @page)
   end
 
   step 'I click on the Edit button' do
@@ -50,7 +51,7 @@ class Spinach::Features::ProjectWiki < Spinach::FeatureSteps
   end
 
   step 'I should be redirected back to that Wiki page' do
-    current_path.should == project_wiki_path(project, @page)
+    current_path.should == namespace_project_wiki_path(project.namespace, project, @page)
   end
 
   step 'That page has two revisions' do
@@ -90,7 +91,7 @@ class Spinach::Features::ProjectWiki < Spinach::FeatureSteps
   end
 
   step 'I browse to wiki page with images' do
-    visit project_wiki_path(project, @wiki_page)
+    visit namespace_project_wiki_path(project.namespace, project, @wiki_page)
   end
 
   step 'I click on existing image link' do
@@ -121,6 +122,56 @@ class Spinach::Features::ProjectWiki < Spinach::FeatureSteps
     current_path.should match('wikis/image.jpg')
     page.should have_content('New Wiki Page')
     page.should have_content('Editing - image.jpg')
+  end
+
+  step 'I create a New page with paths' do
+    click_on 'New Page'
+    fill_in 'Page slug', with: 'one/two/three'
+    click_on 'Build'
+    fill_in "wiki_content", with: 'wiki content'
+    click_on "Create page"
+    current_path.should include 'one/two/three'
+  end
+
+  step 'I create a New page with an invalid name' do
+    click_on 'New Page'
+    fill_in 'Page slug', with: 'invalid name'
+    click_on 'Build'
+  end
+
+  step 'I should see an error message' do
+    expect(page).to have_content "The page slug is invalid"
+  end
+
+  step 'I should see non-escaped link in the pages list' do
+    page.should have_xpath("//a[@href='/#{project.path_with_namespace}/wikis/one/two/three']")
+  end
+
+  step 'I edit the Wiki page with a path' do
+    click_on 'three'
+    click_on 'Edit'
+  end
+
+  step 'I should see a non-escaped path' do
+    current_path.should include 'one/two/three'
+  end
+
+  step 'I should see the Editing page' do
+    page.should have_content('Editing')
+  end
+
+  step 'I view the page history of a Wiki page that has a path' do
+    click_on 'three'
+    click_on 'Page History'
+  end
+
+  step 'I should see the page history' do
+    page.should have_content('History for')
+  end
+
+  step 'I search for Wiki content' do
+    fill_in "Search in this project", with: "wiki_content"
+    click_button "Search"
   end
 
   def wiki

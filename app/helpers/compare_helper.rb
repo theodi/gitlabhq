@@ -1,15 +1,21 @@
 module CompareHelper
-  def compare_to_mr_button?
-    @project.merge_requests_enabled &&
-      params[:from].present? && 
-      params[:to].present? &&
-      @repository.branch_names.include?(params[:from]) &&
-      @repository.branch_names.include?(params[:to]) &&
-      params[:from] != params[:to] &&
-      !@refs_are_same
+  def create_mr_button?(from = params[:from], to = params[:to], project = @project)
+    from.present? &&
+      to.present? &&
+      from != to &&
+      project.merge_requests_enabled &&
+      project.repository.branch_names.include?(from) &&
+      project.repository.branch_names.include?(to)
   end
 
-  def compare_mr_path
-    new_project_merge_request_path(@project, merge_request: {source_branch: params[:to], target_branch: params[:from]})
+  def create_mr_path(from = params[:from], to = params[:to], project = @project)
+    new_namespace_project_merge_request_path(
+      project.namespace,
+      project,
+      merge_request: {
+        source_branch: to,
+        target_branch: from
+      }
+    )
   end
 end

@@ -14,6 +14,8 @@
 require Rails.root.join("app/models/commit")
 
 class MergeRequestDiff < ActiveRecord::Base
+  include Sortable
+
   # Prevent store of diff
   # if commits amount more then 200
   COMMITS_SAFE_SIZE = 200
@@ -65,7 +67,7 @@ class MergeRequestDiff < ActiveRecord::Base
   end
 
   def load_commits(array)
-    array.map { |hash| Commit.new(Gitlab::Git::Commit.new(hash)) }
+    array.map { |hash| Commit.new(Gitlab::Git::Commit.new(hash), merge_request.source_project) }
   end
 
   def dump_diffs(diffs)
@@ -86,7 +88,7 @@ class MergeRequestDiff < ActiveRecord::Base
     commits = compare_result.commits
 
     if commits.present?
-      commits = Commit.decorate(commits).
+      commits = Commit.decorate(commits, merge_request.source_project).
         sort_by(&:created_at).
         reverse
     end

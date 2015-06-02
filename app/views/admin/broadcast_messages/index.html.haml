@@ -1,3 +1,4 @@
+- page_title "Broadcast Messages"
 %h3.page-title
   Broadcast Messages
 %p.light
@@ -21,13 +22,11 @@
   .form-group.js-toggle-colors-container.hide
     = f.label :color, "Background Color", class: 'control-label'
     .col-sm-10
-      = f.text_field :color, placeholder: "#AA33EE", class: "form-control"
-      .light 6 character hex values starting with a # sign.
+      = f.color_field :color, value: "#AA33EE", class: "form-control"
   .form-group.js-toggle-colors-container.hide
     = f.label :font, "Font Color", class: 'control-label'
     .col-sm-10
-      = f.text_field :font, placeholder: "#224466", class: "form-control"
-      .light 6 character hex values starting with a # sign.
+      = f.color_field :font, value: "#224466", class: "form-control"
   .form-group
     = f.label :starts_at, class: 'control-label'
     .col-sm-10.datetime-controls
@@ -52,7 +51,7 @@
             %strong
               #{broadcast_message.ends_at.to_s(:short)}
           &nbsp;
-          = link_to [:admin, broadcast_message], method: :delete, remote: true, class: 'remove-row btn btn-tiny' do
+          = link_to [:admin, broadcast_message], method: :delete, remote: true, class: 'remove-row btn btn-xs' do
             %i.fa.fa-times.cred
 
         .message= broadcast_message.message

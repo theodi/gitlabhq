@@ -5,6 +5,49 @@ class Spinach::Features::Groups < Spinach::FeatureSteps
   include SharedUser
   include Select2Helper
 
+  step 'gitlab user "Mike"' do
+    create(:user, name: "Mike")
+  end
+
+  step 'I click link "Add members"' do
+    find(:css, 'button.btn-new').click
+  end
+
+  step 'I select "Mike" as "Reporter"' do
+    user = User.find_by(name: "Mike")
+
+    within ".users-group-form" do
+      select2(user.id, from: "#user_ids", multiple: true)
+      select "Reporter", from: "access_level"
+    end
+
+    click_button "Add users to group"
+  end
+
+  step 'I should see "Mike" in team list as "Reporter"' do
+    within '.well-list' do
+      page.should have_content('Mike')
+      page.should have_content('Reporter')
+    end
+  end
+
+  step 'I select "sjobs@apple.com" as "Reporter"' do
+    within ".users-group-form" do
+      select2("sjobs@apple.com", from: "#user_ids", multiple: true)
+      select "Reporter", from: "access_level"
+    end
+
+    click_button "Add users to group"
+  end
+
+  step 'I should see "sjobs@apple.com" in team list as invited "Reporter"' do
+    within '.well-list' do
+      page.should have_content('sjobs@apple.com')
+      page.should have_content('invited')
+      page.should have_content('Reporter')
+    end
+  end
+
   step 'I should see group "Owned" projects list' do
     Group.find_by(name: "Owned").projects.each do |project|
       page.should have_link project.name
@@ -29,12 +72,12 @@ class Spinach::Features::Groups < Spinach::FeatureSteps
 
   step 'I select user "Mary Jane" from list with role "Reporter"' do
     user = User.find_by(name: "Mary Jane") || create(:user, name: "Mary Jane")
-    click_link 'Add members'
+    click_button 'Add members'
     within ".users-group-form" do
       select2(user.id, from: "#user_ids", multiple: true)
       select "Reporter", from: "access_level"
     end
-    click_button "Add users into group"
+    click_button "Add users to group"
   end
 
   step 'I should see user "John Doe" in team list' do
@@ -72,34 +115,15 @@ class Spinach::Features::Groups < Spinach::FeatureSteps
       author: current_user
   end
 
-  When 'I click new group link' do
-    click_link "New group"
-  end
-
-  step 'submit form with new group "Samurai" info' do
-    fill_in 'group_name', with: 'Samurai'
-    fill_in 'group_description', with: 'Tokugawa Shogunate'
-    click_button "Create group"
-  end
-
-  step 'I should be redirected to group "Samurai" page' do
-    current_path.should == group_path(Group.last)
-  end
-
-  step 'I should see newly created group "Samurai"' do
-    page.should have_content "Samurai"
-    page.should have_content "Tokugawa Shogunate"
-    page.should have_content "Currently you are only seeing events from the"
-  end
-
   step 'I change group "Owned" name to "new-name"' do
     fill_in 'group_name', with: 'new-name'
+    fill_in 'group_path', with: 'new-name'
     click_button "Save group"
   end
 
   step 'I should see new group "Owned" name' do
     within ".navbar-gitlab" do
-      page.should have_content "group: new-name"
+      page.should have_content "new-name"
     end
   end
 
@@ -110,7 +134,7 @@ class Spinach::Features::Groups < Spinach::FeatureSteps
   end
 
   step 'I should see new group "Owned" avatar' do
-    Group.find_by(name: "Owned").avatar.should be_instance_of AttachmentUploader
+    Group.find_by(name: "Owned").avatar.should be_instance_of AvatarUploader
     Group.find_by(name: "Owned").avatar.url.should == "/uploads/group/avatar/#{ Group.find_by(name:"Owned").id }/gitlab_logo.png"
   end
 
@@ -179,8 +203,8 @@ class Spinach::Features::Groups < Spinach::FeatureSteps
   step 'I should see group milestones index page with milestones' do
     page.should have_content('Version 7.2')
     page.should have_content('GL-113')
-    page.should have_link('2 Issues', href: group_milestone_path("owned", "version-7-2", title: "Version 7.2"))
-    page.should have_link('3 Merge Requests', href: group_milestone_path("owned", "gl-113", title: "GL-113"))
+    page.should have_link('2 Issues', href: issues_group_path("owned", milestone_title: "Version 7.2"))
+    page.should have_link('3 Merge Requests', href: merge_requests_group_path("owned", milestone_title: "GL-113"))
   end
 
   step 'I click on one group milestone' do
@@ -188,15 +212,14 @@ class Spinach::Features::Groups < Spinach::FeatureSteps
   end
 
   step 'I should see group milestone with descriptions and expiry date' do
-    page.should have_content('Lorem Ipsum is simply dummy text of the printing and typesetting industry')
     page.should have_content('expires at Aug 20, 2114')
   end
 
   step 'I should see group milestone with all issues and MRs assigned to that milestone' do
     page.should have_content('Milestone GL-113')
     page.should have_content('Progress: 0 closed – 4 open')
-    page.should have_link(@issue1.title, href: project_issue_path(@project1, @issue1))
-    page.should have_link(@mr3.title, href: project_merge_request_path(@project3, @mr3))
+    page.should have_link(@issue1.title, href: namespace_project_issue_path(@project1.namespace, @project1, @issue1))
+    page.should have_link(@mr3.title, href: namespace_project_merge_request_path(@project3.namespace, @project3, @mr3))
   end
 
   protected

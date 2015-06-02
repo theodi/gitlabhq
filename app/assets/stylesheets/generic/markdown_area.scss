@@ -57,7 +57,6 @@
   border: 1px solid #ddd;
   min-height: 100px;
   padding: 5px;
-  font-size: 14px;
   box-shadow: none;
 }
 
@@ -65,6 +64,7 @@
 .edit_note,
 .issuable-description,
 .milestone-description,
+.wiki-content,
 .merge-request-form {
   .nav-tabs {
     margin-bottom: 0;
@@ -75,4 +75,13 @@
       border: 1px solid #DDD;
     }
   }
+}
+
+.markdown-area {
+  background: #FFF;
+  border: 1px solid #ddd;
+  min-height: 100px;
+  padding: 5px;
+  box-shadow: none;
+  width: 100%;
 }

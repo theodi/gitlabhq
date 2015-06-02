@@ -1,7 +1,16 @@
 class Projects::ServicesController < Projects::ApplicationController
+  ALLOWED_PARAMS = [:title, :token, :type, :active, :api_key, :api_version, :subdomain,
+                    :room, :recipients, :project_url, :webhook,
+                    :user_key, :device, :priority, :sound, :bamboo_url, :username, :password,
+                    :build_key, :server, :teamcity_url, :build_type,
+                    :description, :issues_url, :new_issue_url, :restrict_to_branch, :channel,
+                    :colorize_messages, :channels,
+                    :push_events, :issues_events, :merge_requests_events, :tag_push_events,
+                    :note_events, :send_from_committer_email, :disable_diffs, :external_wiki_url,
+                    :notify, :color]
   # Authorize
-  before_filter :authorize_admin_project!
-  before_filter :service, only: [:edit, :update, :test]
+  before_action :authorize_admin_project!
+  before_action :service, only: [:edit, :update, :test]
 
   respond_to :html
 
@@ -9,7 +18,7 @@ class Projects::ServicesController < Projects::ApplicationController
 
   def index
     @project.build_missing_services
-    @services = @project.services.reload
+    @services = @project.services.visible.reload
   end
 
   def edit
@@ -17,18 +26,25 @@ class Projects::ServicesController < Projects::ApplicationController
 
   def update
     if @service.update_attributes(service_params)
-      redirect_to edit_project_service_path(@project, @service.to_param)
+      redirect_to(
+        edit_namespace_project_service_path(@project.namespace, @project,
+                                            @service.to_param, notice:
+                                            'Successfully updated.')
+      )
     else
       render 'edit'
     end
   end
 
   def test
-    data = GitPushService.new.sample_data(project, current_user)
+    data = Gitlab::PushDataBuilder.build_sample(project, current_user)
+    if @service.execute(data)
+      message = { notice: 'We sent a request to the provided URL' }
+    else
+      message = { alert: 'We tried to send a request to the provided URL but an error occured' }
+    end
 
-    @service.execute(data)
-
-    redirect_to :back
+    redirect_to :back, message
   end
 
   private
@@ -38,11 +54,6 @@ class Projects::ServicesController < Projects::ApplicationController
   end
 
   def service_params
-    params.require(:service).permit(
-      :title, :token, :type, :active, :api_key, :subdomain,
-      :room, :recipients, :project_url, :webhook,
-      :user_key, :device, :priority, :sound, :bamboo_url, :username, :password,
-      :build_key, :server
-    )
+    params.require(:service).permit(ALLOWED_PARAMS)
   end
 end

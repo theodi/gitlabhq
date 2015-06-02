@@ -1,12 +1,15 @@
-- if @has_authorized_projects
+= content_for :meta_tags do
+  - if current_user
+    = auto_discovery_link_tag(:atom, dashboard_url(format: :atom, private_token: current_user.private_token), title: "All activity")
+
+- if @projects.any?
+  = render 'shared/show_aside'
+
   .dashboard.row
     %section.activities.col-md-8
       = render 'activities'
-    %aside.side.col-md-4.left.responsive-side
+    %aside.col-md-4
       = render 'sidebar'
-
-  .fixed.sidebar-expand-button.hidden-lg.hidden-md
-    %i.fa.fa-list.fa-2x
 
 - else
   = render "zero_authorized_projects"

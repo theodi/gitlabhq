@@ -1,25 +1,29 @@
 module MergeRequestsHelper
   def new_mr_path_from_push_event(event)
     target_project = event.project.forked_from_project || event.project
-    new_project_merge_request_path(
+    new_namespace_project_merge_request_path(
+      event.project.namespace,
       event.project,
       new_mr_from_push_event(event, target_project)
     )
   end
 
   def new_mr_path_for_fork_from_push_event(event)
-    new_project_merge_request_path(
+    new_namespace_project_merge_request_path(
+      event.project.namespace,
       event.project,
       new_mr_from_push_event(event, event.project.forked_from_project)
     )
   end
 
   def new_mr_from_push_event(event, target_project)
-    return :merge_request => {
-      source_project_id: event.project.id,
-      target_project_id: target_project.id,
-      source_branch: event.branch_name,
-      target_branch: target_project.repository.root_ref
+    {
+      merge_request: {
+        source_project_id: event.project.id,
+        target_project_id: target_project.id,
+        source_branch: event.branch_name,
+        target_branch: target_project.repository.root_ref
+      }
     }
   end
 
@@ -31,7 +35,7 @@ module MergeRequestsHelper
   end
 
   def ci_build_details_path(merge_request)
-    merge_request.source_project.ci_service.build_page(merge_request.last_commit.sha)
+    merge_request.source_project.ci_service.build_page(merge_request.last_commit.sha, merge_request.source_branch)
   end
 
   def merge_path_description(merge_request, separator)
@@ -44,5 +48,17 @@ module MergeRequestsHelper
 
   def issues_sentence(issues)
     issues.map { |i| "##{i.iid}" }.to_sentence
+  end
+
+  def mr_change_branches_path(merge_request)
+    new_namespace_project_merge_request_path(
+      @project.namespace, @project,
+      merge_request: {
+        source_project_id: @merge_request.source_project_id,
+        target_project_id: @merge_request.target_project_id,
+        source_branch: @merge_request.source_branch,
+        target_branch: nil
+      }
+    )
   end
 end

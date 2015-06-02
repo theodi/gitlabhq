@@ -16,8 +16,8 @@ You can imagine GitLab as a physical office.
 They can be stored in a warehouse.
 This can be either a hard disk, or something more complex, such as a NFS filesystem;
 
-**NginX** acts like the front-desk.
-Users come to NginX and request actions to be done by workers in the office;
+**Nginx** acts like the front-desk.
+Users come to Nginx and request actions to be done by workers in the office;
 
 **The database** is a series of metal file cabinets with information on:
  - The goods in the warehouse (metadata, issues, merge requests etc);
@@ -54,7 +54,7 @@ To serve repositories over SSH there's an add-on application called gitlab-shell
 
 ![GitLab Diagram Overview](gitlab_diagram_overview.png)
 
-A typical install of GitLab will be on Ubuntu Linux or RHEL/CentOS. It uses Nginx or Apache as a web front end to proxypass the Unicorn web server. By default, communication between Unicorn and the front end is via a Unix domain socket but forwarding requests via TCP is also supported. The web front end accesses `/home/git/gitlab/public` bypassing the Unicorn server to serve static pages, uploads (e.g. avatar images or attachments), and precompiled assets. GitLab serves web pages and a [GitLab API](https://gitlab.com/gitlab-org/gitlab-ce/tree/master/doc/api) using the Unicorn web server. It uses Sidekiq as a job queue which, in turn, uses redis as a non-persistent database backend for job information, meta data, and incoming jobs.
+A typical install of GitLab will be on GNU/Linux. It uses Nginx or Apache as a web front end to proxypass the Unicorn web server. By default, communication between Unicorn and the front end is via a Unix domain socket but forwarding requests via TCP is also supported. The web front end accesses `/home/git/gitlab/public` bypassing the Unicorn server to serve static pages, uploads (e.g. avatar images or attachments), and precompiled assets. GitLab serves web pages and a [GitLab API](https://gitlab.com/gitlab-org/gitlab-ce/tree/master/doc/api) using the Unicorn web server. It uses Sidekiq as a job queue which, in turn, uses redis as a non-persistent database backend for job information, meta data, and incoming jobs.
 
 The GitLab web app uses MySQL or PostgreSQL for persistent database information (e.g. users, permissions, issues, other meta data). GitLab stores the bare git repositories it serves in `/home/git/repositories` by default. It also keeps default branch and hook information with the bare repository. `/home/git/gitlab-satellites` keeps checked out repositories when performing actions such as a merge request, editing files in the web interface, etc.
 
@@ -70,7 +70,7 @@ To summarize here's the [directory structure of the `git` user home directory](.
 
     ps aux | grep '^git'
 
-GitLab has several components to operate. As a system user (i.e. any user that is not the `git` user) it requires a persistent database (MySQL/PostreSQL) and redis database. It also uses Apache httpd or nginx to proxypass Unicorn. As the `git` user it starts Sidekiq and Unicorn (a simple ruby HTTP server running on port `8080` by default). Under the GitLab user there are normally 4 processes: `unicorn_rails master` (1 process), `unicorn_rails worker` (2 processes), `sidekiq` (1 process).
+GitLab has several components to operate. As a system user (i.e. any user that is not the `git` user) it requires a persistent database (MySQL/PostreSQL) and redis database. It also uses Apache httpd or Nginx to proxypass Unicorn. As the `git` user it starts Sidekiq and Unicorn (a simple ruby HTTP server running on port `8080` by default). Under the GitLab user there are normally 4 processes: `unicorn_rails master` (1 process), `unicorn_rails worker` (2 processes), `sidekiq` (1 process).
 
 ### Repository access
 
@@ -146,13 +146,13 @@ nginx
 
 Apache httpd
 
-- [Explanation of apache logs](http://httpd.apache.org/docs/2.2/logs.html).
+- [Explanation of Apache logs](http://httpd.apache.org/docs/2.2/logs.html).
 - `/var/log/apache2/` contains error and output logs (on Ubuntu).
 - `/var/log/httpd/` contains error and output logs (on RHEL).
 
 redis
 
-- `/var/log/redis/redis.log` there are also logrotated logs there.
+- `/var/log/redis/redis.log` there are also log-rotated logs there.
 
 PostgreSQL
 

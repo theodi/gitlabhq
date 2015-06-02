@@ -4,7 +4,7 @@ class Spinach::Features::ProjectServices < Spinach::FeatureSteps
   include SharedPaths
 
   step 'I visit project "Shop" services page' do
-    visit project_services_path(@project)
+    visit namespace_project_services_path(@project.namespace, @project)
   end
 
   step 'I should see list of available services' do
@@ -15,6 +15,9 @@ class Spinach::Features::ProjectServices < Spinach::FeatureSteps
     page.should have_content 'Assembla'
     page.should have_content 'Pushover'
     page.should have_content 'Atlassian Bamboo'
+    page.should have_content 'JetBrains TeamCity'
+    page.should have_content 'Asana'
+    page.should have_content 'Irker (IRC gateway)'
   end
 
   step 'I click gitlab-ci service link' do
@@ -101,6 +104,22 @@ class Spinach::Features::ProjectServices < Spinach::FeatureSteps
     find_field('Token').value.should == 'verySecret'
   end
 
+  step 'I click Asana service link' do
+    click_link 'Asana'
+  end
+
+  step 'I fill Asana settings' do
+    check 'Active'
+    fill_in 'Api key', with: 'verySecret'
+    fill_in 'Restrict to branch', with: 'master'
+    click_button 'Save'
+  end
+
+  step 'I should see Asana service settings saved' do
+    find_field('Api key').value.should == 'verySecret'
+    find_field('Restrict to branch').value.should == 'master'
+  end
+
   step 'I click email on push service link' do
     click_link 'Emails on push'
   end
@@ -112,6 +131,22 @@ class Spinach::Features::ProjectServices < Spinach::FeatureSteps
 
   step 'I should see email on push service settings saved' do
     find_field('Recipients').value.should == 'qa@company.name'
+  end
+
+  step 'I click Irker service link' do
+    click_link 'Irker (IRC gateway)'
+  end
+
+  step 'I fill Irker settings' do
+    check 'Active'
+    fill_in 'Recipients', with: 'irc://chat.freenode.net/#commits'
+    check 'Colorize messages'
+    click_button 'Save'
+  end
+
+  step 'I should see Irker service settings saved' do
+    find_field('Recipients').value.should == 'irc://chat.freenode.net/#commits'
+    find_field('Colorize messages').value.should == '1'
   end
 
   step 'I click Slack service link' do
@@ -166,6 +201,25 @@ class Spinach::Features::ProjectServices < Spinach::FeatureSteps
   step 'I should see Atlassian Bamboo CI service settings saved' do
     find_field('Bamboo url').value.should == 'http://bamboo.example.com'
     find_field('Build key').value.should == 'KEY'
+    find_field('Username').value.should == 'user'
+  end
+
+  step 'I click JetBrains TeamCity CI service link' do
+    click_link 'JetBrains TeamCity CI'
+  end
+
+  step 'I fill JetBrains TeamCity CI settings' do
+    check 'Active'
+    fill_in 'Teamcity url', with: 'http://teamcity.example.com'
+    fill_in 'Build type', with: 'GitlabTest_Build'
+    fill_in 'Username', with: 'user'
+    fill_in 'Password', with: 'verySecret'
+    click_button 'Save'
+  end
+
+  step 'I should see JetBrains TeamCity CI service settings saved' do
+    find_field('Teamcity url').value.should == 'http://teamcity.example.com'
+    find_field('Build type').value.should == 'GitlabTest_Build'
     find_field('Username').value.should == 'user'
   end
 end

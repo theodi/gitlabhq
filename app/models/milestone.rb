@@ -15,6 +15,7 @@
 
 class Milestone < ActiveRecord::Base
   include InternalId
+  include Sortable
 
   belongs_to :project
   has_many :issues
@@ -65,7 +66,7 @@ class Milestone < ActiveRecord::Base
   def percent_complete
     ((closed_items_count * 100) / total_items_count).abs
   rescue ZeroDivisionError
-    100
+    0
   end
 
   def expires_at

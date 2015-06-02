@@ -12,7 +12,7 @@ module Projects
     class TransferError < StandardError; end
 
     def execute
-      namespace_id = params[:namespace_id]
+      namespace_id = params[:new_namespace_id]
       namespace = Namespace.find_by(id: namespace_id)
 
       if allowed_transfer?(current_user, project, namespace)
@@ -42,6 +42,9 @@ module Projects
         # Apply new namespace id
         project.namespace = new_namespace
         project.save!
+
+        # Notifications
+        project.send_move_instructions
 
         # Move main repository
         unless gitlab_shell.mv_repository(old_path, new_path)

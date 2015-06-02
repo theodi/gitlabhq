@@ -1,8 +1,14 @@
-# Installation
+# Installation from source
 
 ## Consider the Omnibus package installation
 
-Since a manual installation is a lot of work and error prone we strongly recommend the fast and reliable [Omnibus package installation](https://about.gitlab.com/downloads/) (deb/rpm).
+Since an installation from source is a lot of work and error prone we strongly recommend the fast and reliable [Omnibus package installation](https://about.gitlab.com/downloads/) (deb/rpm).
+
+One reason the Omnibus package is more reliable is its use of Runit to restart any of the GitLab processes in case one crashes.
+On heavily used GitLab instances the memory usage of the Sidekiq background worker will grow over time.
+Omnibus packages solve this by [letting the Sidekiq terminate gracefully](http://doc.gitlab.com/ce/operations/sidekiq_memory_killer.html) if it uses too much memory.
+After this termination Runit will detect Sidekiq is not running and will start it.
+Since installations from source don't have Runit, Sidekiq can't be terminated and its memory usage will grow over time.
 
 ## Select Version to Install
 
@@ -22,7 +28,9 @@ This is the official installation guide to set up a production server. To set up
 
 The following steps have been known to work. Please **use caution when you deviate** from this guide. Make sure you don't violate any assumptions GitLab makes about its environment. For example many people run into permission problems because they changed the location of directories or run services as the wrong user.
 
-If you find a bug/error in this guide please **submit a merge request** following the [contributing guide](../../CONTRIBUTING.md).
+If you find a bug/error in this guide please **submit a merge request**
+following the
+[contributing guide](https://gitlab.com/gitlab-org/gitlab-ce/blob/master/CONTRIBUTING.md).
 
 ## Overview
 
@@ -54,7 +62,13 @@ up-to-date and install it.
 
 Install the required packages (needed to compile Ruby and native extensions to Ruby gems):
 
-    sudo apt-get install -y build-essential zlib1g-dev libyaml-dev libssl-dev libgdbm-dev libreadline-dev libncurses5-dev libffi-dev curl openssh-server redis-server checkinstall libxml2-dev libxslt-dev libcurl4-openssl-dev libicu-dev logrotate python-docutils pkg-config cmake libkrb5-dev
+    sudo apt-get install -y build-essential zlib1g-dev libyaml-dev libssl-dev libgdbm-dev libreadline-dev libncurses5-dev libffi-dev curl openssh-server redis-server checkinstall libxml2-dev libxslt-dev libcurl4-openssl-dev libicu-dev logrotate python-docutils pkg-config cmake nodejs
+
+If you want to use Kerberos for user authentication, then install libkrb5-dev:
+
+    sudo apt-get install libkrb5-dev
+
+**Note:** If you don't know what Kerberos is, you can assume you don't need it.
 
 Make sure you have the right version of Git installed
 
@@ -101,8 +115,8 @@ Remove the old Ruby 1.8 if present
 Download Ruby and compile it:
 
     mkdir /tmp/ruby && cd /tmp/ruby
-    curl -L --progress http://cache.ruby-lang.org/pub/ruby/2.1/ruby-2.1.5.tar.gz | tar xz
-    cd ruby-2.1.5
+    curl -L --progress http://cache.ruby-lang.org/pub/ruby/2.1/ruby-2.1.6.tar.gz | tar xz
+    cd ruby-2.1.6
     ./configure --disable-install-rdoc
     make
     sudo make install
@@ -139,7 +153,7 @@ We recommend using a PostgreSQL database. For MySQL check [MySQL setup guide](da
 
     # Try connecting to the new database with the new user
     sudo -u git -H psql -d gitlabhq_production
-    
+
     # Quit the database session
     gitlabhq_production> \q
 
@@ -181,9 +195,9 @@ We recommend using a PostgreSQL database. For MySQL check [MySQL setup guide](da
 ### Clone the Source
 
     # Clone GitLab repository
-    sudo -u git -H git clone https://gitlab.com/gitlab-org/gitlab-ce.git -b 7-6-stable gitlab
+    sudo -u git -H git clone https://gitlab.com/gitlab-org/gitlab-ce.git -b 7-11-stable gitlab
 
-**Note:** You can change `7-6-stable` to `master` if you want the *bleeding edge* version, but never install master on a production server!
+**Note:** You can change `7-11-stable` to `master` if you want the *bleeding edge* version, but never install master on a production server!
 
 ### Configure It
 
@@ -268,23 +282,27 @@ We recommend using a PostgreSQL database. For MySQL check [MySQL setup guide](da
 **Note:** As of bundler 1.5.2, you can invoke `bundle install -jN` (where `N` the number of your processor cores) and enjoy the parallel gems installation with measurable difference in completion time (~60% faster). Check the number of your cores with `nproc`. For more information check this [post](http://robots.thoughtbot.com/parallel-gem-installing-using-bundler). First make sure you have bundler >= 1.5.2 (run `bundle -v`) as it addresses some [issues](https://devcenter.heroku.com/changelog-items/411) that were [fixed](https://github.com/bundler/bundler/pull/2817) in 1.5.2.
 
     # For PostgreSQL (note, the option says "without ... mysql")
-    sudo -u git -H bundle install --deployment --without development test mysql aws
+    sudo -u git -H bundle install --deployment --without development test mysql aws kerberos
 
     # Or if you use MySQL (note, the option says "without ... postgres")
-    sudo -u git -H bundle install --deployment --without development test postgres aws
+    sudo -u git -H bundle install --deployment --without development test postgres aws kerberos
+
+**Note:** If you want to use Kerberos for user authentication, then omit `kerberos` in the `--without` option above.
 
 ### Install GitLab Shell
 
 GitLab Shell is an SSH access and repository management software developed specially for GitLab.
 
     # Run the installation task for gitlab-shell (replace `REDIS_URL` if needed):
-    sudo -u git -H bundle exec rake gitlab:shell:install[v2.4.0] REDIS_URL=unix:/var/run/redis/redis.sock RAILS_ENV=production
+    sudo -u git -H bundle exec rake gitlab:shell:install[v2.6.3] REDIS_URL=unix:/var/run/redis/redis.sock RAILS_ENV=production
 
     # By default, the gitlab-shell config is generated from your main GitLab config.
     # You can review (and modify) the gitlab-shell config as follows:
     sudo -u git -H editor /home/git/gitlab-shell/config.yml
 
 **Note:** If you want to use HTTPS, see [Using HTTPS](#using-https) for the additional steps.
+
+**Note:** Make sure your hostname can be resolved on the machine itself by either a proper DNS record or an additional line in /etc/hosts ("127.0.0.1  hostname"). This might be necessary for example if you set up gitlab behind a reverse proxy. If the hostname cannot be resolved, the final installation check will fail with "Check GitLab API access: FAILED. code: 401" and pushing commits will be rejected with "[remote rejected] master -> master (hook declined)".
 
 ### Initialize Database and Activate Advanced Features
 
@@ -294,9 +312,9 @@ GitLab Shell is an SSH access and repository management software developed speci
 
     # When done you see 'Administrator account created:'
 
-**Note:** You can set the Administrator password by supplying it in environmental variable `GITLAB_ROOT_PASSWORD`, eg.:
+**Note:** You can set the Administrator/root password by supplying it in environmental variable `GITLAB_ROOT_PASSWORD` as seen below. If you don't set the password (and it is set to the default one) please wait with exposing GitLab to the public internet until the installation is done and you've logged into the server the first time. During the first login you'll be forced to change the default password.
 
-    sudo -u git -H bundle exec rake gitlab:setup RAILS_ENV=production GITLAB_ROOT_PASSWORD=newpassword
+    sudo -u git -H bundle exec rake gitlab:setup RAILS_ENV=production GITLAB_ROOT_PASSWORD=yourpassword
 
 ### Install Init Script
 
@@ -388,7 +406,7 @@ Visit YOUR_SERVER in your web browser for your first GitLab login. The setup has
     root
     5iveL!fe
 
-**Important Note:** Please login to the server before exposing it to the public internet. On login you'll be prompted to change the password.
+**Important Note:** On login you'll be prompted to change the password.
 
 **Enjoy!**
 
@@ -457,4 +475,4 @@ You can configure LDAP authentication in `config/gitlab.yml`. Please restart Git
 
 ### Using Custom Omniauth Providers
 
-See the [omniauth integration document](doc/integration/omniauth.md)
+See the [omniauth integration document](../integration/omniauth.md)

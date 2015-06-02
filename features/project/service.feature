@@ -61,8 +61,26 @@ Feature: Project Services
     And I fill email on push settings
     Then I should see email on push service settings saved
 
+  Scenario: Activate Irker (IRC Gateway) service
+    When I visit project "Shop" services page
+    And I click Irker service link
+    And I fill Irker settings
+    Then I should see Irker service settings saved
+
   Scenario: Activate Atlassian Bamboo CI service
     When I visit project "Shop" services page
     And I click Atlassian Bamboo CI service link
     And I fill Atlassian Bamboo CI settings
     Then I should see Atlassian Bamboo CI service settings saved
+
+  Scenario: Activate jetBrains TeamCity CI service
+    When I visit project "Shop" services page
+    And I click jetBrains TeamCity CI service link
+    And I fill jetBrains TeamCity CI settings
+    Then I should see jetBrains TeamCity CI service settings saved
+
+  Scenario: Activate Asana service
+    When I visit project "Shop" services page
+    And I click Asana service link
+    And I fill Asana settings
+    Then I should see Asana service settings saved

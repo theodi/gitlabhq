@@ -24,7 +24,7 @@
 
 .slead {
   color: #666;
-  font-size: 14px;
+  font-size: 15px;
   margin-bottom: 12px;
   font-weight: normal;
   line-height: 24px;
@@ -54,9 +54,14 @@ pre {
   text-shadow: none;
 }
 
+.dropdown-menu-align-right {
+  left: auto;
+  right: 0px;
+}
+
 .dropdown-menu > li > a:hover,
 .dropdown-menu > li > a:focus {
-  background: $bg_primary;
+  background: $gl-primary;
   color: #FFF
 }
 
@@ -66,7 +71,7 @@ pre {
 
 /** FLASH message **/
 .author_link {
-  color: $link_color;
+  color: $gl-link-color;
 }
 
 .help li { color:$style_color; }
@@ -162,7 +167,7 @@ li.note {
   background-color: inherit;
 }
 
-.team_member_show {
+.project_member_show {
   td:first-child {
     color: #aaa;
   }
@@ -207,23 +212,15 @@ li.note {
   }
 }
 
-.no-ssh-key-message {
-  padding: 10px 0;
-  background: #C67;
-  margin: 0;
-  color: #FFF;
-  margin-top: -1px;
+.browser-alert {
+  padding: 10px;
   text-align: center;
-
+  background: #C67;
+  color: #fff;
+  font-weight: bold;
   a {
     color: #fff;
     text-decoration: underline;
-  }
-
-  .links-xs {
-    text-align: center;
-    font-size: 16px;
-    padding: 5px;
   }
 }
 
@@ -249,7 +246,7 @@ li.note {
 
 .milestone {
   &.milestone-closed {
-    background: #eee;
+    background: #f9f9f9;
   }
   .progress {
     margin-bottom: 0;
@@ -281,10 +278,6 @@ img.emoji {
   height: 220px;
 }
 
-.navless-container {
-  margin-top: 20px;
-}
-
 .description-block {
   @extend .light-well;
   @extend .light;
@@ -300,23 +293,17 @@ table {
 
 .dashboard-intro-icon {
   float: left;
+  text-align: center;
   font-size: 32px;
   color: #AAA;
-  padding: 5px 0;
-  width: 50px;
-  min-height: 100px;
+  width: 60px;
 }
 
-.broadcast-message {
-  padding: 10px;
-  text-align: center;
-  background: #555;
-  color: #BBB;
-}
-
-.broadcast-message-preview {
-  @extend .broadcast-message;
-  margin-bottom: 20px;
+.dashboard-intro-text {
+  display: inline-block;
+  margin-left: -60px;
+  padding-left: 60px;
+  width: 100%;
 }
 
 .btn-sign-in {
@@ -334,24 +321,46 @@ table {
   margin-bottom: 9px;
 }
 
-.footer-links a {
-  margin-right: 15px;
+.wiki .code {
+  overflow-x: auto;
+}
+
+.footer-links {
+  margin-bottom: 20px;
+  a {
+    margin-right: 15px;
+  }
 }
 
 .search_box {
-  position: relative;
-  padding: 30px;
+  @extend .well;
   text-align: center;
-  background-color: #F9F9F9;
-  border: 1px solid #DDDDDD;
-  border-radius: 0px;
-}
-
-.search_glyph {
-  color: #555;
-  font-size: 42px;
 }
 
 .task-status {
   margin-left: 10px;
+}
+
+#nprogress .spinner {
+  top: 15px !important;
+  right: 10px !important;
+}
+
+.header-with-avatar {
+  h3 {
+    margin: 0;
+    font-weight: bold;
+  }
+
+  .username {
+    font-size: 18px;
+    color: #666;
+    margin-top: 8px;
+  }
+
+  .description {
+    font-size: 16px;
+    color: #666;
+    margin-top: 8px;
+  }
 }

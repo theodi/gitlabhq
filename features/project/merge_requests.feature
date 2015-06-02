@@ -10,8 +10,8 @@ Feature: Project Merge Requests
     Then I should see "Bug NS-04" in merge requests
     And I should not see "Feature NS-03" in merge requests
 
-  Scenario: I should see closed merge requests
-    Given I click link "Closed"
+  Scenario: I should see rejected merge requests
+    Given I click link "Rejected"
     Then I should see "Feature NS-03" in merge requests
     And I should not see "Bug NS-04" in merge requests
 
@@ -96,16 +96,6 @@ Feature: Project Merge Requests
     And I leave a comment with a header containing "Comment with a header"
     Then The comment with the header should not have an ID
 
-  Scenario: Merge request description should render task checkboxes
-    Given project "Shop" has "MR-task-open" open MR with task markdown
-    When I visit merge request page "MR-task-open"
-    Then I should see task checkboxes in the description
-
-  Scenario: Merge request notes should not render task checkboxes
-    Given project "Shop" has "MR-task-open" open MR with task markdown
-    When I visit merge request page "MR-task-open"
-    Then I should not see task checkboxes in the comment
-
   # Toggling inline comments
 
   @javascript
@@ -166,27 +156,12 @@ Feature: Project Merge Requests
     And I click Side-by-side Diff tab
     Then I should see comments on the side-by-side diff page
 
-  # Task status in issues list
-
-  Scenario: Merge requests list should display task status
-    Given project "Shop" has "MR-task-open" open MR with task markdown
-    When I visit project "Shop" merge requests page
-    Then I should see the task status for the Taskable
-
-  # Toggling task items
-
   @javascript
-  Scenario: Task checkboxes should be enabled for an open merge request
-    Given project "Shop" has "MR-task-open" open MR with task markdown
-    When I visit merge request page "MR-task-open"
-    Then Task checkboxes should be enabled
-
-  @javascript
-  Scenario: Task checkboxes should be disabled for a closed merge request
-    Given project "Shop" has "MR-task-open" open MR with task markdown
-    And I visit merge request page "MR-task-open"
-    And I click link "Close"
-    Then Task checkboxes should be disabled
+  Scenario: I view diffs on a merge request
+    Given project "Shop" have "Bug NS-05" open merge request with diffs inside
+    And I visit merge request page "Bug NS-05"
+    And I click on the Changes tab via Javascript
+    Then I should see the proper Inline and Side-by-side links
 
   # Description preview
 
@@ -218,3 +193,25 @@ Feature: Project Merge Requests
     And I click link "Edit" for the merge request
     And I preview a description text like "Bug fixed :smile:"
     Then I should see the Markdown write tab
+
+  @javascript
+  Scenario: I search merge request
+    Given I click link "All"
+    When I fill in merge request search with "Fe"
+    Then I should see "Feature NS-03" in merge requests
+    And I should not see "Bug NS-04" in merge requests
+
+  @javascript
+  Scenario: I can unsubscribe from merge request
+    Given I visit merge request page "Bug NS-04"
+    Then I should see that I am subscribed
+    When I click button "Unsubscribe"
+    Then I should see that I am unsubscribed
+
+  @javascript
+  Scenario: I can change the target branch
+    Given I visit merge request page "Bug NS-04"
+    And I click link "Edit" for the merge request
+    When I click the "Target branch" dropdown
+    And I select a new target branch
+    Then I should see new target branch changes

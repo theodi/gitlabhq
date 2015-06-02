@@ -24,12 +24,22 @@
 #  import_status          :string(255)
 #  repository_size        :float            default(0.0)
 #  star_count             :integer          default(0), not null
+#  import_type            :string(255)
+#  import_source          :string(255)
+#  avatar                 :string(255)
 #
 
+require 'carrierwave/orm/activerecord'
+require 'file_size_validator'
+
 class Project < ActiveRecord::Base
+  include Gitlab::ConfigHelper
   include Gitlab::ShellAdapter
   include Gitlab::VisibilityLevel
-  include Gitlab::ConfigHelper
+  include Rails.application.routes.url_helpers
+  include Referable
+  include Sortable
+
   extend Gitlab::ConfigHelper
   extend Enumerize
 
@@ -41,14 +51,20 @@ class Project < ActiveRecord::Base
   default_value_for :wall_enabled, false
   default_value_for :snippets_enabled, gitlab_config_features.snippets
 
+  # set last_activity_at to the same as created_at
+  after_create :set_last_activity_at
+  def set_last_activity_at
+    update_column(:last_activity_at, self.created_at)
+  end
+
   ActsAsTaggableOn.strict_case_match = true
   acts_as_taggable_on :tags
 
   attr_accessor :new_default_branch
 
   # Relations
-  belongs_to :creator,      foreign_key: "creator_id", class_name: "User"
-  belongs_to :group, -> { where(type: Group) }, foreign_key: "namespace_id"
+  belongs_to :creator, foreign_key: 'creator_id', class_name: 'User'
+  belongs_to :group, -> { where(type: Group) }, foreign_key: 'namespace_id'
   belongs_to :namespace
 
   has_one :last_event, -> {order 'events.created_at DESC'}, class_name: 'Event', foreign_key: 'project_id'
@@ -58,29 +74,39 @@ class Project < ActiveRecord::Base
   has_one :gitlab_ci_service, dependent: :destroy
   has_one :campfire_service, dependent: :destroy
   has_one :emails_on_push_service, dependent: :destroy
+  has_one :irker_service, dependent: :destroy
   has_one :pivotaltracker_service, dependent: :destroy
   has_one :hipchat_service, dependent: :destroy
   has_one :flowdock_service, dependent: :destroy
   has_one :assembla_service, dependent: :destroy
+  has_one :asana_service, dependent: :destroy
   has_one :gemnasium_service, dependent: :destroy
   has_one :slack_service, dependent: :destroy
-  has_one :buildbox_service, dependent: :destroy
+  has_one :buildkite_service, dependent: :destroy
   has_one :bamboo_service, dependent: :destroy
+  has_one :teamcity_service, dependent: :destroy
   has_one :pushover_service, dependent: :destroy
+  has_one :jira_service, dependent: :destroy
+  has_one :redmine_service, dependent: :destroy
+  has_one :custom_issue_tracker_service, dependent: :destroy
+  has_one :gitlab_issue_tracker_service, dependent: :destroy
+  has_one :external_wiki_service, dependent: :destroy
+
   has_one :forked_project_link, dependent: :destroy, foreign_key: "forked_to_project_id"
+
   has_one :forked_from_project, through: :forked_project_link
   # Merge Requests for target project should be removed with it
-  has_many :merge_requests,     dependent: :destroy, foreign_key: "target_project_id"
+  has_many :merge_requests,     dependent: :destroy, foreign_key: 'target_project_id'
   # Merge requests from source project should be kept when source project was removed
-  has_many :fork_merge_requests, foreign_key: "source_project_id", class_name: MergeRequest
-  has_many :issues, -> { order 'issues.state DESC, issues.created_at DESC' }, dependent: :destroy
+  has_many :fork_merge_requests, foreign_key: 'source_project_id', class_name: MergeRequest
+  has_many :issues,             dependent: :destroy
   has_many :labels,             dependent: :destroy
   has_many :services,           dependent: :destroy
   has_many :events,             dependent: :destroy
   has_many :milestones,         dependent: :destroy
   has_many :notes,              dependent: :destroy
-  has_many :snippets,           dependent: :destroy, class_name: "ProjectSnippet"
-  has_many :hooks,              dependent: :destroy, class_name: "ProjectHook"
+  has_many :snippets,           dependent: :destroy, class_name: 'ProjectSnippet'
+  has_many :hooks,              dependent: :destroy, class_name: 'ProjectHook'
   has_many :protected_branches, dependent: :destroy
   has_many :project_members, dependent: :destroy, as: :source, class_name: 'ProjectMember'
   has_many :users, through: :project_members
@@ -89,50 +115,56 @@ class Project < ActiveRecord::Base
   has_many :users_star_projects, dependent: :destroy
   has_many :starrers, through: :users_star_projects, source: :user
 
+  has_one :import_data, dependent: :destroy, class_name: "ProjectImportData"
+
   delegate :name, to: :owner, allow_nil: true, prefix: true
   delegate :members, to: :team, prefix: true
 
   # Validations
   validates :creator, presence: true, on: :create
   validates :description, length: { maximum: 2000 }, allow_blank: true
-  validates :name, presence: true, length: { within: 0..255 },
-            format: { with: Gitlab::Regex.project_name_regex,
-                      message: Gitlab::Regex.project_regex_message }
-  validates :path, presence: true, length: { within: 0..255 },
-            exclusion: { in: Gitlab::Blacklist.path },
-            format: { with: Gitlab::Regex.path_regex,
-                      message: Gitlab::Regex.path_regex_message }
+  validates :name,
+    presence: true,
+    length: { within: 0..255 },
+    format: { with: Gitlab::Regex.project_name_regex,
+              message: Gitlab::Regex.project_name_regex_message }
+  validates :path,
+    presence: true,
+    length: { within: 0..255 },
+    format: { with: Gitlab::Regex.project_path_regex,
+              message: Gitlab::Regex.project_path_regex_message }
   validates :issues_enabled, :merge_requests_enabled,
             :wiki_enabled, inclusion: { in: [true, false] }
-  validates :visibility_level,
-    exclusion: { in: gitlab_config.restricted_visibility_levels },
-    if: -> { gitlab_config.restricted_visibility_levels.any? }
   validates :issues_tracker_id, length: { maximum: 255 }, allow_blank: true
   validates :namespace, presence: true
   validates_uniqueness_of :name, scope: :namespace_id
   validates_uniqueness_of :path, scope: :namespace_id
   validates :import_url,
-    format: { with: URI::regexp(%w(git http https)), message: "should be a valid url" },
+    format: { with: /\A#{URI.regexp(%w(ssh git http https))}\z/, message: 'should be a valid url' },
     if: :import?
   validates :star_count, numericality: { greater_than_or_equal_to: 0 }
   validate :check_limit, on: :create
+  validate :avatar_type,
+    if: ->(project) { project.avatar.present? && project.avatar_changed? }
+  validates :avatar, file_size: { maximum: 200.kilobytes.to_i }
+
+  mount_uploader :avatar, AvatarUploader
 
   # Scopes
-  scope :without_user, ->(user)  { where("projects.id NOT IN (:ids)", ids: user.authorized_projects.map(&:id) ) }
-  scope :without_team, ->(team) { team.projects.present? ? where("projects.id NOT IN (:ids)", ids: team.projects.map(&:id)) : scoped  }
-  scope :not_in_group, ->(group) { where("projects.id NOT IN (:ids)", ids: group.project_ids ) }
-  scope :in_team, ->(team) { where("projects.id IN (:ids)", ids: team.projects.map(&:id)) }
+  scope :sorted_by_activity, -> { reorder(last_activity_at: :desc) }
+  scope :sorted_by_stars, -> { reorder('projects.star_count DESC') }
+  scope :sorted_by_names, -> { joins(:namespace).reorder('namespaces.name ASC, projects.name ASC') }
+
+  scope :without_user, ->(user)  { where('projects.id NOT IN (:ids)', ids: user.authorized_projects.map(&:id) ) }
+  scope :without_team, ->(team) { team.projects.present? ? where('projects.id NOT IN (:ids)', ids: team.projects.map(&:id)) : scoped  }
+  scope :not_in_group, ->(group) { where('projects.id NOT IN (:ids)', ids: group.project_ids ) }
   scope :in_namespace, ->(namespace) { where(namespace_id: namespace.id) }
   scope :in_group_namespace, -> { joins(:group) }
-  scope :sorted_by_activity, -> { reorder("projects.last_activity_at DESC") }
-  scope :sorted_by_stars, -> { reorder("projects.star_count DESC") }
   scope :personal, ->(user) { where(namespace_id: user.namespace_id) }
-  scope :joined, ->(user) { where("namespace_id != ?", user.namespace_id) }
+  scope :joined, ->(user) { where('namespace_id != ?', user.namespace_id) }
   scope :public_only, -> { where(visibility_level: Project::PUBLIC) }
   scope :public_and_internal_only, -> { where(visibility_level: Project.public_and_internal_levels) }
   scope :non_archived, -> { where(archived: false) }
-
-  enumerize :issues_tracker, in: (Gitlab.config.issues_tracker.keys).append(:gitlab), default: :gitlab
 
   state_machine :import_status, initial: :none do
     event :import_start do
@@ -140,22 +172,23 @@ class Project < ActiveRecord::Base
     end
 
     event :import_finish do
-      transition :started => :finished
+      transition started: :finished
     end
 
     event :import_fail do
-      transition :started => :failed
+      transition started: :failed
     end
 
     event :import_retry do
-      transition :failed => :started
+      transition failed: :started
     end
 
     state :started
     state :finished
     state :failed
 
-    after_transition any => :started, :do => :add_import_job
+    after_transition any => :started, do: :add_import_job
+    after_transition any => :finished, do: :clear_import_data
   end
 
   class << self
@@ -169,7 +202,7 @@ class Project < ActiveRecord::Base
 
     def publicish(user)
       visibility_levels = [Project::PUBLIC]
-      visibility_levels += [Project::INTERNAL] if user
+      visibility_levels << Project::INTERNAL if user
       where(visibility_level: visibility_levels)
     end
 
@@ -178,21 +211,26 @@ class Project < ActiveRecord::Base
     end
 
     def active
-      joins(:issues, :notes, :merge_requests).order("issues.created_at, notes.created_at, merge_requests.created_at DESC")
+      joins(:issues, :notes, :merge_requests).order('issues.created_at, notes.created_at, merge_requests.created_at DESC')
     end
 
     def search(query)
-      joins(:namespace).where("projects.archived = ?", false).where("projects.name LIKE :query OR projects.path LIKE :query OR namespaces.name LIKE :query OR projects.description LIKE :query", query: "%#{query}%")
+      joins(:namespace).where('projects.archived = ?', false).
+        where('LOWER(projects.name) LIKE :query OR
+              LOWER(projects.path) LIKE :query OR
+              LOWER(namespaces.name) LIKE :query OR
+              LOWER(projects.description) LIKE :query',
+              query: "%#{query.try(:downcase)}%")
     end
 
     def search_by_title(query)
-      where("projects.archived = ?", false).where("LOWER(projects.name) LIKE :query", query: "%#{query.downcase}%")
+      where('projects.archived = ?', false).where('LOWER(projects.name) LIKE :query', query: "%#{query.downcase}%")
     end
 
     def find_with_namespace(id)
-      return nil unless id.include?("/")
+      return nil unless id.include?('/')
 
-      id = id.split("/")
+      id = id.split('/')
       namespace = Namespace.find_by(path: id.first)
       return nil unless namespace
 
@@ -204,14 +242,16 @@ class Project < ActiveRecord::Base
     end
 
     def sort(method)
-      case method.to_s
-      when 'newest' then reorder('projects.created_at DESC')
-      when 'oldest' then reorder('projects.created_at ASC')
-      when 'recently_updated' then reorder('projects.updated_at DESC')
-      when 'last_updated' then reorder('projects.updated_at ASC')
-      when 'largest_repository' then reorder('projects.repository_size DESC')
-      else reorder("namespaces.path, projects.name ASC")
+      if method == 'repository_size_desc'
+        reorder(repository_size: :desc, id: :desc)
+      else
+        order_by(method)
       end
+    end
+
+    def reference_pattern
+      name_pattern = Gitlab::Regex::NAMESPACE_REGEX_STR
+      %r{(?<project>#{name_pattern}/#{name_pattern})}
     end
   end
 
@@ -220,7 +260,11 @@ class Project < ActiveRecord::Base
   end
 
   def repository
-    @repository ||= Repository.new(path_with_namespace)
+    @repository ||= Repository.new(path_with_namespace, nil, self)
+  end
+
+  def commit(id = 'HEAD')
+    repository.commit(id)
   end
 
   def saved?
@@ -229,6 +273,10 @@ class Project < ActiveRecord::Base
 
   def add_import_job
     RepositoryImportWorker.perform_in(2.seconds, id)
+  end
+
+  def clear_import_data
+    self.import_data.destroy if self.import_data
   end
 
   def import?
@@ -260,19 +308,23 @@ class Project < ActiveRecord::Base
   end
 
   def to_param
-    namespace.path + "/" + path
+    path
+  end
+
+  def to_reference(_from_project = nil)
+    path_with_namespace
   end
 
   def web_url
-    [gitlab_config.url, path_with_namespace].join("/")
+    [gitlab_config.url, path_with_namespace].join('/')
   end
 
   def web_url_without_protocol
-    web_url.split("://")[1]
+    web_url.split('://')[1]
   end
 
   def build_commit_note(commit)
-    notes.new(commit_id: commit.id, noteable_type: "Commit")
+    notes.new(commit_id: commit.id, noteable_type: 'Commit')
   end
 
   def last_activity
@@ -287,34 +339,69 @@ class Project < ActiveRecord::Base
     self.id
   end
 
-  def issue_exists?(issue_id)
-    if used_default_issues_tracker?
-      self.issues.where(iid: issue_id).first.present?
+  def get_issue(issue_id)
+    if default_issues_tracker?
+      issues.find_by(iid: issue_id)
     else
-      true
+      ExternalIssue.new(issue_id, self)
     end
   end
 
-  def used_default_issues_tracker?
-    self.issues_tracker == Project.issues_tracker.default_value
+  def issue_exists?(issue_id)
+    get_issue(issue_id)
+  end
+
+  def default_issue_tracker
+    gitlab_issue_tracker_service || create_gitlab_issue_tracker_service
+  end
+
+  def issues_tracker
+    if external_issue_tracker
+      external_issue_tracker
+    else
+      default_issue_tracker
+    end
+  end
+
+  def default_issues_tracker?
+    !external_issue_tracker
+  end
+
+  def external_issues_trackers
+    services.select(&:issue_tracker?).reject(&:default?)
+  end
+
+  def external_issue_tracker
+    @external_issues_tracker ||= external_issues_trackers.select(&:activated?).first
   end
 
   def can_have_issues_tracker_id?
-    self.issues_enabled && !self.used_default_issues_tracker?
+    self.issues_enabled && !self.default_issues_tracker?
   end
 
   def build_missing_services
-    available_services_names.each do |service_name|
-      service = services.find { |service| service.to_param == service_name }
+    services_templates = Service.where(template: true)
+
+    Service.available_services_names.each do |service_name|
+      service = find_service(services, service_name)
 
       # If service is available but missing in db
-      # we should create an instance. Ex `create_gitlab_ci_service`
-      service = self.send :"create_#{service_name}_service" if service.nil?
+      if service.nil?
+        # We should check if template for the service exists
+        template = find_service(services_templates, service_name)
+
+        if template.nil?
+          # If no template, we should create an instance. Ex `create_gitlab_ci_service`
+          service = self.send :"create_#{service_name}_service"
+        else
+          Service.create_from_template(self.id, template)
+        end
+      end
     end
   end
 
-  def available_services_names
-    %w(gitlab_ci campfire hipchat pivotaltracker flowdock assembla emails_on_push gemnasium slack pushover buildbox bamboo)
+  def find_service(list, name)
+    list.find { |service| service.to_param == name }
   end
 
   def gitlab_ci?
@@ -327,6 +414,27 @@ class Project < ActiveRecord::Base
 
   def ci_service
     @ci_service ||= ci_services.select(&:activated?).first
+  end
+
+  def avatar_type
+    unless self.avatar.image?
+      self.errors.add :avatar, 'only images allowed'
+    end
+  end
+
+  def avatar_in_git
+    @avatar_file ||= 'logo.png' if repository.blob_at_branch('master', 'logo.png')
+    @avatar_file ||= 'logo.jpg' if repository.blob_at_branch('master', 'logo.jpg')
+    @avatar_file ||= 'logo.gif' if repository.blob_at_branch('master', 'logo.gif')
+    @avatar_file
+  end
+
+  def avatar_url
+    if avatar.present?
+      [gitlab_config.url, avatar.url].join
+    elsif avatar_in_git
+      [gitlab_config.url, namespace_project_avatar_path(namespace, self)].join
+    end
   end
 
   # For compatibility with old code
@@ -355,20 +463,20 @@ class Project < ActiveRecord::Base
     end
   end
 
-  def team_member_by_name_or_email(name = nil, email = nil)
-    user = users.where("name like ? or email like ?", name, email).first
+  def project_member_by_name_or_email(name = nil, email = nil)
+    user = users.where('name like ? or email like ?', name, email).first
     project_members.where(user: user) if user
   end
 
   # Get Team Member record by user id
-  def team_member_by_id(user_id)
+  def project_member_by_id(user_id)
     project_members.find_by(user_id: user_id)
   end
 
   def name_with_namespace
     @name_with_namespace ||= begin
                                if namespace
-                                 namespace.human_name + " / " + name
+                                 namespace.human_name + ' / ' + name
                                else
                                  name
                                end
@@ -385,12 +493,13 @@ class Project < ActiveRecord::Base
 
   def execute_hooks(data, hooks_scope = :push_hooks)
     hooks.send(hooks_scope).each do |hook|
-      hook.async_execute(data)
+      hook.async_execute(data, hooks_scope.to_s)
     end
   end
 
-  def execute_services(data)
-    services.select(&:active).each do |service|
+  def execute_services(data, hooks_scope = :push_hooks)
+    # Call only service hooks that are active for this scope
+    services.send(hooks_scope).each do |service|
       service.async_execute(data)
     end
   end
@@ -403,7 +512,7 @@ class Project < ActiveRecord::Base
   def valid_repo?
     repository.exists?
   rescue
-    errors.add(:path, "Invalid repository path")
+    errors.add(:path, 'Invalid repository path')
     false
   end
 
@@ -462,12 +571,16 @@ class Project < ActiveRecord::Base
   end
 
   def http_url_to_repo
-    [gitlab_config.url, "/", path_with_namespace, ".git"].join('')
+    [gitlab_config.url, '/', path_with_namespace, '.git'].join('')
   end
 
   # Check if current branch name is marked as protected in the system
   def protected_branch?(branch_name)
     protected_branches_names.include?(branch_name)
+  end
+
+  def developers_can_push_to_protected_branch?(branch_name)
+    protected_branches.any? { |pb| pb.name == branch_name && pb.developers_can_push }
   end
 
   def forked?
@@ -521,6 +634,7 @@ class Project < ActiveRecord::Base
   # Since we do cache @event we need to reset cache in special cases:
   # * when project was moved
   # * when project was renamed
+  # * when the project avatar changes
   # Events cache stored like  events/23-20130109142513.
   # The cache key includes updated_at timestamp.
   # Thus it will automatically generate a new fragment
@@ -582,11 +696,21 @@ class Project < ActiveRecord::Base
   end
 
   def create_repository
-    if gitlab_shell.add_repository(path_with_namespace)
-      true
+    if forked?
+      if gitlab_shell.fork_repository(forked_from_project.path_with_namespace, self.namespace.path)
+        ensure_satellite_exists
+        true
+      else
+        errors.add(:base, 'Failed to fork repository')
+        false
+      end
     else
-      errors.add(:base, "Failed to create repository")
-      false
+      if gitlab_shell.add_repository(path_with_namespace)
+        true
+      else
+        errors.add(:base, 'Failed to create repository')
+        false
+      end
     end
   end
 
@@ -598,7 +722,7 @@ class Project < ActiveRecord::Base
     ProjectWiki.new(self, self.owner).wiki
     true
   rescue ProjectWiki::CouldNotCreateWikiError => ex
-    errors.add(:base, "Failed create wiki")
+    errors.add(:base, 'Failed create wiki')
     false
   end
 end

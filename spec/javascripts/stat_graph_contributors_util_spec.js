@@ -1,3 +1,5 @@
+//= require stat_graph_contributors_util
+
 describe("ContributorsStatGraphUtil", function () {
 
   describe("#parse_log", function () {
@@ -116,9 +118,11 @@ describe("ContributorsStatGraphUtil", function () {
   describe("#add_author", function () {
     it("adds an author field to the collection", function () {
       var fake_author = { author_name: "Author", author_email: 'fake@email.com' }
-      var fake_collection = {}
-      ContributorsStatGraphUtil.add_author(fake_author, fake_collection)
-      expect(fake_collection[fake_author.author_name].author_name).toEqual("Author")
+      var fake_author_collection = {}
+      var fake_email_collection = {}
+      ContributorsStatGraphUtil.add_author(fake_author, fake_author_collection, fake_email_collection)
+      expect(fake_author_collection[fake_author.author_name].author_name).toEqual("Author")
+      expect(fake_email_collection[fake_author.author_email].author_name).toEqual("Author")
     })
   })
 

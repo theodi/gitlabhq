@@ -1,6 +1,7 @@
 class Spinach::Features::DashboardMergeRequests < Spinach::FeatureSteps
   include SharedAuthentication
   include SharedPaths
+  include Select2Helper
 
   step 'I should see merge requests assigned to me' do
     should_see(assigned_merge_request)
@@ -39,15 +40,13 @@ class Spinach::Features::DashboardMergeRequests < Spinach::FeatureSteps
   end
 
   step 'I click "Authored by me" link' do
-    within ".scope-filter" do
-      click_link 'Created by me'
-    end
+    select2(current_user.id, from: "#author_id")
+    select2(nil, from: "#assignee_id")
   end
 
   step 'I click "All" link' do
-    within ".scope-filter" do
-      click_link "Everyone's"
-    end
+    select2(nil, from: "#author_id")
+    select2(nil, from: "#assignee_id")
   end
 
   def should_see(merge_request)

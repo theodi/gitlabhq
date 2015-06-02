@@ -2,22 +2,25 @@ module SubmoduleHelper
   include Gitlab::ShellAdapter
 
   # links to files listing for submodule if submodule is a project on this server
-  def submodule_links(submodule_item)
-    url = @repository.submodule_url_for(@ref, submodule_item.path)
+  def submodule_links(submodule_item, ref = nil, repository = @repository)
+    url = repository.submodule_url_for(ref, submodule_item.path)
 
-    return url, nil unless url =~ /([^\/:]+\/[^\/]+\.git)\Z/
+    return url, nil unless url =~ /([^\/:]+)\/([^\/]+\.git)\Z/
 
-    project = $1
+    namespace = $1
+    project = $2
     project.chomp!('.git')
 
-    if self_url?(url, project)
-      return project_path(project), project_tree_path(project, submodule_item.id)
+    if self_url?(url, namespace, project)
+      return namespace_project_path(namespace, project),
+        namespace_project_tree_path(namespace, project,
+                                    submodule_item.id)
     elsif relative_self_url?(url)
       relative_self_links(url, submodule_item.id)
     elsif github_dot_com_url?(url)
-      standard_links('github.com', project, submodule_item.id)
+      standard_links('github.com', namespace, project, submodule_item.id)
     elsif gitlab_dot_com_url?(url)
-      standard_links('gitlab.com', project, submodule_item.id)
+      standard_links('gitlab.com', namespace, project, submodule_item.id)
     else
       return url, nil
     end
@@ -33,27 +36,39 @@ module SubmoduleHelper
     url =~ /gitlab\.com[\/:][^\/]+\/[^\/]+\Z/
   end
 
-  def self_url?(url, project)
-    return true if url == [ Gitlab.config.gitlab.url, '/', project, '.git' ].join('')
-    url == gitlab_shell.url_to_repo(project)
+  def self_url?(url, namespace, project)
+    return true if url == [ Gitlab.config.gitlab.url, '/', namespace, '/',
+                            project, '.git' ].join('')
+    url == gitlab_shell.url_to_repo([namespace, '/', project].join(''))
   end
 
   def relative_self_url?(url)
     # (./)?(../repo.git) || (./)?(../../project/repo.git) )
-    url =~ /^((\.\/)?(\.\.\/))(?!(\.\.)|(.*\/)).*\.git\Z/ || url =~ /^((\.\/)?(\.\.\/){2})(?!(\.\.))([^\/]*)\/(?!(\.\.)|(.*\/)).*\.git\Z/
+    url =~ /\A((\.\/)?(\.\.\/))(?!(\.\.)|(.*\/)).*\.git\z/ || url =~ /\A((\.\/)?(\.\.\/){2})(?!(\.\.))([^\/]*)\/(?!(\.\.)|(.*\/)).*\.git\z/
   end
 
-  def standard_links(host, project, commit)
-    base = [ 'https://', host, '/', project ].join('')
-    return base, [ base, '/tree/', commit ].join('')
+  def standard_links(host, namespace, project, commit)
+    base = [ 'https://', host, '/', namespace, '/', project ].join('')
+    [base, [ base, '/tree/', commit ].join('')]
   end
 
   def relative_self_links(url, commit)
-    if url.scan(/(\.\.\/)/).size == 2
-      base = url[/([^\/]*\/[^\/]*)\.git/, 1]
-    else
-      base = [ @project.group.path, '/', url[/([^\/]*)\.git/, 1] ].join('')
+    # Map relative links to a namespace and project
+    # For example:
+    # ../bar.git -> same namespace, repo bar
+    # ../foo/bar.git -> namespace foo, repo bar
+    # ../../foo/bar/baz.git -> namespace bar, repo baz
+    components = url.split('/')
+    base = components.pop.gsub(/.git$/, '')
+    namespace = components.pop.gsub(/^\.\.$/, '')
+
+    if namespace.empty?
+      namespace = @project.namespace.name
     end
-    return project_path(base), project_tree_path(base, commit)
+
+    [
+      namespace_project_path(namespace, base),
+      namespace_project_tree_path(namespace, base, commit)
+    ]
   end
 end

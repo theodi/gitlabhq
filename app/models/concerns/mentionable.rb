@@ -20,15 +20,20 @@ module Mentionable
     end
   end
 
-  # Generate a GFM back-reference that will construct a link back to this Mentionable when rendered. Must
-  # be overridden if this model object can be referenced directly by GFM notation.
-  def gfm_reference
-    raise NotImplementedError.new("#{self.class} does not implement #gfm_reference")
+  # Returns the text used as the body of a Note when this object is referenced
+  #
+  # By default this will be the class name and the result of calling
+  # `to_reference` on the object.
+  def gfm_reference(from_project = nil)
+    # "MergeRequest" > "merge_request" > "Merge request" > "merge request"
+    friendly_name = self.class.to_s.underscore.humanize.downcase
+
+    "#{friendly_name} #{to_reference(from_project)}"
   end
 
   # Construct a String that contains possible GFM references.
   def mentionable_text
-    self.class.mentionable_attrs.map { |attr| send(attr) || '' }.join
+    self.class.mentionable_attrs.map { |attr| send(attr) }.compact.join("\n\n")
   end
 
   # The GFM reference to this Mentionable, which shouldn't be included in its #references.
@@ -39,41 +44,32 @@ module Mentionable
   # Determine whether or not a cross-reference Note has already been created between this Mentionable and
   # the specified target.
   def has_mentioned?(target)
-    Note.cross_reference_exists?(target, local_reference)
+    SystemNoteService.cross_reference_exists?(target, local_reference)
   end
 
-  def mentioned_users
-    users = []
-    return users if mentionable_text.blank?
-    has_project = self.respond_to? :project
-    matches = mentionable_text.scan(/@[a-zA-Z][a-zA-Z0-9_\-\.]*/)
-    matches.each do |match|
-      identifier = match.delete "@"
-      if identifier == "all"
-        users += project.team.members.flatten
-      else
-        id = User.find_by(username: identifier).try(:id)
-        users << User.find(id) unless id.blank?
-      end
-    end
-    users.uniq
+  def mentioned_users(current_user = nil)
+    return [] if mentionable_text.blank?
+
+    ext = Gitlab::ReferenceExtractor.new(self.project, current_user)
+    ext.analyze(mentionable_text)
+    ext.users.uniq
   end
 
   # Extract GFM references to other Mentionables from this Mentionable. Always excludes its #local_reference.
-  def references(p = project, text = mentionable_text)
+  def references(p = project, current_user = self.author, text = mentionable_text)
     return [] if text.blank?
-    ext = Gitlab::ReferenceExtractor.new
-    ext.analyze(text, p)
-    (ext.issues_for +
-     ext.merge_requests_for +
-     ext.commits_for).uniq - [local_reference]
+
+    ext = Gitlab::ReferenceExtractor.new(p, current_user)
+    ext.analyze(text)
+
+    (ext.issues + ext.merge_requests + ext.commits).uniq - [local_reference]
   end
 
   # Create a cross-reference Note for each GFM reference to another Mentionable found in +mentionable_text+.
   def create_cross_references!(p = project, a = author, without = [])
     refs = references(p) - without
     refs.each do |ref|
-      Note.create_cross_reference_note(ref, local_reference, a, p)
+      Note.create_cross_reference_note(ref, local_reference, a)
     end
   end
 
@@ -92,8 +88,7 @@ module Mentionable
     # Only proceed if the saved changes actually include a chance to an attr_mentionable field.
     return unless mentionable_changed
 
-    preexisting = references(p, original)
+    preexisting = references(p, self.author, original)
     create_cross_references!(p, a, preexisting)
   end
-
 end

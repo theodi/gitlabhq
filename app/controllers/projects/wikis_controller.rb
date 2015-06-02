@@ -1,13 +1,14 @@
 require 'project_wiki'
 
 class Projects::WikisController < Projects::ApplicationController
-  before_filter :authorize_read_wiki!
-  before_filter :authorize_write_wiki!, only: [:edit, :create, :history]
-  before_filter :authorize_admin_wiki!, only: :destroy
-  before_filter :load_project_wiki
+  before_action :authorize_read_wiki!
+  before_action :authorize_write_wiki!, only: [:edit, :create, :history]
+  before_action :authorize_admin_wiki!, only: :destroy
+  before_action :load_project_wiki
+  include WikiHelper
 
   def pages
-    @wiki_pages = Kaminari.paginate_array(@project_wiki.pages).page(params[:page]).per(30)
+    @wiki_pages = Kaminari.paginate_array(@project_wiki.pages).page(params[:page]).per(PER_PAGE)
   end
 
   def show
@@ -16,16 +17,16 @@ class Projects::WikisController < Projects::ApplicationController
     if @page
       render 'show'
     elsif file = @project_wiki.find_file(params[:id], params[:version_id])
-       if file.on_disk?
-         send_file file.on_disk_path, disposition: 'inline'
-       else
-         send_data(
-           file.raw_data,
-           type: file.mime_type,
-           disposition: 'inline',
-           filename: file.name
-         )
-       end
+      if file.on_disk?
+        send_file file.on_disk_path, disposition: 'inline'
+      else
+        send_data(
+          file.raw_data,
+          type: file.mime_type,
+          disposition: 'inline',
+          filename: file.name
+        )
+      end
     else
       return render('empty') unless can?(current_user, :write_wiki, @project)
       @page = WikiPage.new(@project_wiki)
@@ -45,7 +46,10 @@ class Projects::WikisController < Projects::ApplicationController
     return render('empty') unless can?(current_user, :write_wiki, @project)
 
     if @page.update(content, format, message)
-      redirect_to [@project, @page], notice: 'Wiki was successfully updated.'
+      redirect_to(
+        namespace_project_wiki_path(@project.namespace, @project, @page),
+        notice: 'Wiki was successfully updated.'
+      )
     else
       render 'edit'
     end
@@ -55,7 +59,10 @@ class Projects::WikisController < Projects::ApplicationController
     @page = WikiPage.new(@project_wiki)
 
     if @page.create(wiki_params)
-      redirect_to project_wiki_path(@project, @page), notice: 'Wiki was successfully updated.'
+      redirect_to(
+        namespace_project_wiki_path(@project.namespace, @project, @page),
+        notice: 'Wiki was successfully updated.'
+      )
     else
       render action: "edit"
     end
@@ -65,7 +72,10 @@ class Projects::WikisController < Projects::ApplicationController
     @page = @project_wiki.find_page(params[:id])
 
     unless @page
-      redirect_to(project_wiki_path(@project, :home), notice: "Page not found")
+      redirect_to(
+        namespace_project_wiki_path(@project.namespace, @project, :home),
+        notice: "Page not found"
+      )
     end
   end
 
@@ -73,7 +83,10 @@ class Projects::WikisController < Projects::ApplicationController
     @page = @project_wiki.find_page(params[:id])
     @page.delete if @page
 
-    redirect_to project_wiki_path(@project, :home), notice: "Page was successfully deleted"
+    redirect_to(
+      namespace_project_wiki_path(@project.namespace, @project, :home),
+      notice: "Page was successfully deleted"
+    )
   end
 
   def git_access
@@ -88,7 +101,7 @@ class Projects::WikisController < Projects::ApplicationController
     @project_wiki.wiki
   rescue ProjectWiki::CouldNotCreateWikiError => ex
     flash[:notice] = "Could not create Wiki Repository at this time. Please try again later."
-    redirect_to @project
+    redirect_to project_path(@project)
     return false
   end
 

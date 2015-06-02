@@ -10,38 +10,31 @@ module TreeHelper
     tree = ""
 
     # Render folders if we have any
-    tree += render partial: 'projects/tree/tree_item', collection: folders, locals: {type: 'folder'} if folders.present?
+    tree << render(partial: 'projects/tree/tree_item', collection: folders,
+                   locals: { type: 'folder' }) if folders.present?
 
     # Render files if we have any
-    tree += render partial: 'projects/tree/blob_item', collection: files, locals: {type: 'file'} if files.present?
+    tree << render(partial: 'projects/tree/blob_item', collection: files,
+                   locals: { type: 'file' }) if files.present?
 
     # Render submodules if we have any
-    tree += render partial: 'projects/tree/submodule_item', collection: submodules if submodules.present?
+    tree << render(partial: 'projects/tree/submodule_item',
+                   collection: submodules) if submodules.present?
 
     tree.html_safe
   end
 
   def render_readme(readme)
-    if gitlab_markdown?(readme.name)
-      preserve(markdown(readme.data))
-    elsif markup?(readme.name)
-      render_markup(readme.name, readme.data)
-    else
-      simple_format(readme.data)
-    end
+    render_markup(readme.name, readme.data)
   end
 
-  # Return an image icon depending on the file type
+  # Return an image icon depending on the file type and mode
   #
   # type - String type of the tree item; either 'folder' or 'file'
-  def tree_icon(type)
-    icon_class = if type == 'folder'
-                   'fa fa-folder'
-                 else
-                   'fa fa-file-o'
-                 end
-
-    content_tag :i, nil, class: icon_class
+  # mode - File unix mode
+  # name - File name
+  def tree_icon(type, mode, name)
+    icon("#{file_type_icon_class(type, mode, name)} fw")
   end
 
   def tree_hex_class(content)
@@ -58,30 +51,7 @@ module TreeHelper
     ref ||= @ref
     return false unless project.repository.branch_names.include?(ref)
 
-    if project.protected_branch? ref
-      can?(current_user, :push_code_to_protected_branches, project)
-    else
-      can?(current_user, :push_code, project)
-    end
-  end
-
-  def edit_blob_link(project, ref, path, options = {})
-    if project.repository.blob_at(ref, path).text?
-      text = 'Edit'
-      after = options[:after] || ''
-      from_mr = options[:from_merge_request_id]
-      link_opts = {}
-      link_opts[:from_merge_request_id] = from_mr if from_mr
-      cls = 'btn btn-small'
-      if allowed_tree_edit?(project, ref)
-        link_to text, project_edit_tree_path(project, tree_join(ref, path),
-                                             link_opts), class: cls
-      else
-        content_tag :span, text, class: cls + ' disabled'
-      end + after.html_safe
-    else
-      ''
-    end
+    ::Gitlab::GitAccess.new(current_user, project).can_push_to_branch?(ref)
   end
 
   def tree_breadcrumbs(tree, max_links = 2)
@@ -101,20 +71,18 @@ module TreeHelper
     end
   end
 
-  def up_dir_path(tree)
+  def up_dir_path
     file = File.join(@path, "..")
     tree_join(@ref, file)
   end
 
-  def leave_edit_message
-    "Leave edit mode?\nAll unsaved changes will be lost."
-  end
-
-  def editing_preview_title(filename)
-    if Gitlab::MarkdownHelper.previewable?(filename)
-      'Preview'
+  # returns the relative path of the first subdir that doesn't have only one directory descendant
+  def flatten_tree(tree)
+    subtree = Gitlab::Git::Tree.where(@repository, @commit.id, tree.path)
+    if subtree.count == 1 && subtree.first.dir?
+      return tree_join(tree.name, flatten_tree(subtree.first))
     else
-      'Diff'
+      return tree.name
     end
   end
 end
