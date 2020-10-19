@@ -1,26 +1,29 @@
-.event-title
-  %span.author_name= link_to_author event
-  %span.event_label
+= icon_for_profile_event(event)
+
+= event_user_info(event)
+
+.event-title.d-flex.flex-wrap
+  = inline_event_icon(event)
+  %span.event-type.d-inline-block.gl-mr-2{ class: event.action_name }
     = event.action_name
-    = event_note_title_html(event)
-    at
-    
-  - if event.project
-    = link_to_project event.project
-  - else
-    = event.project_name
+  = event_note_title_html(event)
+  - title = note_target_title(event.target)
+  - if title.present?
+    %span.event-target-title.gl-text-overflow-ellipsis.gl-overflow-hidden.gl-mr-2{ dir: "auto" }
+      = "&quot;".html_safe + title + "&quot".html_safe
+
+  = render "events/event_scope", event: event
 
 .event-body
   .event-note
     .md
-      %i.fa.fa-comment-o.event-note-icon
-      = event_note(event.target.note, project: event.project)
+      = first_line_in_markdown(event.target, :note, 150, project: event.project)
     - note = event.target
     - if note.attachment.url
       - if note.attachment.image?
         = link_to note.attachment.url, target: '_blank' do
           = image_tag note.attachment.url, class: 'note-image-attach'
       - else
-        = link_to note.attachment.url, target: "_blank", class: 'note-file-attach' do
+        = link_to note.attachment.url, target: '_blank', class: 'note-file-attach' do
           %i.fa.fa-paperclip
           = note.attachment_identifier

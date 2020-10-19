@@ -1,0 +1,13 @@
+- token = local_assigns.fetch(:token)
+
+- return unless token.scopes.present?
+
+%tr
+  %td
+    = _('Scopes')
+  %td
+    %ul.scopes-list.gl-mb-0
+      - token.scopes.each do |scope|
+        %li
+          %span.bold= scope
+          = "(#{t(scope, scope: [:doorkeeper, :scopes])})"

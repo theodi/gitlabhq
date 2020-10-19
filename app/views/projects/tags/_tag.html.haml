@@ -1,22 +1,42 @@
-- commit = @repository.commit(tag.target)
-%li
-  %h4
-    = link_to namespace_project_commits_path(@project.namespace, @project, tag.name), class: "" do
-      %i.fa.fa-tag
-      = tag.name
+- commit = @repository.commit(tag.dereferenced_target)
+- release = @releases.find { |release| release.tag == tag.name }
+
+%li.flex-row.allow-wrap.js-tag-list
+  .row-main-content
+    = sprite_icon('tag')
+    = link_to tag.name, project_tag_path(@project, tag.name), class: 'item-title ref-name'
+
+    - if protected_tag?(@project, tag)
+      %span.badge.badge-success.gl-ml-2
+        = s_('TagsPage|protected')
+
     - if tag.message.present?
       &nbsp;
-      = strip_gpg_signature(tag.message)
-    .pull-right
-      - if can? current_user, :download_code, @project
-        = render 'projects/repositories/download_archive', ref: tag.name, btn_class: 'btn-grouped btn-group-xs'
-      - if can?(current_user, :admin_project, @project)
-        = link_to namespace_project_tag_path(@project.namespace, @project, tag.name), class: 'btn btn-xs btn-remove remove-row grouped', method: :delete, data: { confirm: 'Removed tag cannot be restored. Are you sure?'}, remote: true do
-          %i.fa.fa-trash-o
+      = strip_signature(tag.message)
 
-  - if commit
-    %ul.list-unstyled
-      = render 'projects/commits/inline_commit', commit: commit, project: @project
-  - else
-    %p
-      Cant find HEAD commit for this tag
+    - if commit
+      .block-truncated
+        = render 'projects/branches/commit', commit: commit, project: @project
+    - else
+      %p
+        = s_("TagsPage|Can't find HEAD commit for this tag")
+
+    - if release
+      .text-secondary
+        = sprite_icon("rocket", size: 12)
+        = _("Release")
+        = link_to release.name, project_releases_path(@project, anchor: release.tag), class: 'gl-text-blue-600!'
+      - if release.description.present?
+        .md.gl-mt-3
+          = markdown_field(release, :description)
+
+  .row-fixed-content.controls.flex-row
+    - if tag.has_signature?
+      = render partial: 'projects/commit/signature', object: tag.signature
+
+    = render 'projects/buttons/download', project: @project, ref: tag.name, pipeline: @tags_pipelines[tag.name]
+
+    - if can?(current_user, :admin_tag, @project)
+      = link_to edit_project_tag_release_path(@project, tag.name), class: 'btn btn-edit has-tooltip', title: s_('TagsPage|Edit release notes'), data: { container: "body" } do
+        = sprite_icon("pencil")
+      = render 'projects/buttons/remove_tag', project: @project, tag: tag

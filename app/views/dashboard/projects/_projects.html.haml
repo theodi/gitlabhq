@@ -1,0 +1,1 @@
+= render 'shared/projects/list', projects: @projects, pipeline_status: Feature.enabled?(:dashboard_pipeline_status, default_enabled: true), user: current_user

@@ -1,0 +1,11 @@
+- page_title _('Authentication log')
+- @content_class = "limit-container-width" unless fluid_layout
+
+.row.gl-mt-3
+  .col-lg-4.profile-settings-sidebar
+    %h4.gl-mt-0
+      = page_title
+    %p
+      = _('This is a security log of important events involving your account.')
+  .col-lg-8
+    = render 'event_table', events: @events

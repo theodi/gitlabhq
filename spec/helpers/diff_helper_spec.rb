@@ -1,164 +1,329 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe DiffHelper do
+RSpec.describe DiffHelper do
   include RepoHelpers
 
-  let(:project) { create(:project) }
+  let(:project) { create(:project, :repository) }
+  let(:repository) { project.repository }
   let(:commit) { project.commit(sample_commit.id) }
-  let(:diffs) { commit.diffs }
+  let(:diffs) { commit.raw_diffs }
   let(:diff) { diffs.first }
-  let(:diff_file) { Gitlab::Diff::File.new(diff) }
+  let(:diff_refs) { commit.diff_refs }
+  let(:diff_file) { Gitlab::Diff::File.new(diff, diff_refs: diff_refs, repository: repository) }
 
-  describe 'diff_hard_limit_enabled?' do
-    it 'should return true if param is provided' do
-      allow(controller).to receive(:params) { { force_show_diff: true } }
-      expect(diff_hard_limit_enabled?).to be_truthy
+  describe 'diff_view' do
+    it 'uses the view param over the cookie' do
+      controller.params[:view] = 'parallel'
+      helper.request.cookies[:diff_view] = 'inline'
+
+      expect(helper.diff_view).to eq :parallel
     end
 
-    it 'should return false if param is not provided' do
-      expect(diff_hard_limit_enabled?).to be_falsey
-    end
-  end
+    it 'returns the default value when the view param is invalid' do
+      controller.params[:view] = 'invalid'
 
-  describe 'allowed_diff_size' do
-    it 'should return hard limit for a diff if force diff is true' do
-      allow(controller).to receive(:params) { { force_show_diff: true } }
-      expect(allowed_diff_size).to eq(1000)
+      expect(helper.diff_view).to eq :inline
     end
 
-    it 'should return safe limit for a diff if force diff is false' do
-      expect(allowed_diff_size).to eq(100)
-    end
-  end
+    it 'returns a valid value when cookie is set' do
+      helper.request.cookies[:diff_view] = 'parallel'
 
-  describe 'allowed_diff_lines' do
-    it 'should return hard limit for number of lines in a diff if force diff is true' do
-      allow(controller).to receive(:params) { { force_show_diff: true } }
-      expect(allowed_diff_lines).to eq(50000)
+      expect(helper.diff_view).to eq :parallel
     end
 
-    it 'should return safe limit for numbers of lines a diff if force diff is false' do
-      expect(allowed_diff_lines).to eq(5000)
-    end
-  end
+    it 'returns the default value when cookie is invalid' do
+      helper.request.cookies[:diff_view] = 'invalid'
 
-  describe 'safe_diff_files' do
-    it 'should return all files from a commit that is smaller than safe limits' do
-      expect(safe_diff_files(diffs).length).to eq(2)
+      expect(helper.diff_view).to eq :inline
     end
 
-    it 'should return only the first file if the diff line count in the 2nd file takes the total beyond safe limits' do
-      diffs[1].diff.stub(lines: [""] * 4999) #simulate 4999 lines
-      expect(safe_diff_files(diffs).length).to eq(1)
-    end
+    it 'returns the default value when cookie is nil' do
+      expect(helper.request.cookies).to be_empty
 
-    it 'should return all files from a commit that is beyond safe limit for numbers of lines if force diff is true' do
-      allow(controller).to receive(:params) { { force_show_diff: true } }
-      diffs[1].diff.stub(lines: [""] * 4999) #simulate 4999 lines
-      expect(safe_diff_files(diffs).length).to eq(2)
-    end
-
-    it 'should return only the first file if the diff line count in the 2nd file takes the total beyond hard limits' do
-      allow(controller).to receive(:params) { { force_show_diff: true } }
-      diffs[1].diff.stub(lines: [""] * 49999) #simulate 49999 lines
-      expect(safe_diff_files(diffs).length).to eq(1)
-    end
-
-    it 'should return only a safe number of file diffs if a commit touches more files than the safe limits' do
-      large_diffs = diffs * 100 #simulate 200 diffs
-      expect(safe_diff_files(large_diffs).length).to eq(100)
-    end
-
-    it 'should return all file diffs if a commit touches more files than the safe limits but force diff is true' do
-      allow(controller).to receive(:params) { { force_show_diff: true } }
-      large_diffs = diffs * 100 #simulate 200 diffs
-      expect(safe_diff_files(large_diffs).length).to eq(200)
-    end
-
-    it 'should return a limited file diffs if a commit touches more files than the hard limits and force diff is true' do
-      allow(controller).to receive(:params) { { force_show_diff: true } }
-      very_large_diffs = diffs * 1000 #simulate 2000 diffs
-      expect(safe_diff_files(very_large_diffs).length).to eq(1000)
+      expect(helper.diff_view).to eq :inline
     end
   end
 
-  describe 'parallel_diff' do
-    it 'should return an array of arrays containing the parsed diff' do
-      expect(parallel_diff(diff_file, 0)).
-        to match_array(parallel_diff_result_array)
+  describe 'diff_options' do
+    it 'returns no collapse false' do
+      expect(diff_options).to include(expanded: false)
+    end
+
+    it 'returns no collapse true if expanded' do
+      allow(controller).to receive(:params) { { expanded: true } }
+      expect(diff_options).to include(expanded: true)
+    end
+
+    it 'returns no collapse true if action name diff_for_path' do
+      allow(controller).to receive(:action_name) { 'diff_for_path' }
+      expect(diff_options).to include(expanded: true)
+    end
+
+    it 'returns paths if action name diff_for_path and param old path' do
+      allow(controller).to receive(:params) { { old_path: 'lib/wadus.rb' } }
+      allow(controller).to receive(:action_name) { 'diff_for_path' }
+      expect(diff_options[:paths]).to include('lib/wadus.rb')
+    end
+
+    it 'returns paths if action name diff_for_path and param new path' do
+      allow(controller).to receive(:params) { { new_path: 'lib/wadus.rb' } }
+      allow(controller).to receive(:action_name) { 'diff_for_path' }
+      expect(diff_options[:paths]).to include('lib/wadus.rb')
     end
   end
 
-  describe 'generate_line_code' do
-    it 'should generate correct line code' do
-      expect(generate_line_code(diff_file.file_path, diff_file.diff_lines.first)).
-        to eq('2f6fcd96b88b36ce98c38da085c795a27d92a3dd_6_6')
+  describe '#diff_line_content' do
+    context 'when the line is empty' do
+      it 'returns a non breaking space' do
+        expect(diff_line_content(nil)).to eq('&nbsp;')
+      end
+
+      it 'returns an HTML-safe string' do
+        expect(diff_line_content(nil)).to be_html_safe
+      end
+    end
+
+    context 'when the line is not empty' do
+      context 'when the line starts with +, -, or a space' do
+        it 'strips the first character' do
+          expect(diff_line_content('+new line')).to eq('new line')
+          expect(diff_line_content('-new line')).to eq('new line')
+          expect(diff_line_content(' new line')).to eq('new line')
+        end
+
+        context 'when the line is HTML-safe' do
+          it 'returns an HTML-safe string' do
+            expect(diff_line_content('+new line'.html_safe)).to be_html_safe
+            expect(diff_line_content('-new line'.html_safe)).to be_html_safe
+            expect(diff_line_content(' new line'.html_safe)).to be_html_safe
+          end
+        end
+
+        context 'when the line is not HTML-safe' do
+          it 'returns a non-HTML-safe string' do
+            expect(diff_line_content('+new line')).not_to be_html_safe
+            expect(diff_line_content('-new line')).not_to be_html_safe
+            expect(diff_line_content(' new line')).not_to be_html_safe
+          end
+        end
+      end
+
+      context 'when the line does not start with a +, -, or a space' do
+        it 'returns the string' do
+          expect(diff_line_content('@@ -6,12 +6,18 @@ module Popen')).to eq('@@ -6,12 +6,18 @@ module Popen')
+        end
+
+        context 'when the line is HTML-safe' do
+          it 'returns an HTML-safe string' do
+            expect(diff_line_content('@@ -6,12 +6,18 @@ module Popen'.html_safe)).to be_html_safe
+          end
+        end
+
+        context 'when the line is not HTML-safe' do
+          it 'returns a non-HTML-safe string' do
+            expect(diff_line_content('@@ -6,12 +6,18 @@ module Popen')).not_to be_html_safe
+          end
+        end
+      end
     end
   end
 
-  describe 'unfold_bottom_class' do
-    it 'should return empty string when bottom line shouldnt be unfolded' do
-      expect(unfold_bottom_class(false)).to eq('')
+  describe "#mark_inline_diffs" do
+    let(:old_line) { %{abc 'def'} }
+    let(:new_line) { %{abc "def"} }
+
+    it "returns strings with marked inline diffs" do
+      marked_old_line, marked_new_line = mark_inline_diffs(old_line, new_line)
+
+      expect(marked_old_line).to eq(%q{abc <span class="idiff left right deletion">&#39;def&#39;</span>})
+      expect(marked_old_line).to be_html_safe
+      expect(marked_new_line).to eq(%q{abc <span class="idiff left right addition">&quot;def&quot;</span>})
+      expect(marked_new_line).to be_html_safe
     end
 
-    it 'should return js class when bottom lines should be unfolded' do
-      expect(unfold_bottom_class(true)).to eq('js-unfold-bottom')
+    context 'when given HTML' do
+      it 'sanitizes it' do
+        old_line = %{test.txt}
+        new_line = %{<img src=x onerror=alert(document.domain)>}
+
+        marked_old_line, marked_new_line = mark_inline_diffs(old_line, new_line)
+
+        expect(marked_old_line).to eq(%q{<span class="idiff left right deletion">test.txt</span>})
+        expect(marked_old_line).to be_html_safe
+        expect(marked_new_line).to eq(%q{<span class="idiff left right addition">&lt;img src=x onerror=alert(document.domain)&gt;</span>})
+        expect(marked_new_line).to be_html_safe
+      end
+
+      it 'sanitizes the entire line, not just the changes' do
+        old_line = %{<img src=x onerror=alert(document.domain)>}
+        new_line = %{<img src=y onerror=alert(document.domain)>}
+
+        marked_old_line, marked_new_line = mark_inline_diffs(old_line, new_line)
+
+        expect(marked_old_line).to eq(%q{&lt;img src=<span class="idiff left right deletion">x</span> onerror=alert(document.domain)&gt;})
+        expect(marked_old_line).to be_html_safe
+        expect(marked_new_line).to eq(%q{&lt;img src=<span class="idiff left right addition">y</span> onerror=alert(document.domain)&gt;})
+        expect(marked_new_line).to be_html_safe
+      end
     end
   end
 
-  describe 'unfold_class' do
-    it 'returns empty on false' do
-      expect(unfold_class(false)).to eq('')
+  describe '#parallel_diff_discussions' do
+    let(:discussion) { { 'abc_3_3' => 'comment' } }
+    let(:diff_file) { double(line_code: 'abc_3_3') }
+
+    before do
+      helper.instance_variable_set(:@grouped_diff_discussions, discussion)
     end
 
-    it 'returns a class on true' do
-      expect(unfold_class(true)).to eq('unfold js-unfold')
+    it 'does not put comments on nonewline lines' do
+      left = Gitlab::Diff::Line.new('\\nonewline', 'old-nonewline', 3, 3, 3)
+      right = Gitlab::Diff::Line.new('\\nonewline', 'new-nonewline', 3, 3, 3)
+
+      result = helper.parallel_diff_discussions(left, right, diff_file)
+
+      expect(result).to eq([nil, nil])
+    end
+
+    it 'puts comments on added lines' do
+      left = Gitlab::Diff::Line.new('\\nonewline', 'old-nonewline', 3, 3, 3)
+      right = Gitlab::Diff::Line.new('new line', 'new', 3, 3, 3)
+
+      result = helper.parallel_diff_discussions(left, right, diff_file)
+
+      expect(result).to eq([nil, 'comment'])
+    end
+
+    it 'puts comments on unchanged lines' do
+      left = Gitlab::Diff::Line.new('unchanged line', nil, 3, 3, 3)
+      right = Gitlab::Diff::Line.new('unchanged line', nil, 3, 3, 3)
+
+      result = helper.parallel_diff_discussions(left, right, diff_file)
+
+      expect(result).to eq(['comment', nil])
     end
   end
 
-  describe 'diff_line_content' do
+  describe "#diff_match_line" do
+    let(:old_pos) { 40 }
+    let(:new_pos) { 50 }
+    let(:text) { 'some_text' }
 
-    it 'should return non breaking space when line is empty' do
-      expect(diff_line_content(nil)).to eq(' &nbsp;')
+    it "generates foldable top match line for inline view with empty text by default" do
+      output = diff_match_line old_pos, new_pos
+
+      expect(output).to be_html_safe
+      expect(output).to have_css "td:nth-child(1):not(.js-unfold-bottom).diff-line-num.unfold.js-unfold.old_line[data-linenumber='#{old_pos}']", text: '...'
+      expect(output).to have_css "td:nth-child(2):not(.js-unfold-bottom).diff-line-num.unfold.js-unfold.new_line[data-linenumber='#{new_pos}']", text: '...'
+      expect(output).to have_css 'td:nth-child(3):not(.parallel).line_content.match', text: ''
     end
 
-    it 'should return the line itself' do
-      expect(diff_line_content(diff_file.diff_lines.first.text)).
-        to eq('@@ -6,12 +6,18 @@ module Popen')
-      expect(diff_line_content(diff_file.diff_lines.first.type)).to eq('match')
-      expect(diff_line_content(diff_file.diff_lines.first.new_pos)).to eq(6)
+    it "allows to define text and bottom option" do
+      output = diff_match_line old_pos, new_pos, text: text, bottom: true
+
+      expect(output).to be_html_safe
+      expect(output).to have_css "td:nth-child(1).diff-line-num.unfold.js-unfold.js-unfold-bottom.old_line[data-linenumber='#{old_pos}']", text: '...'
+      expect(output).to have_css "td:nth-child(2).diff-line-num.unfold.js-unfold.js-unfold-bottom.new_line[data-linenumber='#{new_pos}']", text: '...'
+      expect(output).to have_css 'td:nth-child(3):not(.parallel).line_content.match', text: text
+    end
+
+    it "generates match line for parallel view" do
+      output = diff_match_line old_pos, new_pos, text: text, view: :parallel
+
+      expect(output).to be_html_safe
+      expect(output).to have_css "td:nth-child(1):not(.js-unfold-bottom).diff-line-num.unfold.js-unfold.old_line[data-linenumber='#{old_pos}']", text: '...'
+      expect(output).to have_css 'td:nth-child(2).line_content.match.parallel', text: text
+      expect(output).to have_css "td:nth-child(3):not(.js-unfold-bottom).diff-line-num.unfold.js-unfold.new_line[data-linenumber='#{new_pos}']", text: '...'
+      expect(output).to have_css 'td:nth-child(4).line_content.match.parallel', text: text
+    end
+
+    it "allows to generate only left match line for parallel view" do
+      output = diff_match_line old_pos, nil, text: text, view: :parallel
+
+      expect(output).to be_html_safe
+      expect(output).to have_css "td:nth-child(1):not(.js-unfold-bottom).diff-line-num.unfold.js-unfold.old_line[data-linenumber='#{old_pos}']", text: '...'
+      expect(output).to have_css 'td:nth-child(2).line_content.match.parallel', text: text
+      expect(output).not_to have_css 'td:nth-child(3)'
+    end
+
+    it "allows to generate only right match line for parallel view" do
+      output = diff_match_line nil, new_pos, text: text, view: :parallel
+
+      expect(output).to be_html_safe
+      expect(output).to have_css "td:nth-child(1):not(.js-unfold-bottom).diff-line-num.unfold.js-unfold.new_line[data-linenumber='#{new_pos}']", text: '...'
+      expect(output).to have_css 'td:nth-child(2).line_content.match.parallel', text: text
+      expect(output).not_to have_css 'td:nth-child(3)'
     end
   end
 
-  def parallel_diff_result_array
-    [
-      ["match", 6, "@@ -6,12 +6,18 @@ module Popen", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_6_6", "match", 6, "@@ -6,12 +6,18 @@ module Popen", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_6_6"],
-      [nil, 6, " ", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_6_6", nil, 6, " ", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_6_6"], [nil, 7, "   def popen(cmd, path=nil)", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_7_7", nil, 7, "   def popen(cmd, path=nil)", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_7_7"],
-      [nil, 8, "     unless cmd.is_a?(Array)", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_8_8", nil, 8, "     unless cmd.is_a?(Array)", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_8_8"],
-      ["old", 9, "-      raise <span class='idiff'></span>&quot;System commands must be given as an array of strings&quot;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_9_9", "new", 9, "+      raise <span class='idiff'>RuntimeError, </span>&quot;System commands must be given as an array of strings&quot;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_10_9"],
-      [nil, 10, "     end", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_10_10", nil, 10, "     end", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_10_10"],
-      [nil, 11, " ", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_11_11", nil, 11, " ", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_11_11"],
-      [nil, 12, "     path ||= Dir.pwd", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_12_12", nil, 12, "     path ||= Dir.pwd", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_12_12"],
-      ["old", 13, "-    vars = { &quot;PWD&quot; =&gt; path }", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_13_13", "old", nil, "&nbsp;", nil],
-      ["old", 14, "-    options = { chdir: path }", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_14_13", "new", 13, "+", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_13"],
-      [nil, nil, "&nbsp;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_14", "new", 14, "+    vars = {", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_14"],
-      [nil, nil, "&nbsp;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_15", "new", 15, "+      &quot;PWD&quot; =&gt; path", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_15"],
-      [nil, nil, "&nbsp;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_16", "new", 16, "+    }", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_16"],
-      [nil, nil, "&nbsp;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_17", "new", 17, "+", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_17"],
-      [nil, nil, "&nbsp;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_18", "new", 18, "+    options = {", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_18"],
-      [nil, nil, "&nbsp;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_19", "new", 19, "+      chdir: path", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_19"],
-      [nil, nil, "&nbsp;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_20", "new", 20, "+    }", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_20"],
-      [nil, 15, " ", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_21", nil, 21, " ", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_15_21"],
-      [nil, 16, "     unless File.directory?(path)", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_16_22", nil, 22, "     unless File.directory?(path)", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_16_22"],
-      [nil, 17, "       FileUtils.mkdir_p(path)", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_17_23", nil, 23, "       FileUtils.mkdir_p(path)", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_17_23"],
-      ["match", 19, "@@ -19,6 +25,7 @@ module Popen", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_19_25", "match", 25, "@@ -19,6 +25,7 @@ module Popen", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_19_25"],
-      [nil, 19, " ", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_19_25", nil, 25, " ", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_19_25"],
-      [nil, 20, "     @cmd_output = &quot;&quot;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_20_26", nil, 26, "     @cmd_output = &quot;&quot;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_20_26"],
-      [nil, 21, "     @cmd_status = 0", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_21_27", nil, 27, "     @cmd_status = 0", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_21_27"],
-      [nil, nil, "&nbsp;", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_22_28", "new", 28, "+", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_22_28"],
-      [nil, 22, "     Open3.popen3(vars, *cmd, options) do |stdin, stdout, stderr, wait_thr|", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_22_29", nil, 29, "     Open3.popen3(vars, *cmd, options) do |stdin, stdout, stderr, wait_thr|", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_22_29"],
-      [nil, 23, "       @cmd_output &lt;&lt; stdout.read", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_23_30", nil, 30, "       @cmd_output &lt;&lt; stdout.read", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_23_30"],
-      [nil, 24, "       @cmd_output &lt;&lt; stderr.read", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_24_31", nil, 31, "       @cmd_output &lt;&lt; stderr.read", "2f6fcd96b88b36ce98c38da085c795a27d92a3dd_24_31"]
-    ]
+  describe '#render_overflow_warning?' do
+    let(:diffs_collection) { instance_double(Gitlab::Diff::FileCollection::MergeRequestDiff, raw_diff_files: diff_files) }
+    let(:diff_files) { Gitlab::Git::DiffCollection.new(files) }
+    let(:safe_file) { { too_large: false, diff: '' } }
+    let(:large_file) { { too_large: true, diff: '' } }
+    let(:files) { [safe_file, safe_file] }
+
+    before do
+      allow(diff_files).to receive(:overflow?).and_return(false)
+    end
+
+    context 'when neither collection nor individual file hit the limit' do
+      it 'returns false and does not log any overflow events' do
+        expect(Gitlab::Metrics).not_to receive(:add_event).with(:diffs_overflow_collection_limits)
+        expect(Gitlab::Metrics).not_to receive(:add_event).with(:diffs_overflow_single_file_limits)
+
+        expect(render_overflow_warning?(diffs_collection)).to be false
+      end
+    end
+
+    context 'when the file collection has an overflow' do
+      before do
+        allow(diff_files).to receive(:overflow?).and_return(true)
+      end
+
+      it 'returns false and only logs collection overflow event' do
+        expect(Gitlab::Metrics).to receive(:add_event).with(:diffs_overflow_collection_limits).exactly(:once)
+        expect(Gitlab::Metrics).not_to receive(:add_event).with(:diffs_overflow_single_file_limits)
+
+        expect(render_overflow_warning?(diffs_collection)).to be true
+      end
+    end
+
+    context 'when two individual files are too big' do
+      let(:files) { [safe_file, large_file, large_file] }
+
+      it 'returns false and only logs single file overflow events' do
+        expect(Gitlab::Metrics).to receive(:add_event).with(:diffs_overflow_single_file_limits).exactly(:once)
+        expect(Gitlab::Metrics).not_to receive(:add_event).with(:diffs_overflow_collection_limits)
+
+        expect(render_overflow_warning?(diffs_collection)).to be false
+      end
+    end
+  end
+
+  describe '#diff_file_html_data' do
+    let(:project) { build(:project) }
+    let(:path) { 'path/to/file' }
+    let(:sha) { '1234567890' }
+
+    subject do
+      helper.diff_file_html_data(project, path, sha)
+    end
+
+    it 'returns data for project files' do
+      expect(subject).to include(blob_diff_path: helper.project_blob_diff_path(project, "#{sha}/#{path}"))
+    end
+  end
+
+  describe '#diff_file_path_text' do
+    it 'returns full path by default' do
+      expect(diff_file_path_text(diff_file)).to eq(diff_file.new_path)
+    end
+
+    it 'returns truncated path' do
+      expect(diff_file_path_text(diff_file, max: 10)).to eq("...open.rb")
+    end
   end
 end

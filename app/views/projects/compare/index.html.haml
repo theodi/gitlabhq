@@ -1,17 +1,16 @@
-- page_title "Compare"
-= render "projects/commits/head"
+- breadcrumb_title _("Compare Revisions")
+- page_title _("Compare")
 
 %h3.page-title
-  Compare View
-%p.slead
-  Compare branches, tags or commit ranges.
+  = _("Compare Git revisions")
+.sub-header-block
+  - example_master = capture do
+    %code.ref-name master
+  - example_sha = capture do
+    %code.ref-name 4eedf23
+  = html_escape(_("Choose a branch/tag (e.g. %{master}) or enter a commit (e.g. %{sha}) to see what's changed or to create a merge request.")) % { master: example_master.html_safe, sha: example_sha.html_safe }
   %br
-  Fill input field with commit id like
-  %code.label-branch 4eedf23
-  or branch/tag name like
-  %code.label-branch master
-  and press compare button for the commits list and a code diff.
-  %br
-  Changes are shown <b>from</b> the version in the first field <b>to</b> the version in the second field.
+  = html_escape(_("Changes are shown as if the %{b_open}source%{b_close} revision was being merged into the %{b_open}target%{b_close} revision.")) % { b_open: '<b>'.html_safe, b_close: '</b>'.html_safe }
 
-= render "form"
+.prepend-top-20
+  = render "form"

@@ -1,0 +1,14 @@
+%h3.page-title
+  = _("Authorization required")
+%main{ :role => "main" }
+  %p.h4
+    = html_escape(_("Authorize %{user} to use your account?")) % { user: tag.strong(@chat_name_params[:chat_name]) }
+
+  %hr
+  .actions
+    = form_tag profile_chat_names_path, method: :post do
+      = hidden_field_tag :token, @chat_name_token.token
+      = submit_tag _("Authorize"), class: "btn btn-success wide float-left"
+    = form_tag deny_profile_chat_names_path, method: :delete do
+      = hidden_field_tag :token, @chat_name_token.token
+      = submit_tag _("Deny"), class: "btn btn-danger gl-ml-3"

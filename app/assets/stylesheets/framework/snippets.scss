@@ -1,0 +1,42 @@
+.snippet-row {
+  .title {
+    margin-bottom: 2px;
+    font-weight: $gl-font-weight-bold;
+  }
+
+  .snippet-filename {
+    color: $gl-text-color-secondary;
+    font-weight: normal;
+  }
+
+  .snippet-info {
+    color: $gl-text-color-secondary;
+  }
+
+  a {
+    color: $gl-text-color;
+  }
+}
+
+.snippet-file-content {
+  border-radius: 3px;
+
+  + .snippet-file-content {
+    @include gl-mt-5;
+  }
+}
+
+.snippet-header {
+  padding: $gl-padding 0;
+}
+
+.snippet-title {
+  color: $gl-text-color;
+  font-size: 2em;
+  font-weight: $gl-font-weight-bold;
+  min-height: $header-height;
+}
+
+.snippet-scope-menu .btn-success {
+  margin-top: 15px;
+}

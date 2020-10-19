@@ -1,0 +1,49 @@
+:mailboxes:
+  <%
+    require_relative "../lib/gitlab/mail_room" unless defined?(Gitlab::MailRoom)
+    Gitlab::MailRoom.enabled_configs.each do |config|
+  %>
+    -
+      :host: <%= config[:host].to_json %>
+      :port: <%= config[:port].to_json %>
+      :ssl: <%= config[:ssl].to_json %>
+      :start_tls: <%= config[:start_tls].to_json %>
+      :email: <%= config[:user].to_json %>
+      :password: <%= config[:password].to_json %>
+      :idle_timeout: <%= config[:idle_timeout].to_json %>
+      :logger:
+        :log_path: <%= config[:log_path].to_json %>
+
+      :name: <%= config[:mailbox].to_json %>
+
+      :delete_after_delivery: true
+      :expunge_deleted: <%= config[:expunge_deleted].to_json %>
+
+      :delivery_method: sidekiq
+      :delivery_options:
+        :redis_url: <%= config[:redis_url].to_json %>
+        :namespace: <%= Gitlab::Redis::Queues::SIDEKIQ_NAMESPACE %>
+        :queue: <%= config[:queue] %>
+        :worker: <%= config[:worker] %>
+        <% if config[:sentinels] %>
+        :sentinels:
+          <% config[:sentinels].each do |sentinel| %>
+          -
+            :host: <%= sentinel[:host] %>
+            :port: <%= sentinel[:port] %>
+          <% end %>
+        <% end %>
+
+      :arbitration_method: redis
+      :arbitration_options:
+        :redis_url: <%= config[:redis_url].to_json %>
+        :namespace: <%= Gitlab::Redis::Queues::MAILROOM_NAMESPACE %>
+        <% if config[:sentinels] %>
+        :sentinels:
+          <% config[:sentinels].each do |sentinel| %>
+          -
+            :host: <%= sentinel[:host] %>
+            :port: <%= sentinel[:port] %>
+          <% end %>
+        <% end %>
+  <% end %>

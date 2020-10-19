@@ -1,27 +1,20 @@
-- page_title "Network", @ref
+- breadcrumb_title _("Graph")
+- page_title _("Graph"), @ref
 = render "head"
-.project-network
-  .controls
-    = form_tag namespace_project_network_path(@project.namespace, @project, @id), method: :get, class: 'form-inline network-form' do |f|
-      = text_field_tag :extended_sha1, @options[:extended_sha1], placeholder: "Input an extended SHA1 syntax", class: 'search-input form-control input-mx-250 search-sha'
-      = button_tag class: 'btn btn-success btn-search-sha' do
-        %i.fa.fa-search
-      .inline.prepend-left-20
-        .checkbox.light
-          = label_tag :filter_ref do
-            = check_box_tag :filter_ref, 1, @options[:filter_ref]
-            %span Begin with the selected commit
+%div{ class: container_class }
+  .project-network.gl-border-1.gl-border-solid.gl-border-gray-300
+    .controls.gl-bg-gray-50.gl-p-2.gl-font-base.gl-text-gray-400.gl-border-b-1.gl-border-b-solid.gl-border-b-gray-300
+      = form_tag project_network_path(@project, @id), method: :get, class: 'form-inline network-form' do |f|
+        = text_field_tag :extended_sha1, @options[:extended_sha1], placeholder: _("Git revision"), class: 'search-input form-control input-mx-250 search-sha'
+        = button_tag class: 'btn btn-success' do
+          = sprite_icon('search')
+        .inline.prepend-left-20
+          .form-check.light
+            = check_box_tag :filter_ref, 1, @options[:filter_ref], class: 'form-check-input'
+            = label_tag :filter_ref, class: 'form-check-label' do
+              %span= _("Begin with the selected commit")
 
-  .network-graph
-    = spinner nil, true
-
-:javascript
-  disableButtonIfEmptyField('#extended_sha1', '.btn-search-sha')
-
-  network_graph = new Network({
-    url: '#{namespace_project_network_path(@project.namespace, @project, @ref, @options.merge(format: :json))}',
-    commit_url: '#{namespace_project_commit_path(@project.namespace, @project, 'ae45ca32').gsub("ae45ca32", "%s")}',
-    ref: '#{@ref}',
-    commit_id: '#{@commit.id}'
-  })
-  new ShortcutsNetwork(network_graph.branch_graph)
+    - if @commit
+      .network-graph.gl-bg-white.gl-overflow-scroll.gl-overflow-x-hidden{ data: { url: @url, commit_url: @commit_url, ref: @ref, commit_id: @commit.id } }
+        .text-center.gl-mt-3
+          .spinner.spinner-md

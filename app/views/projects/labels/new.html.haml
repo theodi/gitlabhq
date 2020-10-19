@@ -1,7 +1,8 @@
-- page_title "New Label"
-%h3 New label
-.back-link
-  = link_to namespace_project_labels_path(@project.namespace, @project) do
-    &larr; To labels list
+- add_to_breadcrumbs _("Labels"), project_labels_path(@project)
+- breadcrumb_title _("New")
+- page_title _("New Label")
+
+%h3.page-title
+  New Label
 %hr
-= render 'form'
+= render 'shared/labels/form', url: project_labels_path(@project), back_path: project_labels_path(@project)

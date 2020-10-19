@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "required" : [
+    "name",
+    "message",
+    "commit",
+    "release"
+  ],
+  "properties" : {
+    "name": { "type": "string" },
+    "message": { "type": ["string", "null"] },
+    "commit": { "$ref": "commit/basic.json" },
+    "target": { "type": "string" },
+    "release": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "release/tag_release.json" }
+      ]
+    },
+    "protected": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

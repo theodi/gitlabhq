@@ -1,0 +1,71 @@
+# frozen_string_literal: true
+# rubocop:disable Style/SignalException
+
+require 'yaml'
+
+SEE_DOC = "See the [changelog documentation](https://docs.gitlab.com/ee/development/changelog.html)."
+
+SUGGEST_MR_COMMENT = <<~SUGGEST_COMMENT
+```suggestion
+merge_request: %<mr_iid>s
+```
+
+#{SEE_DOC}
+SUGGEST_COMMENT
+
+def check_changelog_yaml(path)
+  raw_file = File.read(path)
+  yaml = YAML.safe_load(raw_file)
+
+  fail "`title` should be set, in #{gitlab.html_link(path)}! #{SEE_DOC}" if yaml["title"].nil?
+  fail "`type` should be set, in #{gitlab.html_link(path)}! #{SEE_DOC}" if yaml["type"].nil?
+
+  return if helper.security_mr?
+
+  cherry_pick_against_stable_branch = helper.cherry_pick_mr? && helper.stable_branch?
+
+  if yaml["merge_request"].nil?
+    mr_line = raw_file.lines.find_index("merge_request:\n")
+
+    if mr_line
+      markdown(format(SUGGEST_MR_COMMENT, mr_iid: gitlab.mr_json["iid"]), file: path, line: mr_line.succ)
+    else
+      message "Consider setting `merge_request` to #{gitlab.mr_json["iid"]} in #{gitlab.html_link(path)}. #{SEE_DOC}"
+    end
+  elsif yaml["merge_request"] != gitlab.mr_json["iid"] && !cherry_pick_against_stable_branch
+    fail "Merge request ID was not set to #{gitlab.mr_json["iid"]}! #{SEE_DOC}"
+  end
+rescue Psych::SyntaxError, Psych::DisallowedClass, Psych::BadAlias
+  # YAML could not be parsed, fail the build.
+  fail "#{gitlab.html_link(path)} isn't valid YAML! #{SEE_DOC}"
+rescue StandardError => e
+  warn "There was a problem trying to check the Changelog. Exception: #{e.class.name} - #{e.message}"
+end
+
+def check_changelog_path(path)
+  ee_changes = helper.all_ee_changes.dup
+  ee_changes.delete(path)
+
+  if ee_changes.any? && !changelog.ee_changelog?
+    warn "This MR has a Changelog file outside `ee/`, but code changes in `ee/`. Consider moving the Changelog file into `ee/`."
+  end
+
+  if ee_changes.empty? && changelog.ee_changelog?
+    warn "This MR has a Changelog file in `ee/`, but no code changes in `ee/`. Consider moving the Changelog file outside `ee/`."
+  end
+end
+
+if git.modified_files.include?("CHANGELOG.md")
+  fail changelog.modified_text
+end
+
+changelog_found = changelog.found
+
+if changelog_found
+  check_changelog_yaml(changelog_found)
+  check_changelog_path(changelog_found)
+elsif changelog.required?
+  fail changelog.required_text
+elsif changelog.optional?
+  message changelog.optional_text
+end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Gitlab
   module GitlabImport
     class Importer
@@ -5,46 +7,59 @@ module Gitlab
 
       def initialize(project)
         @project = project
-        @client = Client.new(project.creator.gitlab_access_token)
-        @formatter = Gitlab::ImportFormatter.new
+        import_data = project.import_data
+        if import_data && import_data.credentials && import_data.credentials[:password]
+          @client = Client.new(import_data.credentials[:password])
+          @formatter = Gitlab::ImportFormatter.new
+        else
+          raise Projects::ImportService::Error, "Unable to find project import data credentials for project ID: #{@project.id}"
+        end
       end
 
       def execute
-        project_identifier = URI.encode(project.import_source, '/')
+        ActiveRecord::Base.no_touching do
+          project_identifier = CGI.escape(project.import_source)
 
-        #Issues && Comments
-        issues = client.issues(project_identifier)
-        
-        issues.each do |issue|
-          body = @formatter.author_line(issue["author"]["name"], issue["description"])
-          
-          comments = client.issue_comments(project_identifier, issue["id"])
-          
-          if comments.any?
-            body += @formatter.comments_header
+          # Issues && Comments
+          issues = client.issues(project_identifier)
+
+          issues.each do |issue|
+            body = [@formatter.author_line(issue["author"]["name"])]
+            body << issue["description"]
+
+            comments = client.issue_comments(project_identifier, issue["iid"])
+
+            if comments.any?
+              body << @formatter.comments_header
+            end
+
+            comments.each do |comment|
+              body << @formatter.comment(comment["author"]["name"], comment["created_at"], comment["body"])
+            end
+
+            project.issues.create!(
+              iid: issue["iid"],
+              description: body.join,
+              title: issue["title"],
+              state: issue["state"],
+              updated_at: issue["updated_at"],
+              author_id: gitlab_user_id(project, issue["author"]["id"]),
+              confidential: issue["confidential"]
+            )
           end
-
-          comments.each do |comment|
-            body += @formatter.comment(comment["author"]["name"], comment["created_at"], comment["body"])
-          end
-
-          project.issues.create!(
-            description: body, 
-            title: issue["title"],
-            state: issue["state"],
-            author_id: gl_user_id(project, issue["author"]["id"])
-          )
         end
-        
+
         true
       end
 
       private
 
-      def gl_user_id(project, gitlab_id)
+      # rubocop: disable CodeReuse/ActiveRecord
+      def gitlab_user_id(project, gitlab_id)
         user = User.joins(:identities).find_by("identities.extern_uid = ? AND identities.provider = 'gitlab'", gitlab_id.to_s)
         (user && user.id) || project.creator_id
       end
+      # rubocop: enable CodeReuse/ActiveRecord
     end
   end
 end

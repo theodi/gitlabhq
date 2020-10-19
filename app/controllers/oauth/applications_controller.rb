@@ -1,50 +1,76 @@
+# frozen_string_literal: true
+
 class Oauth::ApplicationsController < Doorkeeper::ApplicationsController
-  include Gitlab::CurrentSettings
+  include Gitlab::GonHelper
   include PageLayoutHelper
-  
-  before_action :verify_user_oauth_applications_enabled
-  before_action :authenticate_user!
+  include OauthApplications
+  include Gitlab::Experimentation::ControllerConcern
+  include InitializesCurrentUserMode
+
+  # Defined by the `Doorkeeper::ApplicationsController` and is redundant as we call `authenticate_user!` below. Not
+  # defining or skipping this will result in a `403` response to all requests.
+  skip_before_action :authenticate_admin!
+
+  prepend_before_action :verify_user_oauth_applications_enabled, except: :index
+  prepend_before_action :authenticate_user!
+  before_action :add_gon_variables
+  before_action :load_scopes, only: [:index, :create, :edit, :update]
+
+  around_action :set_locale
 
   layout 'profile'
 
   def index
-    head :forbidden and return
+    set_index_vars
   end
 
   def create
-    @application = Doorkeeper::Application.new(application_params)
+    @application = Applications::CreateService.new(current_user, create_application_params).execute(request)
 
-    @application.owner = current_user
-
-    if @application.save
+    if @application.persisted?
       flash[:notice] = I18n.t(:notice, scope: [:doorkeeper, :flash, :applications, :create])
+
       redirect_to oauth_application_url(@application)
     else
-      render :new
+      set_index_vars
+      render :index
     end
-  end
-
-  def destroy
-    if @application.destroy
-      flash[:notice] = I18n.t(:notice, scope: [:doorkeeper, :flash, :applications, :destroy])
-    end
-
-    redirect_to applications_profile_url
   end
 
   private
 
   def verify_user_oauth_applications_enabled
-    return if current_application_settings.user_oauth_applications?
+    return if Gitlab::CurrentSettings.user_oauth_applications?
 
-    redirect_to applications_profile_url
+    redirect_to profile_path
   end
 
+  def set_index_vars
+    @applications = current_user.oauth_applications
+    @authorized_tokens = current_user.oauth_authorized_tokens
+    @authorized_anonymous_tokens = @authorized_tokens.reject(&:application)
+    @authorized_apps = @authorized_tokens.map(&:application).uniq.reject(&:nil?)
+
+    # Don't overwrite a value possibly set by `create`
+    @application ||= Doorkeeper::Application.new
+  end
+
+  # Override Doorkeeper to scope to the current user
   def set_application
     @application = current_user.oauth_applications.find(params[:id])
   end
 
   rescue_from ActiveRecord::RecordNotFound do |exception|
-    render "errors/not_found", layout: "errors", status: 404
+    render "errors/not_found", layout: "errors", status: :not_found
+  end
+
+  def create_application_params
+    application_params.tap do |params|
+      params[:owner] = current_user
+    end
+  end
+
+  def set_locale(&block)
+    Gitlab::I18n.with_user_locale(current_user, &block)
   end
 end

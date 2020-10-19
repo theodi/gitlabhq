@@ -1,0 +1,138 @@
+@include media-breakpoint-down(md) {
+  .content-list {
+    &.builds-content-list {
+      width: 100%;
+      overflow: auto;
+    }
+  }
+}
+
+.ci-table {
+  .avatar {
+    margin-left: 0;
+    float: none;
+  }
+
+  .branch-commit {
+    .ref-name {
+      font-weight: $gl-font-weight-bold;
+      max-width: 100px;
+      overflow: hidden;
+      display: inline-block;
+      white-space: nowrap;
+      vertical-align: middle;
+      text-overflow: ellipsis;
+    }
+
+    svg {
+      height: 14px;
+      width: 14px;
+      vertical-align: middle;
+
+      &:not(.text-warning) {
+        fill: $gl-text-color-secondary;
+      }
+    }
+
+    .sprite {
+      width: 12px;
+      height: 12px;
+      fill: $gl-text-color;
+    }
+
+    .fa {
+      font-size: 12px;
+      color: $gl-text-color;
+    }
+
+    .commit-sha {
+      color: $blue-600;
+    }
+
+    .badge {
+      margin-right: 4px;
+    }
+
+    .label-container {
+      font-size: 0;
+
+      .badge {
+        margin-top: 5px;
+      }
+    }
+  }
+
+  .duration,
+  .finished-at {
+    color: $gl-text-color-secondary;
+    margin: 0;
+    white-space: nowrap;
+
+    svg {
+      width: 12px;
+      height: 12px;
+      vertical-align: middle;
+      margin-right: 4px;
+    }
+  }
+
+  .build-link a {
+    color: $gl-text-color;
+  }
+}
+
+[data-page='admin:jobs:index'] {
+  .admin-builds-table {
+    td:last-child {
+      min-width: 120px;
+    }
+  }
+}
+
+/**
+ * Terminal
+ */
+[data-page='projects:jobs:terminal'],
+[data-page='projects:environments:terminal'] {
+  .terminal-container {
+    .content-block {
+      border-bottom: 0;
+    }
+
+    #terminal {
+      margin-top: 10px;
+
+      > div {
+        min-height: 450px;
+      }
+    }
+  }
+}
+
+.pipelines-container .top-area .nav-controls > .btn:last-child {
+  float: none;
+}
+
+.progress-bar.bg-primary {
+  background-color: $blue-500 !important;
+}
+
+.pipeline-stage-pill {
+  width: 10rem;
+}
+
+.pipeline-job-pill {
+  width: 8rem;
+}
+
+.stage-rounded {
+  border-radius: 2rem;
+}
+
+.stage-left-rounded {
+  border-radius: 2rem 0 0 2rem;
+}
+
+.stage-right-rounded {
+  border-radius: 0 2rem 2rem 0;
+}

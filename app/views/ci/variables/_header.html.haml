@@ -1,0 +1,11 @@
+- expanded = local_assigns.fetch(:expanded)
+
+%h4
+  = _('Variables')
+  = link_to sprite_icon('question-o', css_class: 'gl-vertical-align-baseline!'), help_page_path('ci/variables/README', anchor: 'custom-environment-variables'), target: '_blank', rel: 'noopener noreferrer'
+
+%button.btn.btn-default.js-settings-toggle{ type: 'button' }
+  = expanded ? _('Collapse') : _('Expand')
+
+%p
+  = render "ci/variables/content"

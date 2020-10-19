@@ -1,7 +1,8 @@
-# Be sure to restart your server when you modify this file.
+Rails.backtrace_cleaner.remove_silencers!
 
-# You can add backtrace silencers for libraries that you're using but don't wish to see in your backtraces.
-# Rails.backtrace_cleaner.add_silencer { |line| line =~ /my_noisy_library/ }
+# This allows us to see the proper caller of SQL calls in {development,test}.log
+if (Rails.env.development? || Rails.env.test?) && Gitlab.ee?
+  Rails.backtrace_cleaner.add_silencer { |line| %r(^ee/lib/gitlab/database/load_balancing).match?(line) }
+end
 
-# You can also remove all the silencers if you're trying to debug a problem that might stem from framework code.
-# Rails.backtrace_cleaner.remove_silencers!
+Rails.backtrace_cleaner.add_silencer { |line| !Gitlab::APP_DIRS_PATTERN.match?(line) }

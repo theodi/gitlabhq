@@ -1,0 +1,19 @@
+apply:
+  stage: deploy
+  image: "registry.gitlab.com/gitlab-org/cluster-integration/cluster-applications:v0.29.0"
+  environment:
+    name: production
+  variables:
+    TILLER_NAMESPACE: gitlab-managed-apps
+    GITLAB_MANAGED_APPS_FILE: $CI_PROJECT_DIR/.gitlab/managed-apps/config.yaml
+  script:
+    - gitlab-managed-apps /usr/local/share/gitlab-managed-apps/helmfile.yaml
+  only:
+    refs:
+      - master
+  artifacts:
+    reports:
+      cluster_applications: gl-cluster-applications.json
+    when: on_failure
+    paths:
+      - tiller.log

@@ -1,34 +1,34 @@
+# frozen_string_literal: true
+
 class Dashboard::MilestonesController < Dashboard::ApplicationController
-  before_action :load_projects
+  before_action :projects
+  before_action :groups, only: :index
+
+  feature_category :issue_tracking
 
   def index
-    project_milestones = case params[:state]
-                         when 'all'; state
-                         when 'closed'; state('closed')
-                         else state('active')
-                         end
-    @dashboard_milestones = Milestones::GroupService.new(project_milestones).execute
-    @dashboard_milestones = Kaminari.paginate_array(@dashboard_milestones).page(params[:page]).per(PER_PAGE)
-  end
-
-  def show
-    project_milestones = Milestone.where(project_id: @projects).order("due_date ASC")
-    @dashboard_milestone = Milestones::GroupService.new(project_milestones).milestone(title)
+    respond_to do |format|
+      format.html do
+        @milestone_states = Milestone.states_count(@projects.select(:id), groups.select(:id))
+        @milestones = milestones.page(params[:page])
+      end
+      format.json do
+        render json: milestones.to_json(only: [:id, :title], methods: :name)
+      end
+    end
   end
 
   private
 
-  def load_projects
-    @projects = current_user.authorized_projects.sorted_by_activity.non_archived
+  def milestones
+    MilestonesFinder.new(search_params).execute
   end
 
-  def title
-    params[:title]
+  def groups
+    @groups ||= GroupsFinder.new(current_user, all_available: false).execute
   end
 
-  def state(state = nil)
-    conditions = { project_id: @projects }
-    conditions.reverse_merge!(state: state) if state
-    Milestone.where(conditions).order("title ASC")
+  def search_params
+    params.permit(:state, :search_title).merge(group_ids: groups, project_ids: projects)
   end
 end

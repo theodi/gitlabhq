@@ -1,8 +1,14 @@
+# GitLab
+
 ## Canonical source
 
-The source of GitLab Community Edition is [hosted on GitLab.com](https://gitlab.com/gitlab-org/gitlab-ce/) and there are mirrors to make [contributing](CONTRIBUTING.md) as easy as possible.
+The canonical source of GitLab where all development takes place is [hosted on GitLab.com](https://gitlab.com/gitlab-org/gitlab).
 
-# ![logo](https://about.gitlab.com/images/gitlab_logo.png) GitLab
+If you wish to clone a copy of GitLab without proprietary code, you can use the read-only mirror of GitLab located at https://gitlab.com/gitlab-org/gitlab-foss/. Please do not submit any issues and/or merge requests to this project.
+
+## Free trial
+
+You can request a free trial of GitLab Ultimate [on our website](https://about.gitlab.com/free-trial/).
 
 ## Open source software to collaborate on code
 
@@ -10,59 +16,79 @@ To see how GitLab looks please see the [features page on our website](https://ab
 
 - Manage Git repositories with fine grained access controls that keep your code secure
 - Perform code reviews and enhance collaboration with merge requests
-- Each project can also have an issue tracker and a wiki
+- Complete continuous integration (CI) and continuous deployment/delivery (CD) pipelines to build, test, and deploy your applications
+- Each project can also have an issue tracker, issue board, and a wiki
 - Used by more than 100,000 organizations, GitLab is the most popular solution to manage Git repositories on-premises
 - Completely free and open source (MIT Expat license)
-- Powered by [Ruby on Rails](https://github.com/rails/rails)
 
 ## Editions
 
-There are two editions of GitLab.
-*GitLab [Community Edition](https://about.gitlab.com/features/) (CE)* is available without any costs under an MIT license.
+There are two editions of GitLab:
 
-*GitLab Enterprise Edition (EE)* includes [extra features](https://about.gitlab.com/features/#compare) that are most useful for organizations with more than 100 users.
-To use EE and get official support please [become a subscriber](https://about.gitlab.com/pricing/).
+- GitLab Community Edition (CE) is available freely under the MIT Expat license.
+- GitLab Enterprise Edition (EE) includes [extra features](https://about.gitlab.com/pricing/#compare-options) that are more useful for organizations with more than 100 users. To use EE and get official support please [become a subscriber](https://about.gitlab.com/pricing/).
 
-## Code status
+## Licensing
 
-- [![build status](https://ci.gitlab.org/projects/1/status.png?ref=master)](https://ci.gitlab.org/projects/1?ref=master) on ci.gitlab.org (master branch)
+See the [LICENSE](LICENSE) file for licensing information as it pertains to
+files in this repository.
 
-- [![Build Status](https://semaphoreapp.com/api/v1/projects/2f1a5809-418b-4cc2-a1f4-819607579fe7/243338/badge.png)](https://semaphoreapp.com/gitlabhq/gitlabhq)
+## Hiring
 
-- [![Code Climate](https://codeclimate.com/github/gitlabhq/gitlabhq.svg)](https://codeclimate.com/github/gitlabhq/gitlabhq)
-
-- [![Coverage Status](https://coveralls.io/repos/gitlabhq/gitlabhq/badge.png?branch=master)](https://coveralls.io/r/gitlabhq/gitlabhq?branch=master)
+We're hiring developers, support people, and production engineers all the time, please see our [jobs page](https://about.gitlab.com/jobs/).
 
 ## Website
 
 On [about.gitlab.com](https://about.gitlab.com/) you can find more information about:
 
-- [Subscriptions](https://about.gitlab.com/subscription/)
+- [Subscriptions](https://about.gitlab.com/pricing/)
 - [Consultancy](https://about.gitlab.com/consultancy/)
 - [Community](https://about.gitlab.com/community/)
 - [Hosted GitLab.com](https://about.gitlab.com/gitlab-com/) use GitLab as a free service
-- [GitLab Enterprise Edition](https://about.gitlab.com/gitlab-ee/) with additional features aimed at larger organizations.
+- [GitLab Enterprise Edition](https://about.gitlab.com/features/#enterprise) with additional features aimed at larger organizations.
 - [GitLab CI](https://about.gitlab.com/gitlab-ci/) a continuous integration (CI) server that is easy to integrate with GitLab.
 
 ## Requirements
-
-GitLab requires the following software:
-
-- Ubuntu/Debian/CentOS/RHEL
-- Ruby (MRI) 2.0 or 2.1
-- Git 1.7.10+
-- Redis 2.0+
-- MySQL or PostgreSQL
 
 Please see the [requirements documentation](doc/install/requirements.md) for system requirements and more information about the supported operating systems.
 
 ## Installation
 
-The recommended way to install GitLab is using the provided [Omnibus packages](https://about.gitlab.com/downloads/). Compared to an installation from source, this is faster and less error prone. Just select your operating system, download the respective package (Debian or RPM) and install it using the system's package manager.
+The recommended way to install GitLab is with the [Omnibus packages](https://about.gitlab.com/downloads/) on our package server.
+Compared to an installation from source, this is faster and less error prone.
+Just select your operating system, download the respective package (Debian or RPM) and install it using the system's package manager.
 
 There are various other options to install GitLab, please refer to the [installation page on the GitLab website](https://about.gitlab.com/installation/) for more information.
 
-You can access a new installation with the login **`root`** and password **`5iveL!fe`**, after login you are required to set a unique password.
+## Contributing
+
+GitLab is an open source project and we are very happy to accept community contributions. Please refer to [Contributing to GitLab page](https://about.gitlab.com/contributing/) for more details.
+
+## Install a development environment
+
+To work on GitLab itself, we recommend setting up your development environment with [the GitLab Development Kit](https://gitlab.com/gitlab-org/gitlab-development-kit).
+If you do not use the GitLab Development Kit you need to install and setup all the dependencies yourself, this is a lot of work and error prone.
+One small thing you also have to do when installing it yourself is to copy the example development Unicorn configuration file:
+
+    cp config/unicorn.rb.example.development config/unicorn.rb
+
+Instructions on how to start GitLab and how to run the tests can be found in the [getting started section of the GitLab Development Kit](https://gitlab.com/gitlab-org/gitlab-development-kit#getting-started).
+
+## Software stack
+
+GitLab is a Ruby on Rails application that runs on the following software:
+
+- Ubuntu/Debian/CentOS/RHEL/OpenSUSE
+- Ruby (MRI) 2.6.6
+- Git 2.24+
+- Redis 4.0+
+- PostgreSQL 11+
+
+For more information please see the [architecture](https://docs.gitlab.com/ee/development/architecture.html) and [requirements](https://docs.gitlab.com/ee/install/requirements.html) documentation.
+
+## UX design
+
+Please adhere to the [UX Guide](doc/development/ux_guide/index.md) when creating designs and implementing code.
 
 ## Third-party applications
 
@@ -70,35 +96,28 @@ There are a lot of [third-party applications integrating with GitLab](https://ab
 
 ## GitLab release cycle
 
-Since 2011 a minor or major version of GitLab is released on the 22nd of every month. Patch and security releases are published when needed. New features are detailed on the [blog](https://about.gitlab.com/blog/) and in the [changelog](CHANGELOG). For more information about the release process see the [release documentation](https://gitlab.com/gitlab-org/gitlab-ce/tree/master/doc/release). Features that will likely be in the next releases can be found on the [feature request forum](http://feedback.gitlab.com/forums/176466-general) with the status [started](http://feedback.gitlab.com/forums/176466-general/status/796456) and [completed](http://feedback.gitlab.com/forums/176466-general/status/796457).
+For more information about the release process see the [release documentation](https://gitlab.com/gitlab-org/release-tools/blob/master/README.md).
 
 ## Upgrading
 
-For updating the Omnibus installation please see the [update documentation](https://gitlab.com/gitlab-org/omnibus-gitlab/blob/master/doc/update.md). For installations from source there is an [upgrader script](doc/update/upgrader.md) and there are [upgrade guides](doc/update) detailing all necessary commands to migrate to the next version.
-
-## Install a development environment
-
-To work on GitLab itself, we recommend setting up your development environment with [the GitLab Development Kit](https://gitlab.com/gitlab-org/gitlab-development-kit).
-If you do not use the GitLab Development Kit you need to install and setup all the dependencies yourself, this is a lot of work and error prone.
-One small thing you also have to do when installing it yourself is to copy the example development unicorn configuration file:
-
-    cp config/unicorn.rb.example.development config/unicorn.rb
-
-Instructions on how to start GitLab and how to run the tests can be found in the [development section of the GitLab Development Kit](https://gitlab.com/gitlab-org/gitlab-development-kit#development).
+For upgrading information please see our [update page](https://about.gitlab.com/update/).
 
 ## Documentation
 
-All documentation can be found on [doc.gitlab.com/ce/](http://doc.gitlab.com/ce/).
+All documentation can be found on <https://docs.gitlab.com>.
 
 ## Getting help
 
 Please see [Getting help for GitLab](https://about.gitlab.com/getting-help/) on our website for the many options to get help.
 
+## Why?
+
+[Read here](https://about.gitlab.com/why/)
+
 ## Is it any good?
 
-[Yes](https://news.ycombinator.com/item?id=3067434)
+[Yes](https://about.gitlab.com/is-it-any-good/)
 
 ## Is it awesome?
 
-Thanks for [asking this question](https://twitter.com/supersloth/status/489462789384056832) Joshua.
-[These people](https://twitter.com/gitlab/favorites) seem to like it.
+[These people](https://twitter.com/gitlab/likes) seem to like it.

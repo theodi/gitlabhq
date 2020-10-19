@@ -1,0 +1,104 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Expand button on click when short text is provided renders button after text 1`] = `
+<span>
+  <button
+    aria-label="Click to expand text"
+    class="btn js-text-expander-prepend text-expander btn-blank btn-default btn-md gl-button btn-icon button-ellipsis-horizontal"
+    style="display: none;"
+    type="button"
+  >
+    <!---->
+     
+    <svg
+      class="gl-button-icon gl-icon s16"
+      data-testid="ellipsis_h-icon"
+    >
+      <use
+        href="#ellipsis_h"
+      />
+    </svg>
+      
+    <!---->
+  </button>
+   
+  <!---->
+   
+  <span>
+    <p>
+      Expanded!
+    </p>
+  </span>
+   
+  <button
+    aria-label="Click to expand text"
+    class="btn js-text-expander-append text-expander btn-blank btn-default btn-md gl-button btn-icon button-ellipsis-horizontal"
+    style=""
+    type="button"
+  >
+    <!---->
+     
+    <svg
+      class="gl-button-icon gl-icon s16"
+      data-testid="ellipsis_h-icon"
+    >
+      <use
+        href="#ellipsis_h"
+      />
+    </svg>
+      
+    <!---->
+  </button>
+</span>
+`;
+
+exports[`Expand button when short text is provided renders button before text 1`] = `
+<span>
+  <button
+    aria-label="Click to expand text"
+    class="btn js-text-expander-prepend text-expander btn-blank btn-default btn-md gl-button btn-icon button-ellipsis-horizontal"
+    type="button"
+  >
+    <!---->
+     
+    <svg
+      class="gl-button-icon gl-icon s16"
+      data-testid="ellipsis_h-icon"
+    >
+      <use
+        href="#ellipsis_h"
+      />
+    </svg>
+      
+    <!---->
+  </button>
+   
+  <span>
+    <p>
+      Short
+    </p>
+  </span>
+   
+  <!---->
+   
+  <button
+    aria-label="Click to expand text"
+    class="btn js-text-expander-append text-expander btn-blank btn-default btn-md gl-button btn-icon button-ellipsis-horizontal"
+    style="display: none;"
+    type="button"
+  >
+    <!---->
+     
+    <svg
+      class="gl-button-icon gl-icon s16"
+      data-testid="ellipsis_h-icon"
+    >
+      <use
+        href="#ellipsis_h"
+      />
+    </svg>
+      
+    <!---->
+  </button>
+</span>
+`;

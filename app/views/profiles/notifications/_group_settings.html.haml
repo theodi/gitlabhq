@@ -1,0 +1,16 @@
+- emails_disabled = group.emails_disabled?
+
+.gl-responsive-table-row.notification-list-item
+  .table-section.section-40
+    %span.notification.gl-mr-2
+      = notification_icon(notification_icon_level(setting, emails_disabled))
+
+    %span.str-truncated
+      = link_to group.name, group_path(group)
+
+  .table-section.section-30.text-right
+    = render 'shared/notifications/button', notification_setting: setting, emails_disabled: emails_disabled
+
+  .table-section.section-30
+    = form_for setting, url: profile_notifications_group_path(group), method: :put, html: { class: 'update-notifications' } do |f|
+      = f.select :notification_email, @user.public_verified_emails, { include_blank: 'Global notification email' }, class: 'select2 js-group-notification-email'

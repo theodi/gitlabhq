@@ -1,0 +1,124 @@
+/**
+  Please note: These are deprecated in favor of the Gitlab UI utility classes.
+  Check https://unpkg.com/browse/@gitlab/ui/src/scss/utilities.scss
+  to see the available utility classes. If you cannot find the class you need,
+  consider adding it to Gitlab UI before adding it here.
+**/
+
+@each $variant, $range in $color-ranges {
+  @each $suffix, $color in $range {
+    #{'.bg-#{$variant}-#{$suffix}'} {
+      background-color: $color;
+    }
+
+    #{'.text-#{$variant}-#{$suffix}'} {
+      color: $color;
+    }
+  }
+}
+
+@each $index, $size in $type-scale {
+  #{'.text-#{$index}'} {
+    font-size: $size;
+  }
+}
+
+@each $index, $size in $size-scale {
+  #{'.mw-#{$index}'} {
+    max-width: $size;
+  }
+}
+
+@each $index, $size in $type-scale {
+  #{'.lh-#{$index}'} {
+    line-height: $size;
+  }
+}
+
+@for $i from 1 through 12 {
+  #{'.tab-width-#{$i}'} {
+    /* stylelint-disable-next-line property-no-vendor-prefix */
+    -moz-tab-size: $i;
+    tab-size: $i;
+  }
+}
+
+.border-width-1px { border-width: 1px; }
+.border-style-dashed { border-style: dashed; }
+.border-style-solid { border-style: solid; }
+.border-color-blue-300 { border-color: $blue-300; }
+.border-color-default { border-color: $border-color; }
+.border-radius-default { border-radius: $border-radius-default; }
+.border-radius-small { border-radius: $border-radius-small; }
+.box-shadow-default { box-shadow: 0 2px 4px 0 $black-transparent; }
+
+.gl-children-ml-sm-3 > * {
+  @include media-breakpoint-up(sm) {
+    @include gl-ml-3;
+  }
+}
+
+.mh-50vh { max-height: 50vh; }
+
+.min-width-0 {
+  // By default flex items don't shrink below their minimum content size. To change this, set the item's min-width
+  min-width: 0;
+}
+
+.font-size-inherit { font-size: inherit; }
+.gl-w-8 { width: px-to-rem($grid-size); }
+.gl-w-16 { width: px-to-rem($grid-size * 2); }
+.gl-w-64 { width: px-to-rem($grid-size * 8); }
+.gl-h-8 { height: px-to-rem($grid-size); }
+.gl-h-32 { height: px-to-rem($grid-size * 4); }
+.gl-h-64 { height: px-to-rem($grid-size * 8); }
+
+// Migrate this to Gitlab UI when FF is removed
+// https://gitlab.com/groups/gitlab-org/-/epics/2882
+.gl-h-200\! { height: px-to-rem($grid-size * 25) !important; }
+
+.d-sm-table-column {
+  @include media-breakpoint-up(sm) {
+    display: table-column !important;
+  }
+}
+
+.gl-text-purple { color: $purple; }
+.gl-bg-purple-light { background-color: $purple-light; }
+
+// move this to GitLab UI once onboarding experiment is considered a success
+.gl-py-8 {
+  padding-top: $gl-spacing-scale-8;
+  padding-bottom: $gl-spacing-scale-8;
+}
+
+.gl-transition-property-stroke-opacity {
+  transition-property: stroke-opacity;
+}
+
+.gl-transition-property-stroke {
+  transition-property: stroke;
+}
+
+.gl-top-66vh {
+  top: 66vh;
+}
+
+.gl-shadow-x0-y0-b3-s1-blue-500 {
+  box-shadow: inset 0 0 3px $gl-border-size-1 $blue-500;
+}
+
+// This utility is used to force the z-index to match that of dropdown menu's
+.gl-z-dropdown-menu\! {
+  z-index: 300 !important;
+}
+
+.gl-flex-basis-quarter {
+  flex-basis: 25%;
+}
+
+.gl-md-ml-3 {
+  @media (min-width: $breakpoint-md) {
+    margin-left: $gl-spacing-scale-3;
+  }
+}

@@ -1,0 +1,35 @@
+# Exit early if we don't want to build the image
+if [[ "${BUILD_ASSETS_IMAGE}" != "true" ]]
+then
+  exit 0
+fi
+
+# Generate the image name based on the project this is being run in
+ASSETS_IMAGE_NAME="gitlab-assets-ce"
+# `dev.gitlab-org` still has gitlab-ee.
+if [[ "${CI_PROJECT_NAME}" == "gitlab" ]] || [[ "${CI_PROJECT_NAME}" == "gitlab-ee" ]]
+then
+  ASSETS_IMAGE_NAME="gitlab-assets-ee"
+fi
+
+ASSETS_IMAGE_PATH=${CI_REGISTRY}/${CI_PROJECT_PATH}/${ASSETS_IMAGE_NAME}
+
+mkdir -p assets_container.build/public
+cp -r public/assets assets_container.build/public/
+cp Dockerfile.assets assets_container.build/
+
+COMMIT_REF_SLUG_DESTINATION=${ASSETS_IMAGE_PATH}:${CI_COMMIT_REF_SLUG}
+COMMIT_SHA_DESTINATION=${ASSETS_IMAGE_PATH}:${CI_COMMIT_SHA}
+COMMIT_REF_NAME_DESTINATION=${ASSETS_IMAGE_PATH}:${CI_COMMIT_REF_NAME}
+
+DESTINATIONS="--destination=$COMMIT_REF_SLUG_DESTINATION --destination=$COMMIT_SHA_DESTINATION"
+
+# Also tag the image with GitLab version, if running on a tag pipeline, so
+# other projects can simply use that instead of computing the slug.
+if [ -n "$CI_COMMIT_TAG" ]; then
+  DESTINATIONS="$DESTINATIONS --destination=$COMMIT_REF_NAME_DESTINATION"
+fi
+
+echo "building assets image for destinations: $DESTINATIONS"
+
+/kaniko/executor --context=assets_container.build --dockerfile=assets_container.build/Dockerfile.assets $DESTINATIONS

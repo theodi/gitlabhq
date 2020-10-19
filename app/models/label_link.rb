@@ -1,19 +1,12 @@
-# == Schema Information
-#
-# Table name: label_links
-#
-#  id          :integer          not null, primary key
-#  label_id    :integer
-#  target_id   :integer
-#  target_type :string(255)
-#  created_at  :datetime
-#  updated_at  :datetime
-#
+# frozen_string_literal: true
 
-class LabelLink < ActiveRecord::Base
-  belongs_to :target, polymorphic: true
+class LabelLink < ApplicationRecord
+  include BulkInsertSafe
+  include Importable
+
+  belongs_to :target, polymorphic: true, inverse_of: :label_links # rubocop:disable Cop/PolymorphicAssociations
   belongs_to :label
 
-  validates :target, presence: true
-  validates :label, presence: true
+  validates :target, presence: true, unless: :importing?
+  validates :label, presence: true, unless: :importing?
 end

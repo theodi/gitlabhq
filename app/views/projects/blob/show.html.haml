@@ -1,9 +1,18 @@
+- breadcrumb_title "Repository"
 - page_title @blob.path, @ref
-%div.tree-ref-holder
-  = render 'shared/ref_switcher', destination: 'blob', path: @path
+- signatures_path = namespace_project_signatures_path(namespace_id: @project.namespace.full_path, project_id: @project.path, id: @last_commit, limit: 1)
 
-%div#tree-holder.tree-holder
+.js-signature-container{ data: { 'signatures-path': signatures_path } }
+
+= render 'projects/last_push'
+
+#tree-holder.tree-holder
   = render 'blob', blob: @blob
 
-- if allowed_tree_edit?
-  = render 'projects/blob/remove'
+  - if can_modify_blob?(@blob)
+    = render 'projects/blob/remove'
+
+  - title = "Replace #{@blob.name}"
+  = render 'projects/blob/upload', title: title, placeholder: title, button_title: 'Replace file', form_path: project_update_blob_path(@project, @id), method: :put
+
+= render partial: 'pipeline_tour_success' if show_suggest_pipeline_creation_celebration?

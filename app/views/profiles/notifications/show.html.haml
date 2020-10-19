@@ -1,79 +1,54 @@
-- page_title "Notifications"
-%h3.page-title
-  = page_title
-%p.light
-  These are your global notification settings.
-%hr
+- page_title _('Notifications')
+- @content_class = "limit-container-width" unless fluid_layout
 
-= form_for @user, url: profile_notifications_path, method: :put, html: { class: 'update-notifications form-horizontal global-notifications-form' } do |f|
-  -if @user.errors.any?
-    %div.alert.alert-danger
+%div
+  - if @user.errors.any?
+    .gl-alert.gl-alert-danger
       %ul
         - @user.errors.full_messages.each do |msg|
           %li= msg
 
   = hidden_field_tag :notification_type, 'global'
+  .row.gl-mt-3
+    .col-lg-4.profile-settings-sidebar
+      %h4.gl-mt-0
+        = page_title
+      %p
+        = _('You can specify notification level per group or per project.')
+      %p
+        = _('By default, all projects and groups will use the global notifications setting.')
+    .col-lg-8
+      %h5.gl-mt-0
+        = _('Global notification settings')
 
-  .form-group
-    = f.label :notification_email, class: "control-label"
-    .col-sm-10
-      = f.select :notification_email, @user.all_emails, { include_blank: false }, class: "form-control"
+      = form_for @user, url: profile_notifications_path, method: :put, html: { class: 'update-notifications gl-mt-3' } do |f|
+        = render_if_exists 'profiles/notifications/email_settings', form: f
 
-  .form-group
-    = f.label :notification_level, class: 'control-label'
-    .col-sm-10
-      .radio
-        = f.label :notification_level, value: Notification::N_DISABLED do
-          = f.radio_button :notification_level, Notification::N_DISABLED
-          .level-title
-            Disabled
-          %p You will not get any notifications via email
-
-      .radio
-        = f.label :notification_level, value: Notification::N_MENTION do
-          = f.radio_button :notification_level, Notification::N_MENTION
-          .level-title
-            Mention
-          %p You will receive notifications only for comments in which you were @mentioned
-
-      .radio
-        = f.label :notification_level, value: Notification::N_PARTICIPATING do
-          = f.radio_button :notification_level, Notification::N_PARTICIPATING
-          .level-title
-            Participating
-          %p You will only receive notifications from related resources (e.g. from your commits or assigned issues)
-
-      .radio
-        = f.label :notification_level, value: Notification::N_WATCH do
-          = f.radio_button :notification_level, Notification::N_WATCH
-          .level-title
-            Watch
-          %p You will receive all notifications from projects in which you participate
-
-  .form-actions
-    = f.submit 'Save changes', class: "btn btn-create"
-
-.clearfix
-  %hr
-.row.all-notifications
-  .col-md-6
-    %p
-      You can also specify notification level per group or per project.
+      = label_tag :global_notification_level, "Global notification level", class: "label-bold"
       %br
-      By default, all projects and groups will use the notification level set above.
-    %h4 Groups:
-    %ul.bordered-list
-      - @group_members.each do |group_member|
-        - notification = Notification.new(group_member)
-        = render 'settings', type: 'group', membership: group_member, notification: notification
+      .clearfix
+      .form-group.float-left.global-notification-setting
+        = render 'shared/notifications/button', notification_setting: @global_notification_setting
 
-  .col-md-6
-    %p
-      To specify the notification level per project of a group you belong to,
-      %br
-      you need to be a member of the project itself, not only its group.
-    %h4 Projects:
-    %ul.bordered-list
-      - @project_members.each do |project_member|
-        - notification = Notification.new(project_member)
-        = render 'settings', type: 'project', membership: project_member, notification: notification
+      .clearfix
+
+      = form_for @user, url: profile_notifications_path, method: :put do |f|
+        %label{ for: 'user_notified_of_own_activity' }
+          = f.check_box :notified_of_own_activity
+          %span= _('Receive notifications about your own activity')
+
+      %hr
+      %h5
+        = _('Groups (%{count})') % { count: @user_groups.total_count }
+      %div
+        - @group_notifications.each do |setting|
+          = render 'group_settings', setting: setting, group: setting.source
+        = paginate @user_groups, theme: 'gitlab'
+      %h5
+        = _('Projects (%{count})') % { count: @project_notifications.size }
+      %p.account-well
+        = _('To specify the notification level per project of a group you belong to, you need to visit project page and change notification level there.')
+      .gl-mb-3
+        %ul.bordered-list
+          - @project_notifications.each do |setting|
+            = render 'project_settings', setting: setting, project: setting.source

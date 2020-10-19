@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "properties" : {
+    "title": { "type": "string" },
+    "state": { "type": "string" },
+    "merge_status": { "type": "string" },
+    "source_branch_exists": { "type": "boolean" },
+    "merge_error": { "type": ["string", "null"] },
+    "rebase_in_progress": { "type": "boolean" },
+    "allow_collaboration": { "type": "boolean"},
+    "allow_maintainer_to_push": { "type": "boolean"},
+    "assignees": {
+      "type": ["array"],
+      "items": {
+        "type": "object",
+        "$ref": "../public_api/v4/user/basic.json"
+      }
+    },
+    "reviewers": {
+      "type": ["array"],
+      "items": {
+        "type": "object",
+        "$ref": "../public_api/v4/user/basic.json"
+      }
+    },
+    "milestone": {
+      "type": [ "object", "null" ]
+    },
+    "labels": {
+      "type": [ "array", "null" ]
+    },
+    "task_status": { "type": "string" },
+    "task_status_short": { "type": "string" },
+    "lock_version": { "type": ["integer", "null"] }
+  },
+  "additionalProperties": false
+}

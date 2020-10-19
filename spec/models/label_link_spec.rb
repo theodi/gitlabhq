@@ -1,21 +1,15 @@
-# == Schema Information
-#
-# Table name: label_links
-#
-#  id          :integer          not null, primary key
-#  label_id    :integer
-#  target_id   :integer
-#  target_type :string(255)
-#  created_at  :datetime
-#  updated_at  :datetime
-#
+# frozen_string_literal: true
 
 require 'spec_helper'
 
-describe LabelLink do
-  let(:label) { create(:label_link) }
-  it { expect(label).to be_valid }
+RSpec.describe LabelLink do
+  it { expect(build(:label_link)).to be_valid }
 
   it { is_expected.to belong_to(:label) }
   it { is_expected.to belong_to(:target) }
+
+  it_behaves_like 'a BulkInsertSafe model', LabelLink do
+    let(:valid_items_for_bulk_insertion) { build_list(:label_link, 10) }
+    let(:invalid_items_for_bulk_insertion) { [] } # class does not have any validations defined
+  end
 end

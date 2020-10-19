@@ -1,0 +1,89 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Snippet Description Edit component rendering matches the snapshot 1`] = `
+<div
+  class="form-group js-description-input"
+>
+  <label
+    for="snippet-description"
+  >
+    Description (optional)
+  </label>
+   
+  <div
+    class="js-collapsible-input"
+  >
+    <div
+      class="js-collapsed d-none"
+    >
+      <gl-form-input-stub
+        class="form-control"
+        data-qa-selector="description_placeholder"
+        placeholder="Optionally add a description about what your snippet does or how to use it…"
+      />
+    </div>
+     
+    <div
+      class="js-vue-markdown-field md-area position-relative gfm-form js-expanded"
+    >
+      <markdown-header-stub
+        linecontent=""
+      />
+       
+      <div
+        class="md-write-holder"
+      >
+        <div
+          class="zen-backdrop div-dropzone-wrapper"
+        >
+          <div
+            class="div-dropzone js-invalid-dropzone"
+          >
+            <textarea
+              aria-label="Description"
+              class="note-textarea js-gfm-input js-autosize markdown-area js-gfm-input-initialized"
+              data-qa-selector="snippet_description_field"
+              data-supports-quick-actions="false"
+              dir="auto"
+              id="snippet-description"
+              placeholder="Write a comment or drag your files here…"
+              style="overflow-x: hidden; word-wrap: break-word; overflow-y: hidden;"
+            />
+            <div
+              class="div-dropzone-hover"
+            >
+              <i
+                class="fa fa-paperclip div-dropzone-icon"
+              />
+            </div>
+          </div>
+           
+          <a
+            aria-label="Leave zen mode"
+            class="zen-control zen-control-leave js-zen-leave gl-text-gray-500"
+            href="#"
+          >
+            <gl-icon-stub
+              name="minimize"
+              size="16"
+            />
+          </a>
+           
+          <markdown-toolbar-stub
+            canattachfile="true"
+            markdowndocspath="help/"
+            quickactionsdocspath=""
+          />
+        </div>
+      </div>
+       
+      <div
+        class="js-vue-md-preview md md-preview-holder"
+        style="display: none;"
+      />
+       
+      <!---->
+    </div>
+  </div>
+</div>
+`;

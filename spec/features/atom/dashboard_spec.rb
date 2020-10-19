@@ -1,12 +1,23 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe "Dashboard Feed", feature: true  do
+RSpec.describe "Dashboard Feed" do
   describe "GET /" do
     let!(:user) { create(:user, name: "Jonh") }
 
-    context "projects atom feed via private token" do
-      it "should render projects atom feed" do
-        visit dashboard_path(:atom, private_token: user.private_token)
+    context "projects atom feed via personal access token" do
+      it "renders projects atom feed" do
+        personal_access_token = create(:personal_access_token, user: user)
+
+        visit dashboard_projects_path(:atom, private_token: personal_access_token.token)
+        expect(body).to have_selector('feed title')
+      end
+    end
+
+    context "projects atom feed via feed token" do
+      it "renders projects atom feed" do
+        visit dashboard_projects_path(:atom, feed_token: user.feed_token)
         expect(body).to have_selector('feed title')
       end
     end
@@ -17,19 +28,19 @@ describe "Dashboard Feed", feature: true  do
       let(:note) { create(:note, noteable: issue, author: user, note: 'Bug confirmed', project: project) }
 
       before do
-        project.team << [user, :master]
+        project.add_maintainer(user)
         issue_event(issue, user)
         note_event(note, user)
-        visit dashboard_path(:atom, private_token: user.private_token)
+        visit dashboard_projects_path(:atom, feed_token: user.feed_token)
       end
 
-      it "should have issue opened event" do
+      it "has issue opened event" do
         expect(body).to have_content("#{user.name} opened issue ##{issue.iid}")
       end
 
-      it "should have issue comment event" do
-        expect(body).
-          to have_content("#{user.name} commented on issue ##{issue.iid}")
+      it "has issue comment event" do
+        expect(body)
+          .to have_content("#{user.name} commented on issue ##{issue.iid}")
       end
     end
   end

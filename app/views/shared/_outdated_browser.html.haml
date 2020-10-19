@@ -1,8 +1,8 @@
 - if outdated_browser?
-  - link = "https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/install/requirements.md#supported-web-browsers"
-  .browser-alert
-    GitLab may not work properly because you are using an outdated web browser.
-    %br
-    Please install a
-    = link_to 'supported web browser', link
-    for a better experience.
+  .gl-alert.gl-alert-danger.outdated-browser{ :role => "alert" }
+    = sprite_icon('error', css_class: "gl-alert-icon gl-alert-icon-no-title gl-icon")
+    .gl-alert-body
+      = s_('OutdatedBrowser|GitLab may not work properly, because you are using an outdated web browser.')
+      %br
+      - browser_link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: help_page_path('install/requirements', anchor: 'supported-web-browsers') }
+      = s_('OutdatedBrowser|Please install a %{browser_link_start}supported web browser%{browser_link_end} for a better experience.').html_safe % { browser_link_start: browser_link_start, browser_link_end: '</a>'.html_safe }

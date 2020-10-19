@@ -1,30 +1,43 @@
+# frozen_string_literal: true
+
 class HelpController < ApplicationController
+  skip_before_action :authenticate_user!, unless: :public_visibility_restricted?
+  feature_category :not_owned
+
   layout 'help'
 
+  # Taken from Jekyll
+  # https://github.com/jekyll/jekyll/blob/3.5-stable/lib/jekyll/document.rb#L13
+  YAML_FRONT_MATTER_REGEXP = /\A(---\s*\n.*?\n?)^((---|\.\.\.)\s*$\n?)/m.freeze
+
   def index
+    # Remove YAML frontmatter so that it doesn't look weird
+    @help_index = File.read(Rails.root.join('doc', 'README.md')).sub(YAML_FRONT_MATTER_REGEXP, '')
+
+    # Prefix Markdown links with `help/` unless they are external links.
+    # '//' not necessarily part of URL, e.g., mailto:mail@example.com
+    # See https://rubular.com/r/DFHZl5w8d3bpzV
+    @help_index.gsub!(%r{(?<delim>\]\()(?!\w+:)(?!/)(?<link>[^\)\(]+\))}) do
+      "#{$~[:delim]}#{Gitlab.config.gitlab.relative_url_root}/help/#{$~[:link]}"
+    end
   end
 
   def show
-    @category = clean_path_info(path_params[:category])
-    @file = path_params[:file]
+    @path = Rack::Utils.clean_path_info(path_params[:path])
 
     respond_to do |format|
       format.any(:markdown, :md, :html) do
-        path = Rails.root.join('doc', @category, "#{@file}.md")
-
-        if File.exist?(path)
-          @markdown = File.read(path)
-
-          render 'show.html.haml'
+        if redirect_to_documentation_website?
+          redirect_to documentation_url
         else
-          # Force template to Haml
-          render 'errors/not_found.html.haml', layout: 'errors', status: 404
+          render_documentation
         end
       end
 
-      # Allow access to images in the doc folder
-      format.any(:png, :gif, :jpeg) do
-        path = Rails.root.join('doc', @category, "#{@file}.#{params[:format]}")
+      # Allow access to specific media files in the doc folder
+      format.any(:png, :gif, :jpeg, :mp4, :mp3) do
+        # Note: We are purposefully NOT using `Rails.root.join` because of https://gitlab.com/gitlab-org/gitlab/-/issues/216028.
+        path = File.join(Rails.root, 'doc', "#{@path}.#{params[:format]}")
 
         if File.exist?(path)
           send_file(path, disposition: 'inline')
@@ -41,46 +54,62 @@ class HelpController < ApplicationController
   def shortcuts
   end
 
+  def instance_configuration
+    @instance_configuration = InstanceConfiguration.new
+  end
+
   def ui
+    @user = User.new(id: 0, name: 'John Doe', username: '@johndoe')
   end
 
   private
 
   def path_params
-    params.require(:category)
-    params.require(:file)
+    params.require(:path)
 
     params
   end
 
-  PATH_SEPS = Regexp.union(*[::File::SEPARATOR, ::File::ALT_SEPARATOR].compact)
+  def redirect_to_documentation_website?
+    return false unless Feature.enabled?(:help_page_documentation_redirect)
+    return false unless Gitlab::UrlSanitizer.valid_web?(documentation_url)
 
-  # Taken from ActionDispatch::FileHandler
-  # Cleans up the path, to prevent directory traversal outside the doc folder.
-  def clean_path_info(path_info)
-    parts = path_info.split(PATH_SEPS)
+    true
+  end
 
-    clean = []
+  def documentation_url
+    return unless documentation_base_url
 
-    # Walk over each part of the path
-    parts.each do |part|
-      # Turn `one//two` or `one/./two` into `one/two`.
-      next if part.empty? || part == '.'
+    @documentation_url ||= Gitlab::Utils.append_path(documentation_base_url, documentation_file_path)
+  end
 
-      if part == '..'
-        # Turn `one/two/../` into `one`
-        clean.pop
-      else
-        # Add simple folder names to the clean path.
-        clean << part
-      end
+  def documentation_base_url
+    @documentation_base_url ||= Gitlab::CurrentSettings.current_application_settings.help_page_documentation_base_url.presence
+  end
+
+  def documentation_file_path
+    @documentation_file_path ||= [version_segment, 'ee', "#{@path}.html"].compact.join('/')
+  end
+
+  def version_segment
+    return if Gitlab.pre_release?
+
+    version = Gitlab.version_info
+    [version.major, version.minor].join('.')
+  end
+
+  def render_documentation
+    # Note: We are purposefully NOT using `Rails.root.join` because of https://gitlab.com/gitlab-org/gitlab/-/issues/216028.
+    path = File.join(Rails.root, 'doc', "#{@path}.md")
+
+    if File.exist?(path)
+      # Remove YAML frontmatter so that it doesn't look weird
+      @markdown = File.read(path).gsub(YAML_FRONT_MATTER_REGEXP, '')
+
+      render 'show.html.haml'
+    else
+      # Force template to Haml
+      render 'errors/not_found.html.haml', layout: 'errors', status: :not_found
     end
-
-    # If the path was an absolute path (i.e. `/` or `/one/two`),
-    # add `/` to the front of the clean path.
-    clean.unshift '/' if parts.empty? || parts.first.empty?
-
-    # Join all the clean path parts by the path separator.
-    ::File.join(*clean)
   end
 end

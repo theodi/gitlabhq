@@ -1,0 +1,30 @@
+#import "./list_item.fragment.graphql"
+#import "./alert_note.fragment.graphql"
+
+fragment AlertDetailItem on AlertManagementAlert {
+  ...AlertListItem
+  createdAt
+  monitoringTool
+  metricsDashboardUrl
+  service
+  description
+  updatedAt
+  endedAt
+  hosts
+  environment {
+    name
+    path
+  }
+  details
+  runbook
+  todos {
+    nodes {
+      id
+    }
+  }
+  notes {
+    nodes {
+      ...AlertNote
+    }
+  }
+}

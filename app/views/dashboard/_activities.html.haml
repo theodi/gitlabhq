@@ -1,14 +1,9 @@
-.hidden-xs
-  = render "events/event_last_push", event: @last_push
-
-  - if current_user
-    %ul.nav.nav-pills.event_filter.pull-right
-      %li.pull-right
-        = link_to dashboard_path(:atom, { private_token: current_user.private_token }), class: 'rss-btn' do
-          %i.fa.fa-rss
-          Activity Feed
-
+.nav-block.activities
   = render 'shared/event_filter'
-  %hr
+  .controls
+    = link_to dashboard_projects_path(rss_url_options), class: 'btn gl-button btn-default btn-icon d-none d-sm-inline-flex has-tooltip', title: 'Subscribe' do
+      = sprite_icon('rss', css_class: 'qa-rss-icon gl-icon')
+
 .content_list
-= spinner
+.loading
+  .spinner.spinner-md

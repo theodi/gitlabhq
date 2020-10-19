@@ -1,183 +1,432 @@
+# frozen_string_literal: true
+
 module API
-  # Issues API
-  class Issues < Grape::API
-    before { authenticate! }
+  class Issues < ::API::Base
+    include PaginationParams
+    helpers Helpers::IssuesHelpers
+    helpers Helpers::RateLimiter
+
+    before { authenticate_non_get! }
 
     helpers do
-      def filter_issues_state(issues, state)
-        case state
-        when 'opened' then issues.opened
-        when 'closed' then issues.closed
-        else issues
+      params :negatable_issue_filter_params do
+        optional :labels, type: Array[String], coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce, desc: 'Comma-separated list of label names'
+        optional :milestone, type: String, desc: 'Milestone title'
+        optional :iids, type: Array[Integer], coerce_with: ::API::Validations::Types::CommaSeparatedToIntegerArray.coerce, desc: 'The IID array of issues'
+        optional :search, type: String, desc: 'Search issues for text present in the title, description, or any combination of these'
+        optional :in, type: String, desc: '`title`, `description`, or a string joining them with comma'
+
+        optional :author_id, type: Integer, desc: 'Return issues which are authored by the user with the given ID'
+        optional :author_username, type: String, desc: 'Return issues which are authored by the user with the given username'
+        mutually_exclusive :author_id, :author_username
+
+        optional :assignee_id, types: [Integer, String], integer_none_any: true,
+                 desc: 'Return issues which are assigned to the user with the given ID'
+        optional :assignee_username, type: Array[String], check_assignees_count: true,
+                 coerce_with: Validations::Validators::CheckAssigneesCount.coerce,
+                 desc: 'Return issues which are assigned to the user with the given username'
+        mutually_exclusive :assignee_id, :assignee_username
+      end
+
+      params :issues_stats_params do
+        use :negatable_issue_filter_params
+        optional :created_after, type: DateTime, desc: 'Return issues created after the specified time'
+        optional :created_before, type: DateTime, desc: 'Return issues created before the specified time'
+        optional :updated_after, type: DateTime, desc: 'Return issues updated after the specified time'
+        optional :updated_before, type: DateTime, desc: 'Return issues updated before the specified time'
+
+        optional :not, type: Hash do
+          use :negatable_issue_filter_params
         end
+
+        optional :scope, type: String, values: %w[created-by-me assigned-to-me created_by_me assigned_to_me all],
+                         desc: 'Return issues for the given scope: `created_by_me`, `assigned_to_me` or `all`'
+        optional :my_reaction_emoji, type: String, desc: 'Return issues reacted by the authenticated user by the given emoji'
+        optional :confidential, type: Boolean, desc: 'Filter confidential or public issues'
+
+        use :optional_issues_params_ee
       end
 
-      def filter_issues_labels(issues, labels)
-        issues.includes(:labels).where('labels.title' => labels.split(','))
+      params :issues_params do
+        optional :with_labels_details, type: Boolean, desc: 'Return titles of labels and other details', default: false
+        optional :state, type: String, values: %w[opened closed all], default: 'all',
+                 desc: 'Return opened, closed, or all issues'
+        optional :order_by, type: String, values: Helpers::IssuesHelpers.sort_options, default: 'created_at',
+                 desc: 'Return issues ordered by `created_at` or `updated_at` fields.'
+        optional :sort, type: String, values: %w[asc desc], default: 'desc',
+                 desc: 'Return issues sorted in `asc` or `desc` order.'
+        optional :due_date, type: String, values: %w[0 overdue week month next_month_and_previous_two_weeks] << '',
+                 desc: 'Return issues that have no due date (`0`), or whose due date is this week, this month, between two weeks ago and next month, or which are overdue. Accepts: `overdue`, `week`, `month`, `next_month_and_previous_two_weeks`, `0`'
+
+        use :issues_stats_params
+        use :pagination
       end
 
-      def filter_issues_milestone(issues, milestone)
-        issues.includes(:milestone).where('milestones.title' => milestone)
+      params :issue_params do
+        optional :description, type: String, desc: 'The description of an issue'
+        optional :assignee_ids, type: Array[Integer], coerce_with: ::API::Validations::Types::CommaSeparatedToIntegerArray.coerce, desc: 'The array of user IDs to assign issue'
+        optional :assignee_id,  type: Integer, desc: '[Deprecated] The ID of a user to assign issue'
+        optional :milestone_id, type: Integer, desc: 'The ID of a milestone to assign issue'
+        optional :labels, type: Array[String], coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce, desc: 'Comma-separated list of label names'
+        optional :add_labels, type: Array[String], coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce, desc: 'Comma-separated list of label names'
+        optional :remove_labels, type: Array[String], coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce, desc: 'Comma-separated list of label names'
+        optional :due_date, type: String, desc: 'Date string in the format YEAR-MONTH-DAY'
+        optional :confidential, type: Boolean, desc: 'Boolean parameter if the issue should be confidential'
+        optional :discussion_locked, type: Boolean, desc: " Boolean parameter indicating if the issue's discussion is locked"
+
+        use :optional_issue_params_ee
       end
+    end
+
+    desc "Get currently authenticated user's issues statistics"
+    params do
+      use :issues_stats_params
+      optional :scope, type: String, values: %w[created_by_me assigned_to_me all], default: 'created_by_me',
+                       desc: 'Return issues for the given scope: `created_by_me`, `assigned_to_me` or `all`'
+    end
+    get '/issues_statistics' do
+      authenticate! unless params[:scope] == 'all'
+
+      present issues_statistics, with: Grape::Presenters::Presenter
     end
 
     resource :issues do
-      # Get currently authenticated user's issues
-      #
-      # Parameters:
-      #   state (optional) - Return "opened" or "closed" issues
-      #   labels (optional) - Comma-separated list of label names
-      #   order_by (optional) - Return requests ordered by `created_at` or `updated_at` fields. Default is `created_at`
-      #   sort (optional) - Return requests sorted in `asc` or `desc` order. Default is `desc`
-      #
-      # Example Requests:
-      #   GET /issues
-      #   GET /issues?state=opened
-      #   GET /issues?state=closed
-      #   GET /issues?labels=foo
-      #   GET /issues?labels=foo,bar
-      #   GET /issues?labels=foo,bar&state=opened
+      desc "Get currently authenticated user's issues" do
+        success Entities::Issue
+      end
+      params do
+        use :issues_params
+        optional :scope, type: String, values: %w[created-by-me assigned-to-me created_by_me assigned_to_me all], default: 'created_by_me',
+                         desc: 'Return issues for the given scope: `created_by_me`, `assigned_to_me` or `all`'
+        optional :non_archived, type: Boolean, default: true,
+                                desc: 'Return issues from non archived projects'
+      end
       get do
-        issues = current_user.issues
-        issues = filter_issues_state(issues, params[:state]) unless params[:state].nil?
-        issues = filter_issues_labels(issues, params[:labels]) unless params[:labels].nil?
-        issues.reorder(issuable_order_by => issuable_sort)
-        present paginate(issues), with: Entities::Issue
+        authenticate! unless params[:scope] == 'all'
+        issues = paginate(find_issues)
+
+        options = {
+          with: Entities::Issue,
+          with_labels_details: declared_params[:with_labels_details],
+          current_user: current_user,
+          include_subscribed: false
+        }
+
+        present issues, options
+      end
+
+      desc "Get specified issue (admin only)" do
+        success Entities::Issue
+      end
+      params do
+        requires :id, type: String, desc: 'The ID of the Issue'
+      end
+      get ":id" do
+        authenticated_as_admin!
+        issue = Issue.find(params['id'])
+
+        present issue, with: Entities::Issue, current_user: current_user, project: issue.project
       end
     end
 
-    resource :projects do
-      # Get a list of project issues
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   iid (optional) - Return the project issue having the given `iid`
-      #   state (optional) - Return "opened" or "closed" issues
-      #   labels (optional) - Comma-separated list of label names
-      #   milestone (optional) - Milestone title
-      #   order_by (optional) - Return requests ordered by `created_at` or `updated_at` fields. Default is `created_at`
-      #   sort (optional) - Return requests sorted in `asc` or `desc` order. Default is `desc`
-      #
-      # Example Requests:
-      #   GET /projects/:id/issues
-      #   GET /projects/:id/issues?state=opened
-      #   GET /projects/:id/issues?state=closed
-      #   GET /projects/:id/issues?labels=foo
-      #   GET /projects/:id/issues?labels=foo,bar
-      #   GET /projects/:id/issues?labels=foo,bar&state=opened
-      #   GET /projects/:id/issues?milestone=1.0.0
-      #   GET /projects/:id/issues?milestone=1.0.0&state=closed
-      #   GET /issues?iid=42
+    params do
+      requires :id, type: String, desc: 'The ID of a group'
+    end
+    resource :groups, requirements: API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'Get a list of group issues' do
+        success Entities::Issue
+      end
+      params do
+        use :issues_params
+        optional :non_archived, type: Boolean, desc: 'Return issues from non archived projects', default: true
+      end
       get ":id/issues" do
-        issues = user_project.issues
-        issues = filter_issues_state(issues, params[:state]) unless params[:state].nil?
-        issues = filter_issues_labels(issues, params[:labels]) unless params[:labels].nil?
-        issues = filter_by_iid(issues, params[:iid]) unless params[:iid].nil?
+        issues = paginate(find_issues(group_id: user_group.id, include_subgroups: true))
 
-        unless params[:milestone].nil?
-          issues = filter_issues_milestone(issues, params[:milestone])
-        end
+        options = {
+          with: Entities::Issue,
+          with_labels_details: declared_params[:with_labels_details],
+          current_user: current_user,
+          include_subscribed: false,
+          group: user_group
+        }
 
-        issues.reorder(issuable_order_by => issuable_sort)
-        present paginate(issues), with: Entities::Issue
+        present issues, options
       end
 
-      # Get a single project issue
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   issue_id (required) - The ID of a project issue
-      # Example Request:
-      #   GET /projects/:id/issues/:issue_id
-      get ":id/issues/:issue_id" do
-        @issue = user_project.issues.find(params[:issue_id])
-        present @issue, with: Entities::Issue
+      desc 'Get statistics for the list of group issues'
+      params do
+        use :issues_stats_params
+      end
+      get ":id/issues_statistics" do
+        present issues_statistics(group_id: user_group.id, include_subgroups: true), with: Grape::Presenters::Presenter
+      end
+    end
+
+    params do
+      requires :id, type: String, desc: 'The ID of a project'
+    end
+    resource :projects, requirements: API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      include TimeTrackingEndpoints
+
+      desc 'Get a list of project issues' do
+        success Entities::Issue
+      end
+      params do
+        use :issues_params
+      end
+      get ":id/issues" do
+        issues = paginate(find_issues(project_id: user_project.id))
+
+        options = {
+          with: Entities::Issue,
+          with_labels_details: declared_params[:with_labels_details],
+          current_user: current_user,
+          project: user_project,
+          include_subscribed: false
+        }
+
+        present issues, options
       end
 
-      # Create a new project issue
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   title (required) - The title of an issue
-      #   description (optional) - The description of an issue
-      #   assignee_id (optional) - The ID of a user to assign issue
-      #   milestone_id (optional) - The ID of a milestone to assign issue
-      #   labels (optional) - The labels of an issue
-      # Example Request:
-      #   POST /projects/:id/issues
-      post ":id/issues" do
-        required_attributes! [:title]
-        attrs = attributes_for_keys [:title, :description, :assignee_id, :milestone_id]
+      desc 'Get statistics for the list of project issues'
+      params do
+        use :issues_stats_params
+      end
+      get ":id/issues_statistics" do
+        present issues_statistics(project_id: user_project.id), with: Grape::Presenters::Presenter
+      end
 
-        # Validate label names in advance
-        if (errors = validate_label_params(params)).any?
-          render_api_error!({ labels: errors }, 400)
-        end
+      desc 'Get a single project issue' do
+        success Entities::Issue
+      end
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+      end
+      get ":id/issues/:issue_iid", as: :api_v4_project_issue do
+        issue = find_project_issue(params[:issue_iid])
+        present issue, with: Entities::Issue, current_user: current_user, project: user_project
+      end
 
-        issue = ::Issues::CreateService.new(user_project, current_user, attrs).execute
+      desc 'Create a new project issue' do
+        success Entities::Issue
+      end
+      params do
+        requires :title, type: String, desc: 'The title of an issue'
+        optional :created_at, type: DateTime,
+                              desc: 'Date time when the issue was created. Available only for admins and project owners.'
+        optional :merge_request_to_resolve_discussions_of, type: Integer,
+                                                           desc: 'The IID of a merge request for which to resolve discussions'
+        optional :discussion_to_resolve, type: String,
+                                         desc: 'The ID of a discussion to resolve, also pass `merge_request_to_resolve_discussions_of`'
+        optional :iid, type: Integer,
+                       desc: 'The internal ID of a project issue. Available only for admins and project owners.'
 
-        if issue.valid?
-          # Find or create labels and attach to issue. Labels are valid because
-          # we already checked its name, so there can't be an error here
-          if params[:labels].present?
-            issue.add_labels_by_names(params[:labels].split(','))
+        use :issue_params
+      end
+      post ':id/issues' do
+        Gitlab::QueryLimiting.whitelist('https://gitlab.com/gitlab-org/gitlab-foss/issues/42320')
+
+        check_rate_limit! :issues_create, [current_user, :issues_create]
+
+        authorize! :create_issue, user_project
+
+        issue_params = declared_params(include_missing: false)
+        issue_params[:system_note_timestamp] = params[:created_at]
+
+        issue_params = convert_parameters_from_legacy_format(issue_params)
+
+        begin
+          issue = ::Issues::CreateService.new(user_project,
+                                              current_user,
+                                              issue_params.merge(request: request, api: true)).execute
+
+          if issue.spam?
+            render_api_error!({ error: 'Spam detected' }, 400)
           end
 
-          present issue, with: Entities::Issue
+          if issue.valid?
+            present issue, with: Entities::Issue, current_user: current_user, project: user_project
+          else
+            render_validation_error!(issue)
+          end
+        rescue ::ActiveRecord::RecordNotUnique
+          render_api_error!('Duplicated issue', 409)
+        end
+      end
+
+      desc 'Update an existing issue' do
+        success Entities::Issue
+      end
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+        optional :title, type: String, desc: 'The title of an issue'
+        optional :updated_at, type: DateTime,
+                              allow_blank: false,
+                              desc: 'Date time when the issue was updated. Available only for admins and project owners.'
+        optional :state_event, type: String, values: %w[reopen close], desc: 'State of the issue'
+        use :issue_params
+
+        at_least_one_of(*Helpers::IssuesHelpers.update_params_at_least_one_of)
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      put ':id/issues/:issue_iid' do
+        Gitlab::QueryLimiting.whitelist('https://gitlab.com/gitlab-org/gitlab-foss/issues/42322')
+
+        issue = user_project.issues.find_by!(iid: params.delete(:issue_iid))
+        authorize! :update_issue, issue
+
+        issue.system_note_timestamp = params[:updated_at]
+
+        update_params = declared_params(include_missing: false).merge(request: request, api: true)
+
+        update_params = convert_parameters_from_legacy_format(update_params)
+
+        issue = ::Issues::UpdateService.new(user_project,
+                                            current_user,
+                                            update_params).execute(issue)
+
+        render_spam_error! if issue.spam?
+
+        if issue.valid?
+          present issue, with: Entities::Issue, current_user: current_user, project: user_project
         else
           render_validation_error!(issue)
         end
       end
+      # rubocop: enable CodeReuse/ActiveRecord
 
-      # Update an existing issue
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   issue_id (required) - The ID of a project issue
-      #   title (optional) - The title of an issue
-      #   description (optional) - The description of an issue
-      #   assignee_id (optional) - The ID of a user to assign issue
-      #   milestone_id (optional) - The ID of a milestone to assign issue
-      #   labels (optional) - The labels of an issue
-      #   state_event (optional) - The state event of an issue (close|reopen)
-      # Example Request:
-      #   PUT /projects/:id/issues/:issue_id
-      put ":id/issues/:issue_id" do
-        issue = user_project.issues.find(params[:issue_id])
-        authorize! :modify_issue, issue
-        attrs = attributes_for_keys [:title, :description, :assignee_id, :milestone_id, :state_event]
+      desc 'Reorder an existing issue' do
+        success Entities::Issue
+      end
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+        optional :move_after_id, type: Integer, desc: 'The ID of the issue we want to be after'
+        optional :move_before_id, type: Integer, desc: 'The ID of the issue we want to be before'
+        at_least_one_of :move_after_id, :move_before_id
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      put ':id/issues/:issue_iid/reorder' do
+        issue = user_project.issues.find_by(iid: params[:issue_iid])
+        not_found!('Issue') unless issue
 
-        # Validate label names in advance
-        if (errors = validate_label_params(params)).any?
-          render_api_error!({ labels: errors }, 400)
-        end
+        authorize! :update_issue, issue
 
-        issue = ::Issues::UpdateService.new(user_project, current_user, attrs).execute(issue)
-
-        if issue.valid?
-          # Find or create labels and attach to issue. Labels are valid because
-          # we already checked its name, so there can't be an error here
-          unless params[:labels].nil?
-            issue.remove_labels
-            # Create and add labels to the new created issue
-            issue.add_labels_by_names(params[:labels].split(','))
-          end
-
-          present issue, with: Entities::Issue
+        if ::Issues::ReorderService.new(user_project, current_user, params).execute(issue)
+          present issue, with: Entities::Issue, current_user: current_user, project: user_project
         else
-          render_validation_error!(issue)
+          render_api_error!({ error: 'Unprocessable Entity' }, 422)
         end
       end
+      # rubocop: enable CodeReuse/ActiveRecord
 
-      # Delete a project issue (deprecated)
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   issue_id (required) - The ID of a project issue
-      # Example Request:
-      #   DELETE /projects/:id/issues/:issue_id
-      delete ":id/issues/:issue_id" do
-        not_allowed!
+      desc 'Move an existing issue' do
+        success Entities::Issue
+      end
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+        requires :to_project_id, type: Integer, desc: 'The ID of the new project'
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      post ':id/issues/:issue_iid/move' do
+        Gitlab::QueryLimiting.whitelist('https://gitlab.com/gitlab-org/gitlab-foss/issues/42323')
+
+        issue = user_project.issues.find_by(iid: params[:issue_iid])
+        not_found!('Issue') unless issue
+
+        new_project = Project.find_by(id: params[:to_project_id])
+        not_found!('Project') unless new_project
+
+        begin
+          issue = ::Issues::MoveService.new(user_project, current_user).execute(issue, new_project)
+          present issue, with: Entities::Issue, current_user: current_user, project: user_project
+        rescue ::Issues::MoveService::MoveError => error
+          render_api_error!(error.message, 400)
+        end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Delete a project issue'
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      delete ":id/issues/:issue_iid" do
+        issue = user_project.issues.find_by(iid: params[:issue_iid])
+        not_found!('Issue') unless issue
+
+        authorize!(:destroy_issue, issue)
+
+        destroy_conditionally!(issue) do |issue|
+          Issuable::DestroyService.new(user_project, current_user).execute(issue)
+        end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'List merge requests that are related to the issue' do
+        success Entities::MergeRequestBasic
+      end
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+      end
+      get ':id/issues/:issue_iid/related_merge_requests' do
+        issue = find_project_issue(params[:issue_iid])
+
+        merge_requests = ::Issues::ReferencedMergeRequestsService.new(user_project, current_user)
+          .execute(issue)
+          .first
+
+        present paginate(::Kaminari.paginate_array(merge_requests)),
+          with: Entities::MergeRequest,
+          current_user: current_user,
+          project: user_project,
+          include_subscribed: false
+      end
+
+      desc 'List merge requests closing issue' do
+        success Entities::MergeRequestBasic
+      end
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      get ':id/issues/:issue_iid/closed_by' do
+        issue = find_project_issue(params[:issue_iid])
+
+        merge_request_ids = MergeRequestsClosingIssues.where(issue_id: issue).select(:merge_request_id)
+        merge_requests = MergeRequestsFinder.new(current_user, project_id: user_project.id).execute.where(id: merge_request_ids)
+
+        present paginate(merge_requests), with: Entities::MergeRequestBasic, current_user: current_user, project: user_project
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'List participants for an issue' do
+        success Entities::UserBasic
+      end
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+      end
+      get ':id/issues/:issue_iid/participants' do
+        issue = find_project_issue(params[:issue_iid])
+        participants = ::Kaminari.paginate_array(issue.participants)
+
+        present paginate(participants), with: Entities::UserBasic, current_user: current_user, project: user_project
+      end
+
+      desc 'Get the user agent details for an issue' do
+        success Entities::UserAgentDetail
+      end
+      params do
+        requires :issue_iid, type: Integer, desc: 'The internal ID of a project issue'
+      end
+      get ":id/issues/:issue_iid/user_agent_detail" do
+        authenticated_as_admin!
+
+        issue = find_project_issue(params[:issue_iid])
+
+        break not_found!('UserAgentDetail') unless issue.user_agent_detail
+
+        present issue.user_agent_detail, with: Entities::UserAgentDetail
       end
     end
   end

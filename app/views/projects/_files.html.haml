@@ -1,0 +1,22 @@
+- is_project_overview = local_assigns.fetch(:is_project_overview, false)
+- ref = local_assigns.fetch(:ref) { current_ref }
+- project = local_assigns.fetch(:project) { @project }
+- show_auto_devops_callout = show_auto_devops_callout?(@project)
+- add_page_startup_api_call logs_file_project_ref_path(@project, ref, @path, format: "json", offset: 0)
+- if @tree.readme
+  - add_page_startup_api_call project_blob_path(@project, tree_join(@ref, @tree.readme.path), viewer: "rich", format: "json")
+
+#tree-holder.tree-holder.clearfix
+  .nav-block
+    = render 'projects/tree/tree_header', tree: @tree
+
+  #js-last-commit
+
+  - if is_project_overview
+    .project-buttons.gl-mb-3.js-show-on-project-root
+      = render 'stat_anchor_list', anchors: @project.statistics_buttons(show_auto_devops_callout: show_auto_devops_callout), project_buttons: true
+
+  #js-tree-list{ data: vue_file_list_data(project, ref) }
+  - if can_edit_tree?
+    = render 'projects/blob/upload', title: _('Upload New File'), placeholder: _('Upload New File'), button_title: _('Upload file'), form_path: project_create_blob_path(@project, @id), method: :post
+    = render 'projects/blob/new_dir'

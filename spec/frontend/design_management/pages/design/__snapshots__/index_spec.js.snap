@@ -1,0 +1,241 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Design management design index page renders design index 1`] = `
+<div
+  class="design-detail js-design-detail fixed-top gl-w-full gl-bottom-0 gl-display-flex gl-justify-content-center gl-flex-direction-column gl-lg-flex-direction-row"
+>
+  <div
+    class="gl-display-flex gl-overflow-hidden gl-flex-grow-1 gl-flex-direction-column gl-relative"
+  >
+    <design-destroyer-stub
+      filenames="test.jpg"
+      iid="1"
+      project-path="project-path"
+    />
+     
+    <!---->
+     
+    <design-presentation-stub
+      discussions="[object Object],[object Object]"
+      image="test.jpg"
+      imagename="test.jpg"
+      scale="1"
+    />
+     
+    <div
+      class="design-scaler-wrapper gl-absolute gl-mb-6 gl-display-flex gl-justify-content-center gl-align-items-center"
+    >
+      <design-scaler-stub />
+    </div>
+  </div>
+   
+  <div
+    class="image-notes gl-pt-0"
+  >
+    <div
+      class="gl-py-4 gl-mb-4 gl-display-flex gl-justify-content-space-between gl-align-items-center gl-border-b-1 gl-border-b-solid gl-border-b-gray-100"
+    >
+      <span>
+        To Do
+      </span>
+       
+      <design-todo-button-stub
+        design="[object Object]"
+      />
+    </div>
+     
+    <h2
+      class="gl-font-weight-bold gl-mt-0"
+    >
+      
+    My precious issue
+  
+    </h2>
+     
+    <a
+      class="gl-text-gray-400 gl-text-decoration-none gl-mb-6 gl-display-block"
+      href="full-issue-url"
+    >
+      ull-issue-path
+    </a>
+     
+    <participants-stub
+      class="gl-mb-4"
+      numberoflessparticipants="7"
+      participants="[object Object]"
+    />
+     
+    <!---->
+     
+    <design-discussion-stub
+      data-testid="unresolved-discussion"
+      designid="gid::/gitlab/Design/1"
+      discussion="[object Object]"
+      discussionwithopenform=""
+      markdownpreviewpath="/project-path/preview_markdown?target_type=Issue"
+      noteableid="gid::/gitlab/Design/1"
+    />
+     
+    <gl-button-stub
+      buttontextclasses=""
+      category="primary"
+      class="link-inherit-color gl-text-body gl-text-decoration-none gl-font-weight-bold gl-mb-4"
+      data-testid="resolved-comments"
+      icon="chevron-right"
+      id="resolved-comments"
+      size="medium"
+      variant="link"
+    >
+      Resolved Comments (1)
+    
+    </gl-button-stub>
+     
+    <gl-popover-stub
+      container="popovercontainer"
+      cssclasses=""
+      placement="top"
+      show="true"
+      target="resolved-comments"
+      title="Resolved Comments"
+    >
+      <p>
+        
+        Comments you resolve can be viewed and unresolved by going to the "Resolved Comments" section below
+      
+      </p>
+       
+      <a
+        href="https://docs.gitlab.com/ee/user/project/issues/design_management.html#resolve-design-threads"
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        Learn more about resolving comments
+      </a>
+    </gl-popover-stub>
+     
+    <gl-collapse-stub
+      class="gl-mt-3"
+    >
+      <design-discussion-stub
+        data-testid="resolved-discussion"
+        designid="gid::/gitlab/Design/1"
+        discussion="[object Object]"
+        discussionwithopenform=""
+        markdownpreviewpath="/project-path/preview_markdown?target_type=Issue"
+        noteableid="gid::/gitlab/Design/1"
+      />
+    </gl-collapse-stub>
+     
+  </div>
+</div>
+`;
+
+exports[`Design management design index page sets loading state 1`] = `
+<div
+  class="design-detail js-design-detail fixed-top gl-w-full gl-bottom-0 gl-display-flex gl-justify-content-center gl-flex-direction-column gl-lg-flex-direction-row"
+>
+  <gl-loading-icon-stub
+    class="gl-align-self-center"
+    color="orange"
+    label="Loading"
+    size="xl"
+  />
+</div>
+`;
+
+exports[`Design management design index page with error GlAlert is rendered in correct position with correct content 1`] = `
+<div
+  class="design-detail js-design-detail fixed-top gl-w-full gl-bottom-0 gl-display-flex gl-justify-content-center gl-flex-direction-column gl-lg-flex-direction-row"
+>
+  <div
+    class="gl-display-flex gl-overflow-hidden gl-flex-grow-1 gl-flex-direction-column gl-relative"
+  >
+    <design-destroyer-stub
+      filenames="test.jpg"
+      iid="1"
+      project-path="project-path"
+    />
+     
+    <div
+      class="gl-p-5"
+    >
+      <gl-alert-stub
+        dismissible="true"
+        dismisslabel="Dismiss"
+        primarybuttonlink=""
+        primarybuttontext=""
+        secondarybuttonlink=""
+        secondarybuttontext=""
+        title=""
+        variant="danger"
+      >
+        
+          woops
+        
+      </gl-alert-stub>
+    </div>
+     
+    <design-presentation-stub
+      discussions=""
+      image="test.jpg"
+      imagename="test.jpg"
+      scale="1"
+    />
+     
+    <div
+      class="design-scaler-wrapper gl-absolute gl-mb-6 gl-display-flex gl-justify-content-center gl-align-items-center"
+    >
+      <design-scaler-stub />
+    </div>
+  </div>
+   
+  <div
+    class="image-notes gl-pt-0"
+  >
+    <div
+      class="gl-py-4 gl-mb-4 gl-display-flex gl-justify-content-space-between gl-align-items-center gl-border-b-1 gl-border-b-solid gl-border-b-gray-100"
+    >
+      <span>
+        To Do
+      </span>
+       
+      <design-todo-button-stub
+        design="[object Object]"
+      />
+    </div>
+     
+    <h2
+      class="gl-font-weight-bold gl-mt-0"
+    >
+      
+    My precious issue
+  
+    </h2>
+     
+    <a
+      class="gl-text-gray-400 gl-text-decoration-none gl-mb-6 gl-display-block"
+      href="full-issue-url"
+    >
+      ull-issue-path
+    </a>
+     
+    <participants-stub
+      class="gl-mb-4"
+      numberoflessparticipants="7"
+      participants="[object Object]"
+    />
+     
+    <h2
+      class="new-discussion-disclaimer gl-font-base gl-m-0 gl-mb-4"
+      data-testid="new-discussion-disclaimer"
+    >
+      
+    Click the image where you'd like to start a new discussion
+  
+    </h2>
+      
+    <!---->
+     
+  </div>
+</div>
+`;

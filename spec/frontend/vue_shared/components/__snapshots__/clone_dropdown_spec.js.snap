@@ -1,0 +1,100 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Clone Dropdown Button rendering matches the snapshot 1`] = `
+<gl-dropdown-stub
+  category="primary"
+  headertext=""
+  right=""
+  size="medium"
+  text="Clone"
+  variant="info"
+>
+  <div
+    class="pb-2 mx-1"
+  >
+    <gl-dropdown-section-header-stub>
+      Clone with SSH
+    </gl-dropdown-section-header-stub>
+     
+    <div
+      class="mx-3"
+    >
+      <div
+        readonly="readonly"
+      >
+        <b-input-group-stub
+          tag="div"
+        >
+          <!---->
+           
+          <b-form-input-stub
+            class="gl-form-input"
+            debounce="0"
+            readonly="true"
+            type="text"
+            value="ssh://foo.bar"
+          />
+           
+          <b-input-group-append-stub
+            tag="div"
+          >
+            <gl-button-stub
+              buttontextclasses=""
+              category="primary"
+              class="d-inline-flex"
+              data-clipboard-text="ssh://foo.bar"
+              data-qa-selector="copy_ssh_url_button"
+              icon="copy-to-clipboard"
+              size="medium"
+              title="Copy URL"
+              variant="default"
+            />
+          </b-input-group-append-stub>
+        </b-input-group-stub>
+      </div>
+    </div>
+     
+    <gl-dropdown-section-header-stub>
+      Clone with HTTP
+    </gl-dropdown-section-header-stub>
+     
+    <div
+      class="mx-3"
+    >
+      <div
+        readonly="readonly"
+      >
+        <b-input-group-stub
+          tag="div"
+        >
+          <!---->
+           
+          <b-form-input-stub
+            class="gl-form-input"
+            debounce="0"
+            readonly="true"
+            type="text"
+            value="http://foo.bar"
+          />
+           
+          <b-input-group-append-stub
+            tag="div"
+          >
+            <gl-button-stub
+              buttontextclasses=""
+              category="primary"
+              class="d-inline-flex"
+              data-clipboard-text="http://foo.bar"
+              data-qa-selector="copy_http_url_button"
+              icon="copy-to-clipboard"
+              size="medium"
+              title="Copy URL"
+              variant="default"
+            />
+          </b-input-group-append-stub>
+        </b-input-group-stub>
+      </div>
+    </div>
+  </div>
+</gl-dropdown-stub>
+`;

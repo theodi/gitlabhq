@@ -1,0 +1,5 @@
+= sprite_icon('package')
+= succeed '.' do
+  = _("This project manages its dependencies using %{strong_start}%{manager_name}%{strong_end}").html_safe % { manager_name: viewer.manager_name, strong_start: '<strong>'.html_safe, strong_end: '</strong>'.html_safe }
+
+= link_to _('Learn more'), viewer.manager_url, target: '_blank', rel: 'noopener noreferrer'

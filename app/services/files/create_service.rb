@@ -1,60 +1,28 @@
-require_relative "base_service"
+# frozen_string_literal: true
 
 module Files
   class CreateService < Files::BaseService
-    def execute
-      allowed = Gitlab::GitAccess.new(current_user, project).can_push_to_branch?(ref)
+    def create_commit!
+      transformer = Lfs::FileTransformer.new(project, repository, @branch_name)
 
-      unless allowed
-        return error("You are not allowed to create file in this branch")
-      end
+      result = transformer.new_file(@file_path, @file_content)
 
-      file_name = File.basename(path)
-      file_path = path
+      create_transformed_commit(result.content)
+    end
 
-      unless file_name =~ Gitlab::Regex.file_name_regex
-        return error(
-          'Your changes could not be committed, because the file name ' +
-          Gitlab::Regex.file_name_regex_message
-        )
-      end
+    private
 
-      if project.empty_repo?
-        # everything is ok because repo does not have a commits yet
-      else
-        unless repository.branch_names.include?(ref)
-          return error("You can only create files if you are on top of a branch")
-        end
-
-        blob = repository.blob_at_branch(ref, file_path)
-
-        if blob
-          return error("Your changes could not be committed, because file with such name exists")
-        end
-      end
-
-      content =
-        if params[:encoding] == 'base64'
-          Base64.decode64(params[:content])
-        else
-          params[:content]
-        end
-
-      sha = repository.commit_file(
+    def create_transformed_commit(content_or_lfs_pointer)
+      repository.create_file(
         current_user,
-        file_path,
-        content,
-        params[:commit_message],
-        params[:new_branch] || ref
-      )
-
-
-      if sha
-        after_commit(sha)
-        success
-      else
-        error("Your changes could not be committed, because the file has been changed")
-      end
+        @file_path,
+        content_or_lfs_pointer,
+        message: @commit_message,
+        branch_name: @branch_name,
+        author_email: @author_email,
+        author_name: @author_name,
+        start_project: @start_project,
+        start_branch_name: @start_branch)
     end
   end
 end

@@ -1,105 +1,61 @@
-# == Schema Information
-#
-# Table name: services
-#
-#  id                    :integer          not null, primary key
-#  type                  :string(255)
-#  title                 :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  active                :boolean          default(FALSE), not null
-#  properties            :text
-#  template              :boolean          default(FALSE)
-#  push_events           :boolean          default(TRUE)
-#  issues_events         :boolean          default(TRUE)
-#  merge_requests_events :boolean          default(TRUE)
-#  tag_push_events       :boolean          default(TRUE)
-#  note_events           :boolean          default(TRUE), not null
-#
+# frozen_string_literal: true
 
-class SlackService < Service
-  prop_accessor :webhook, :username, :channel
-  validates :webhook, presence: true, if: :activated?
+class SlackService < ChatNotificationService
+  prop_accessor EVENT_CHANNEL['alert']
 
   def title
-    'Slack'
+    'Slack notifications'
   end
 
   def description
-    'A team communication tool for the 21st century'
+    'Receive event notifications in Slack'
   end
 
-  def to_param
+  def self.to_param
     'slack'
   end
 
-  def fields
-    [
-      { type: 'text', name: 'webhook',
-        placeholder: 'https://hooks.slack.com/services/...' },
-      { type: 'text', name: 'username', placeholder: 'username' },
-      { type: 'text', name: 'channel', placeholder: '#channel' }
-    ]
+  def default_channel_placeholder
+    _('Slack channels (e.g. general, development)')
+  end
+
+  def webhook_placeholder
+    'https://hooks.slack.com/services/…'
   end
 
   def supported_events
-    %w(push issue merge_request note tag_push)
+    additional = []
+    additional << 'alert'
+
+    super + additional
   end
 
-  def execute(data)
-    return unless supported_events.include?(data[:object_kind])
-    return unless webhook.present?
+  def get_message(object_kind, data)
+    return ChatMessage::AlertMessage.new(data) if object_kind == 'alert'
 
-    object_kind = data[:object_kind]
+    super
+  end
 
-    data = data.merge(
-      project_url: project_url,
-      project_name: project_name
-    )
+  module Notifier
+    private
 
-    # WebHook events often have an 'update' event that follows a 'open' or
-    # 'close' action. Ignore update events for now to prevent duplicate
-    # messages from arriving.
+    def notify(message, opts)
+      # See https://gitlab.com/gitlab-org/slack-notifier/#custom-http-client
+      notifier = Slack::Messenger.new(webhook, opts.merge(http_client: HTTPClient))
+      notifier.ping(
+        message.pretext,
+        attachments: message.attachments,
+        fallback: message.fallback
+      )
+    end
 
-    message = \
-      case object_kind
-      when "push", "tag_push"
-        PushMessage.new(data)
-      when "issue"
-        IssueMessage.new(data) unless is_update?(data)
-      when "merge_request"
-        MergeMessage.new(data) unless is_update?(data)
-      when "note"
-        NoteMessage.new(data)
+    class HTTPClient
+      def self.post(uri, params = {})
+        params.delete(:http_options) # these are internal to the client and we do not want them
+        Gitlab::HTTP.post(uri, body: params)
       end
-
-    opt = {}
-    opt[:channel] = channel if channel
-    opt[:username] = username if username
-
-    if message
-      notifier = Slack::Notifier.new(webhook, opt)
-      notifier.ping(message.pretext, attachments: message.attachments)
     end
   end
 
-  private
-
-  def project_name
-    project.name_with_namespace.gsub(/\s/, '')
-  end
-
-  def project_url
-    project.web_url
-  end
-
-  def is_update?(data)
-    data[:object_attributes][:action] == 'update'
-  end
+  include Notifier
 end
-
-require "slack_service/issue_message"
-require "slack_service/push_message"
-require "slack_service/merge_message"
-require "slack_service/note_message"

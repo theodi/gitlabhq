@@ -1,16 +1,16 @@
-- page_title "Snippets"
-%h3.page-title
-  Snippets
-  - if can? current_user, :write_project_snippet, @project
-    = link_to new_namespace_project_snippet_path(@project.namespace, @project), class: "btn btn-new pull-right", title: "New Snippet" do
-      Add new snippet
+- page_title _("Snippets")
+- new_project_snippet_link = new_project_snippet_path(@project) if can?(current_user, :create_snippet, @project)
 
-%p.light
-  Share code pastes with others out of git repository
+- if @snippets.exists?
+  - if current_user
+    .top-area
+      - include_private = @project.team.member?(current_user) || current_user.admin?
+      = render partial: 'snippets/snippets_scope_menu', locals: { subject: @project, include_private: include_private, counts: @snippet_counts }
 
-%hr
-%ul.bordered-list
-  = render partial: "projects/snippets/snippet", collection: @snippets
-  - if @snippets.empty?
-    %li
-      .nothing-here-block Nothing here.
+      - if new_project_snippet_link.present?
+        .nav-controls
+          = link_to _("New snippet"), new_project_snippet_link, class: "btn btn-success", title: _("New snippet")
+
+  = render 'shared/snippets/list'
+- else
+  = render 'shared/empty_states/snippets', button_path: new_project_snippet_link

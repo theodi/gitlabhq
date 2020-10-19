@@ -1,25 +1,14 @@
-# == Schema Information
-#
-# Table name: web_hooks
-#
-#  id                    :integer          not null, primary key
-#  url                   :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  type                  :string(255)      default("ProjectHook")
-#  service_id            :integer
-#  push_events           :boolean          default(TRUE), not null
-#  issues_events         :boolean          default(FALSE), not null
-#  merge_requests_events :boolean          default(FALSE), not null
-#  tag_push_events       :boolean          default(FALSE)
-#  note_events           :boolean          default(FALSE), not null
-#
+# frozen_string_literal: true
 
 class ServiceHook < WebHook
-  belongs_to :service
+  include Presentable
 
-  def execute(data)
-    super(data, 'service_hook')
+  belongs_to :service
+  validates :service, presence: true
+
+  # rubocop: disable CodeReuse/ServiceClass
+  def execute(data, hook_name = 'service_hook')
+    WebHookService.new(self, data, hook_name).execute
   end
+  # rubocop: enable CodeReuse/ServiceClass
 end

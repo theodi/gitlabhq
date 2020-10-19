@@ -1,27 +1,74 @@
-# A sample Guardfile
+# frozen_string_literal: true
+
 # More info at https://github.com/guard/guard#readme
 
-guard 'rspec', cmd: "spring rspec", all_on_start: false, all_after_pass: false do
-  watch(%r{^spec/.+_spec\.rb$})
-  watch(%r{^lib/(.+)\.rb$})     { |m| "spec/lib/#{m[1]}_spec.rb" }
-  watch(%r{^lib/api/(.+)\.rb$})     { |m| "spec/requests/api/#{m[1]}_spec.rb" }
-  watch('spec/spec_helper.rb')  { "spec" }
+require "guard/rspec/dsl"
 
-  # Rails example
-  watch(%r{^app/(.+)\.rb$})                           { |m| "spec/#{m[1]}_spec.rb" }
-  watch(%r{^app/(.*)(\.erb|\.haml)$})                 { |m| "spec/#{m[1]}#{m[2]}_spec.rb" }
-  watch(%r{^app/controllers/(.+)_(controller)\.rb$})  { |m| ["spec/routing/#{m[1]}_routing_spec.rb", "spec/#{m[2]}s/#{m[1]}_#{m[2]}_spec.rb", "spec/acceptance/#{m[1]}_spec.rb"] }
-  watch(%r{^spec/support/(.+)\.rb$})                  { "spec" }
-  watch('config/routes.rb')                           { "spec/routing" }
-  watch('app/controllers/application_controller.rb')  { "spec/controllers" }
+cmd = ENV['GUARD_CMD'] || (ENV['SPRING'] ? 'spring rspec' : 'bundle exec rspec')
 
-  # Capybara request specs
-  watch(%r{^app/views/(.+)/.*\.(erb|haml)$})          { |m| "spec/requests/#{m[1]}_spec.rb" }
+directories %w(app ee lib spec)
+
+rspec_context_for = proc do |context_path|
+  OpenStruct.new(to_s: "spec").tap do |rspec|
+    rspec.spec_dir = "#{context_path}spec"
+    rspec.spec = ->(m) { Guard::RSpec::Dsl.detect_spec_file_for(rspec, m) }
+    rspec.spec_helper = "#{rspec.spec_dir}/spec_helper.rb"
+    rspec.spec_files = %r{^#{rspec.spec_dir}/.+_spec\.rb$}
+    rspec.spec_support = %r{^#{rspec.spec_dir}/support/(.+)\.rb$}
+  end
 end
 
-guard 'spinach', command_prefix: 'spring' do
-  watch(%r|^features/(.*)\.feature|)
-  watch(%r|^features/steps/(.*)([^/]+)\.rb|) do |m|
-    "features/#{m[1]}#{m[2]}.feature"
+rails_context_for = proc do |context_path, exts|
+  OpenStruct.new.tap do |rails|
+    rails.app_files = %r{^#{context_path}app/(.+)\.rb$}
+
+    rails.views = %r{^#{context_path}app/(views/.+/[^/]*\.(?:#{exts}))$}
+    rails.view_dirs = %r{^#{context_path}app/views/(.+)/[^/]*\.(?:#{exts})$}
+    rails.layouts = %r{^#{context_path}app/layouts/(.+)/[^/]*\.(?:#{exts})$}
+
+    rails.controllers = %r{^#{context_path}app/controllers/(.+)_controller\.rb$}
+    rails.routes = "#{context_path}config/routes.rb"
+    rails.app_controller = "#{context_path}app/controllers/application_controller.rb"
+    rails.spec_helper = "#{context_path}spec/rails_helper.rb"
+  end
+end
+
+guard_setup = proc do |context_path|
+  # RSpec files
+  rspec = rspec_context_for.call(context_path)
+  watch(rspec.spec_helper) { rspec.spec_dir }
+  watch(rspec.spec_support) { rspec.spec_dir }
+  watch(rspec.spec_files)
+
+  # Ruby files
+  watch(%r{^#{context_path}(lib/.+)\.rb$}) { |m| rspec.spec.call(m[1]) }
+
+  # Rails files
+  rails = rails_context_for.call(context_path, %w(erb haml slim))
+  watch(rails.app_files) { |m| rspec.spec.call(m[1]) }
+  watch(rails.views)     { |m| rspec.spec.call(m[1]) }
+
+  watch(rails.controllers) do |m|
+    [
+      rspec.spec.call("routing/#{m[1]}_routing"),
+      rspec.spec.call("controllers/#{m[1]}_controller")
+    ]
+  end
+
+  # Rails config changes
+  watch(rails.spec_helper)     { rspec.spec_dir }
+  watch(rails.routes)          { "#{rspec.spec_dir}/routing" }
+  watch(rails.app_controller)  { "#{rspec.spec_dir}/controllers" }
+
+  # Capybara features specs
+  watch(rails.view_dirs)     { |m| rspec.spec.call("features/#{m[1]}") }
+  watch(rails.layouts)       { |m| rspec.spec.call("features/#{m[1]}") }
+end
+
+context_paths = ['', 'ee/']
+
+context_paths.each do |context_path|
+  guard :rspec, cmd: cmd, spec_paths: ["#{context_path}spec/"] do
+    guard_setup.call(context_path)
   end
 end

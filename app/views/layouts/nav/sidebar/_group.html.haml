@@ -1,0 +1,187 @@
+- issues_count = group_issues_count(state: 'opened')
+- merge_requests_count = group_merge_requests_count(state: 'opened')
+
+.nav-sidebar{ class: ("sidebar-collapsed-desktop" if collapsed_sidebar?), **tracking_attrs('groups_side_navigation', 'render', 'groups_side_navigation') }
+  .nav-sidebar-inner-scroll
+    .context-header
+      = link_to group_path(@group), title: @group.name do
+        .avatar-container.rect-avatar.s40.group-avatar
+          = group_icon(@group, class: "avatar s40 avatar-tile")
+        .sidebar-context-title
+          = @group.name
+    %ul.sidebar-top-level-items.qa-group-sidebar
+      - if group_sidebar_link?(:overview)
+        - paths = group_overview_nav_link_paths
+        = nav_link(path: paths, unless: -> { current_path?('groups/contribution_analytics#show') }, html_options: { class: 'home' }) do
+          = link_to group_path(@group) do
+            .nav-icon-container
+              = sprite_icon('home')
+            %span.nav-item-name
+              - if @group.subgroup?
+                = _('Subgroup overview')
+              - else
+                = _('Group overview')
+
+          %ul.sidebar-sub-level-items
+            = nav_link(path: ['groups#show', 'groups#details', 'groups#activity', 'groups#subgroups'], html_options: { class: "fly-out-top-item" } ) do
+              = link_to group_path(@group) do
+                %strong.fly-out-top-item-name
+                  - if @group.subgroup?
+                    = _('Subgroup overview')
+                  - else
+                    = _('Group overview')
+            %li.divider.fly-out-top-item
+
+            = nav_link(path: ['groups#show', 'groups#details', 'groups#subgroups'], html_options: { class: 'home' }) do
+              = link_to details_group_path(@group), title: _('Group details') do
+                %span
+                  = _('Details')
+
+            - if group_sidebar_link?(:activity)
+              = nav_link(path: 'groups#activity') do
+                = link_to activity_group_path(@group), title: _('Activity') do
+                  %span
+                    = _('Activity')
+
+      = render_if_exists "layouts/nav/ee/epic_link", group: @group
+
+      - if group_sidebar_link?(:issues)
+        = nav_link(path: group_issues_sub_menu_items, unless: -> { current_path?('issues_analytics#show') }) do
+          = link_to issues_group_path(@group), data: { qa_selector: 'group_issues_item' } do
+            .nav-icon-container
+              = sprite_icon('issues')
+            %span.nav-item-name
+              = _('Issues')
+            %span.badge.badge-pill.count= number_with_delimiter(issues_count)
+
+          %ul.sidebar-sub-level-items{ data: { qa_selector: 'group_issues_sidebar_submenu'} }
+            = nav_link(path: ['groups#issues', 'labels#index', 'milestones#index', 'iterations#index'], html_options: { class: "fly-out-top-item" } ) do
+              = link_to issues_group_path(@group) do
+                %strong.fly-out-top-item-name
+                  = _('Issues')
+                %span.badge.badge-pill.count.issue_counter.fly-out-badge= number_with_delimiter(issues_count)
+
+            %li.divider.fly-out-top-item
+            = nav_link(path: 'groups#issues', html_options: { class: 'home' }) do
+              = link_to issues_group_path(@group), title: _('List') do
+                %span
+                  = _('List')
+
+            - if group_sidebar_link?(:boards)
+              = nav_link(path: ['boards#index', 'boards#show']) do
+                = link_to group_boards_path(@group), title: boards_link_text, data: { qa_selector: 'group_issue_boards_link' } do
+                  %span
+                    = boards_link_text
+
+            - if group_sidebar_link?(:labels)
+              = nav_link(path: 'labels#index') do
+                = link_to group_labels_path(@group), title: _('Labels') do
+                  %span
+                    = _('Labels')
+
+            - if group_sidebar_link?(:milestones)
+              = nav_link(path: 'milestones#index') do
+                = link_to group_milestones_path(@group), title: _('Milestones'), data: { qa_selector: 'group_milestones_link' } do
+                  %span
+                    = _('Milestones')
+
+            = render_if_exists 'layouts/nav/sidebar/group_iterations_link'
+
+      - if group_sidebar_link?(:merge_requests)
+        = nav_link(path: 'groups#merge_requests') do
+          = link_to merge_requests_group_path(@group) do
+            .nav-icon-container
+              = sprite_icon('git-merge')
+            %span.nav-item-name
+              = _('Merge Requests')
+            %span.badge.badge-pill.count= number_with_delimiter(merge_requests_count)
+          %ul.sidebar-sub-level-items.is-fly-out-only
+            = nav_link(path: 'groups#merge_requests', html_options: { class: "fly-out-top-item" } ) do
+              = link_to merge_requests_group_path(@group) do
+                %strong.fly-out-top-item-name
+                  = _('Merge Requests')
+                %span.badge.badge-pill.count.merge_counter.js-merge-counter.fly-out-badge= number_with_delimiter(merge_requests_count)
+
+      = render_if_exists "layouts/nav/ee/security_link" # EE-specific
+
+      = render_if_exists "layouts/nav/ee/push_rules_link" # EE-specific
+
+      - if group_sidebar_link?(:kubernetes)
+        = nav_link(controller: [:clusters]) do
+          = link_to group_clusters_path(@group) do
+            .nav-icon-container
+              = sprite_icon('cloud-gear')
+            %span.nav-item-name
+              = _('Kubernetes')
+          %ul.sidebar-sub-level-items.is-fly-out-only
+            = nav_link(controller: [:clusters], html_options: { class: "fly-out-top-item" } ) do
+              = link_to group_clusters_path(@group), title: _('Kubernetes'), class: 'shortcuts-kubernetes' do
+                %strong.fly-out-top-item-name
+                  = _('Kubernetes')
+
+      = render_if_exists 'groups/sidebar/packages'
+
+      = render 'layouts/nav/sidebar/analytics_links', links: group_analytics_navbar_links(@group, current_user)
+
+      - if group_sidebar_link?(:wiki)
+        = render 'layouts/nav/sidebar/wiki_link', wiki_url: @group.wiki.web_url
+
+      - if group_sidebar_link?(:group_members)
+        = nav_link(path: 'group_members#index') do
+          = link_to group_group_members_path(@group) do
+            .nav-icon-container
+              = sprite_icon('users')
+            %span.nav-item-name.qa-group-members-item
+              = _('Members')
+          %ul.sidebar-sub-level-items.is-fly-out-only
+            = nav_link(path: 'group_members#index', html_options: { class: "fly-out-top-item" } ) do
+              = link_to group_group_members_path(@group) do
+                %strong.fly-out-top-item-name
+                  = _('Members')
+
+      = render_if_exists 'groups/invite_members_side_nav_link', group: @group
+
+      - if group_sidebar_link?(:settings)
+        = nav_link(path: group_settings_nav_link_paths) do
+          = link_to edit_group_path(@group) do
+            .nav-icon-container
+              = sprite_icon('settings')
+            %span.nav-item-name.qa-group-settings-item
+              = _('Settings')
+          %ul.sidebar-sub-level-items.qa-group-sidebar-submenu
+            = nav_link(path: %w[groups#projects groups#edit badges#index ci_cd#show], html_options: { class: "fly-out-top-item" } ) do
+              = link_to edit_group_path(@group) do
+                %strong.fly-out-top-item-name
+                  = _('Settings')
+            %li.divider.fly-out-top-item
+            = nav_link(path: 'groups#edit') do
+              = link_to edit_group_path(@group), title: _('General'), data: { qa_selector: 'general_settings_link' } do
+                %span
+                  = _('General')
+
+            - if group_level_integrations?
+              = nav_link(controller: :integrations) do
+                = link_to group_settings_integrations_path(@group), title: _('Integrations') do
+                  %span
+                    = _('Integrations')
+
+            = nav_link(path: 'groups#projects') do
+              = link_to projects_group_path(@group), title: _('Projects') do
+                %span
+                  = _('Projects')
+
+            = nav_link(controller: :repository) do
+              = link_to group_settings_repository_path(@group), title: _('Repository') do
+                %span
+                  = _('Repository')
+
+            = nav_link(controller: :ci_cd) do
+              = link_to group_settings_ci_cd_path(@group), title: _('CI / CD') do
+                %span
+                  = _('CI / CD')
+
+            = render_if_exists "groups/ee/settings_nav"
+
+        = render_if_exists "groups/ee/administration_nav"
+
+    = render 'shared/sidebar_toggle_button'

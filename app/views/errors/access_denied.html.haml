@@ -1,6 +1,16 @@
-- page_title "Access Denied"
-%h1 403
-%h3 Access Denied
-%hr
-%p You are not allowed to access this page.
-%p Read more about project permissions #{link_to "here", help_page_path("permissions", "permissions"), class: "vlink"}
+- message = local_assigns.fetch(:message, nil)
+- content_for(:title, 'Access Denied')
+
+= image_tag('illustrations/error-403.svg', alt: '403', lazy: false)
+.container
+  %h3
+    = s_("403|You don't have the permission to access this page.")
+  - if message
+    %p
+      = message
+  %p
+    = s_('403|Please contact your GitLab administrator to get permission.')
+  .action-container.js-go-back{ hidden: true }
+    %button{ type: 'button', class: 'btn btn-success' }
+      = s_('Go Back')
+= render "errors/footer"

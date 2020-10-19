@@ -1,36 +1,26 @@
-require_relative "base_service"
+# frozen_string_literal: true
 
 module Files
   class DeleteService < Files::BaseService
-    def execute
-      allowed = ::Gitlab::GitAccess.new(current_user, project).can_push_to_branch?(ref)
-
-      unless allowed
-        return error("You are not allowed to push into this branch")
-      end
-
-      unless repository.branch_names.include?(ref)
-        return error("You can only create files if you are on top of a branch")
-      end
-
-      blob = repository.blob_at_branch(ref, path)
-
-      unless blob
-        return error("You can only edit text files")
-      end
-
-      sha = repository.remove_file(
+    def create_commit!
+      repository.delete_file(
         current_user,
-        path,
-        params[:commit_message],
-        ref
-      )
+        @file_path,
+        message: @commit_message,
+        branch_name: @branch_name,
+        author_email: @author_email,
+        author_name: @author_name,
+        start_project: @start_project,
+        start_branch_name: @start_branch)
+    end
 
-      if sha
-        after_commit(sha)
-        success
-      else
-        error("Your changes could not be committed, because the file has been changed")
+    private
+
+    def validate!
+      super
+
+      if file_has_changed?(@file_path, @last_commit_sha)
+        raise FileChangedError, _("You are attempting to delete a file that has been previously updated.")
       end
     end
   end

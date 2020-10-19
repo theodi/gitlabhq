@@ -1,0 +1,171 @@
+---
+type: reference, concepts
+stage: Enablement
+group: Distribution
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see https://about.gitlab.com/handbook/engineering/ux/technical-writing/#designated-technical-writers
+---
+
+# Reference architectures
+
+You can set up GitLab on a single server or scale it up to serve many users.
+This page details the recommended Reference Architectures that were built and
+verified by GitLab's Quality and Support teams.
+
+Below is a chart representing each architecture tier and the number of users
+they can handle. As your number of users grow with time, it’s recommended that
+you scale GitLab accordingly.
+
+![Reference Architectures](img/reference-architectures.png)
+<!-- Internal link: https://docs.google.com/spreadsheets/d/1obYP4fLKkVVDOljaI3-ozhmCiPtEeMblbBKkf2OADKs/edit#gid=1403207183 -->
+
+Testing on these reference architectures were performed with
+[GitLab's Performance Tool](https://gitlab.com/gitlab-org/quality/performance)
+at specific coded workloads, and the throughputs used for testing were
+calculated based on sample customer data. Select the
+[reference architecture](#available-reference-architectures) that matches your scale.
+
+Each endpoint type is tested with the following number of requests per second (RPS)
+per 1,000 users:
+
+- API: 20 RPS
+- Web: 2 RPS
+- Git: 2 RPS
+
+For GitLab instances with less than 2,000 users, it's recommended that you use
+the [default setup](#automated-backups) by
+[installing GitLab](../../install/README.md) on a single machine to minimize
+maintenance and resource costs.
+
+If your organization has more than 2,000 users, the recommendation is to scale
+GitLab's components to multiple machine nodes. The machine nodes are grouped by
+components. The addition of these nodes increases the performance and
+scalability of to your GitLab instance.
+
+When scaling GitLab, there are several factors to consider:
+
+- Multiple application nodes to handle frontend traffic.
+- A load balancer is added in front to distribute traffic across the application nodes.
+- The application nodes connects to a shared file server and PostgreSQL and Redis services on the backend.
+
+NOTE: **Note:**
+Depending on your workflow, the following recommended reference architectures
+may need to be adapted accordingly. Your workload is influenced by factors
+including how active your users are, how much automation you use, mirroring,
+and repository/change size. Additionally the displayed memory values are
+provided by [GCP machine types](https://cloud.google.com/compute/docs/machine-types).
+For different cloud vendors, attempt to select options that best match the
+provided architecture.
+
+## Available reference architectures
+
+The following reference architectures are available:
+
+- [Up to 1,000 users](1k_users.md)
+- [Up to 2,000 users](2k_users.md)
+- [Up to 3,000 users](3k_users.md)
+- [Up to 5,000 users](5k_users.md)
+- [Up to 10,000 users](10k_users.md)
+- [Up to 25,000 users](25k_users.md)
+- [Up to 50,000 users](50k_users.md)
+
+## Availability Components
+
+GitLab comes with the following components for your use, listed from least to
+most complex:
+
+- [Automated backups](#automated-backups)
+- [Traffic load balancer](#traffic-load-balancer)
+- [Zero downtime updates](#zero-downtime-updates)
+- [Automated database failover](#automated-database-failover)
+- [Instance level replication with GitLab Geo](#instance-level-replication-with-gitlab-geo)
+
+As you implement these components, begin with a single server and then do
+backups. Only after completing the first server should you proceed to the next.
+
+Also, not implementing extra servers for GitLab doesn't necessarily mean that you'll have
+more downtime. Depending on your needs and experience level, single servers can
+have more actual perceived uptime for your users.
+
+### Automated backups **(CORE ONLY)**
+
+> - Level of complexity: **Low**
+> - Required domain knowledge: PostgreSQL, GitLab configurations, Git
+> - Supported tiers: [GitLab Core, Starter, Premium, and Ultimate](https://about.gitlab.com/pricing/)
+
+This solution is appropriate for many teams that have the default GitLab installation.
+With automatic backups of the GitLab repositories, configuration, and the database,
+this can be an optimal solution if you don't have strict requirements.
+[Automated backups](../../raketasks/backup_restore.md#configuring-cron-to-make-daily-backups)
+is the least complex to setup. This provides a point-in-time recovery of a predetermined schedule.
+
+### Traffic load balancer **(STARTER ONLY)**
+
+> - Level of complexity: **Medium**
+> - Required domain knowledge: HAProxy, shared storage, distributed systems
+> - Supported tiers: [GitLab Starter, Premium, and Ultimate](https://about.gitlab.com/pricing/)
+
+This requires separating out GitLab into multiple application nodes with an added
+[load balancer](../load_balancer.md). The load balancer will distribute traffic
+across GitLab application nodes. Meanwhile, each application node connects to a
+shared file server and database systems on the back end. This way, if one of the
+application servers fails, the workflow is not interrupted.
+[HAProxy](https://www.haproxy.org/) is recommended as the load balancer.
+
+With this added component you have a number of advantages compared
+to the default installation:
+
+- Increase the number of users.
+- Enable zero-downtime upgrades.
+- Increase availability.
+
+### Zero downtime updates **(STARTER ONLY)**
+
+> - Level of complexity: **Medium**
+> - Required domain knowledge: PostgreSQL, HAProxy, shared storage, distributed systems
+> - Supported tiers: [GitLab Starter, Premium, and Ultimate](https://about.gitlab.com/pricing/)
+
+GitLab supports [zero-downtime updates](https://docs.gitlab.com/omnibus/update/#zero-downtime-updates).
+Single GitLab nodes can be updated with only a [few minutes of downtime](https://docs.gitlab.com/omnibus/update/README.html#single-node-deployment).
+To avoid this, we recommend to separate GitLab into several application nodes.
+As long as at least one of each component is online and capable of handling the instance's usage load, your team's productivity will not be interrupted during the update.
+
+### Automated database failover **(PREMIUM ONLY)**
+
+> - Level of complexity: **High**
+> - Required domain knowledge: PgBouncer, Repmgr or Patroni, shared storage, distributed systems
+> - Supported tiers: [GitLab Premium and Ultimate](https://about.gitlab.com/pricing/)
+
+By adding automatic failover for database systems, you can enable higher uptime
+with additional database nodes. This extends the default database with
+cluster management and failover policies.
+[PgBouncer in conjunction with Repmgr or Patroni](../postgresql/replication_and_failover.md)
+is recommended.
+
+### Instance level replication with GitLab Geo **(PREMIUM ONLY)**
+
+> - Level of complexity: **Very High**
+> - Required domain knowledge: Storage replication
+> - Supported tiers: [GitLab Premium and Ultimate](https://about.gitlab.com/pricing/)
+
+[GitLab Geo](../geo/index.md) allows you to replicate your GitLab
+instance to other geographical locations as a read-only fully operational instance
+that can also be promoted in case of disaster.
+
+## Configuring select components with Cloud Native Helm
+
+We also provide [Helm charts](https://docs.gitlab.com/charts/) as a Cloud Native installation
+method for GitLab. For the reference architectures, select components can be set up in this
+way as an alternative if so desired.
+
+For these kind of setups we support using the charts in an [advanced configuration](https://docs.gitlab.com/charts/#advanced-configuration)
+where stateful backend components, such as the database or Gitaly, are run externally - either
+via Omnibus or reputable third party services. Note that we don't currently support running the
+stateful components via Helm _at large scales_.
+
+When designing these environments you should refer to the respective [Reference Architecture](#available-reference-architectures)
+above for guidance on sizing. Components run via Helm would be similarly scaled to their Omnibus
+specs, only translated into Kubernetes resources.
+
+For example, if you were to set up a 50k installation with the Rails nodes being run in Helm,
+then the same amount of resources as given for Omnibus should be given to the Kubernetes
+cluster with the Rails nodes broken down into a number of smaller Pods across that cluster.

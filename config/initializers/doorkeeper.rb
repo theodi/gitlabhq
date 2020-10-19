@@ -3,16 +3,26 @@ Doorkeeper.configure do
   # Currently supported options are :active_record, :mongoid2, :mongoid3, :mongo_mapper
   orm :active_record
 
+  # Restore to pre-5.1 generator due to breaking change.
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/244371
+  default_generator_method :hex
+
   # This block will be called to check whether the resource owner is authenticated or not.
   resource_owner_authenticator do
     # Put your resource owner authentication logic here.
-    # Example implementation:
-    current_user || redirect_to(new_user_session_url)
+    if current_user
+      current_user
+    else
+      # Ensure user is redirected to redirect_uri after login
+      session[:user_return_to] = request.fullpath
+      redirect_to(new_user_session_url)
+      nil
+    end
   end
 
   resource_owner_from_credentials do |routes|
-    u = User.find_by(email: params[:username]) || User.find_by(username: params[:username])
-    u if u && u.valid_password?(params[:password])
+    user = Gitlab::Auth.find_with_user_password(params[:username], params[:password], increment_failed_attempts: true)
+    user unless user.try(:two_factor_enabled?)
   end
 
   # If you want to restrict access to the web interface for adding oauth authorized applications, you need to declare the block below.
@@ -31,7 +41,7 @@ Doorkeeper.configure do
 
   # Reuse access token for the same resource owner within an application (disabled by default)
   # Rationale: https://github.com/doorkeeper-gem/doorkeeper/issues/383
-  # reuse_access_token
+  reuse_access_token
 
   # Issue access tokens with refresh token (disabled by default)
   use_refresh_token
@@ -42,6 +52,13 @@ Doorkeeper.configure do
   #
   force_ssl_in_redirect_uri false
 
+  # Specify what redirect URI's you want to block during Application creation.
+  # Any redirect URI is whitelisted by default.
+  #
+  # You can use this option in order to forbid URI's with 'javascript' scheme
+  # for example.
+  forbid_redirect_uri { |uri| %w[data vbscript javascript].include?(uri.scheme.to_s.downcase) }
+
   # Provide support for an owner to be assigned to each registered application (disabled by default)
   # Optional parameter confirmation: true (default false) if you want to enforce ownership of
   # a registered application
@@ -51,8 +68,8 @@ Doorkeeper.configure do
   # Define access token scopes for your provider
   # For more information go to
   # https://github.com/doorkeeper-gem/doorkeeper/wiki/Using-Scopes
-  default_scopes  :api
-  #optional_scopes :write, :update
+  default_scopes(*Gitlab::Auth::DEFAULT_SCOPES)
+  optional_scopes(*Gitlab::Auth.optional_scopes)
 
   # Change the way client credentials are retrieved from the request object.
   # By default it retrieves first from the `HTTP_AUTHORIZATION` header, then
@@ -66,13 +83,6 @@ Doorkeeper.configure do
   # Check out the wiki for more information on customization
   access_token_methods :from_access_token_param, :from_bearer_authorization, :from_bearer_param
 
-  # Change the native redirect uri for client apps
-  # When clients register with the following redirect uri, they won't be redirected to any server and the authorization code will be displayed within the provider
-  # The value can be any string. Use nil to disable this feature. When disabled, clients must provide a valid URL
-  # (Similar behaviour: https://developers.google.com/accounts/docs/OAuth2InstalledApp#choosingredirecturi)
-  #
-  native_redirect_uri nil#'urn:ietf:wg:oauth:2.0:oob'
-
   # Specify what grant flows are enabled in array of Strings. The valid
   # strings and the flows they enable are:
   #
@@ -81,22 +91,17 @@ Doorkeeper.configure do
   # "password"           => Resource Owner Password Credentials Grant Flow
   # "client_credentials" => Client Credentials Grant Flow
   #
-  # If not specified, Doorkeeper enables all the four grant flows.
-  #
-  grant_flows %w(authorization_code password client_credentials)
+  grant_flows %w(authorization_code implicit password client_credentials)
 
   # Under some circumstances you might want to have applications auto-approved,
   # so that the user skips the authorization step.
   # For example if dealing with trusted a application.
-  # skip_authorization do |resource_owner, client|
-  #   client.superapp? or resource_owner.admin?
-  # end
+  skip_authorization do |resource_owner, client|
+    client.application.trusted?
+  end
 
   # WWW-Authenticate Realm (default "Doorkeeper").
   # realm "Doorkeeper"
 
-  # Allow dynamic query parameters (disabled by default)
-  # Some applications require dynamic query parameters on their request_uri
-  # set to true if you want this to be allowed
-  # wildcard_redirect_uri false
+  base_controller '::Gitlab::BaseDoorkeeperController'
 end

@@ -1,25 +1,35 @@
-- page_title "Issues"
+- @can_bulk_update = can?(current_user, :admin_issue, @group) && @group.feature_available?(:group_bulk_edit)
+
+- page_title _("Issues")
+- add_page_specific_style 'page_bundles/issues_list'
 = content_for :meta_tags do
-  - if current_user
-    = auto_discovery_link_tag(:atom, issues_group_url(@group, format: :atom, private_token: current_user.private_token), title: "#{@group.name} issues")
+  = auto_discovery_link_tag(:atom, safe_params.merge(rss_url_options).to_h, title: "#{@group.name} issues")
 
-%h3.page-title
-  Issues
+- if group_issues_count(state: 'all') == 0
+  = render 'shared/empty_states/issues', project_select_button: true
+- else
+  .top-area
+    = render 'shared/issuable/nav', type: :issues
+    .nav-controls
+      = render 'shared/issuable/feed_buttons'
 
-%p.light
-  Only issues from
-  %strong #{@group.name}
-  group are listed here.
-  - if current_user
-    To see all issues you should visit #{link_to 'dashboard', issues_dashboard_path} page.
-%hr
+      - if @can_bulk_update
+        = render_if_exists 'shared/issuable/bulk_update_button', type: :issues
 
-.append-bottom-20
-  .pull-right
-    - if current_user
-      .hidden-xs.pull-left
-        = link_to issues_group_url(@group, format: :atom, private_token: current_user.private_token), class: 'btn' do
-          %i.fa.fa-rss
+      = render 'shared/new_project_item_select', path: 'issues/new', label: "New issue", type: :issues, with_feature_enabled: 'issues', with_shared: false, include_projects_in_subgroups: true
 
-  = render 'shared/issuable_filter', type: :issues
-= render 'shared/issues'
+  = render 'shared/issuable/search_bar', type: :issues
+
+  - if @can_bulk_update
+    = render_if_exists 'shared/issuable/group_bulk_update_sidebar', group: @group, type: :issues
+
+  - if Feature.enabled?(:vue_issuables_list, @group)
+    - if use_startup_call?
+      - add_page_startup_api_call(api_v4_groups_issues_path(id: @group.id, params: startup_call_params))
+    .js-issuables-list{ data: { endpoint: expose_url(api_v4_groups_issues_path(id: @group.id)),
+      'can-bulk-edit': @can_bulk_update.to_json,
+      'empty-state-meta': { svg_path: image_path('illustrations/issues.svg') },
+      'sort-key': @sort,
+      type: 'issues' } }
+  - else
+    = render 'shared/issues'

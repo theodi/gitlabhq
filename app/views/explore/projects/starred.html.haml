@@ -1,11 +1,13 @@
-- page_title "Starred Projects"
-.explore-trending-block
-  %p.lead
-    %i.fa.fa-star
-    See most starred projects
-  %hr
-  .public-projects
-    %ul.bordered-list
-      = render @starred_projects
+- @hide_top_links = true
+- page_title    _("Projects")
+- header_title  _("Projects"), dashboard_projects_path
 
-  = paginate @starred_projects, theme: 'gitlab'
+= render_dashboard_gold_trial(current_user)
+
+- if current_user
+  = render 'dashboard/projects_head', project_tab_filter: :starred
+- else
+  = render 'explore/head'
+
+= render 'explore/projects/nav' unless Feature.enabled?(:project_list_filter_bar) && current_user
+= render 'projects', projects: @projects

@@ -1,0 +1,21 @@
+query($fullPath: ID!) {
+  project(fullPath: $fullPath) {
+    issues {
+      nodes {
+        labels {
+          nodes {
+            title
+            color
+          }
+        }
+      }
+    }
+    jiraImportStatus
+    jiraImports {
+      nodes {
+        importedIssuesCount
+        jiraProjectKey
+      }
+    }
+  }
+}

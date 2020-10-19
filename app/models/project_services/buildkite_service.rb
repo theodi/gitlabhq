@@ -1,34 +1,38 @@
-# == Schema Information
-#
-# Table name: services
-#
-#  id                    :integer          not null, primary key
-#  type                  :string(255)
-#  title                 :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  active                :boolean          default(FALSE), not null
-#  properties            :text
-#  template              :boolean          default(FALSE)
-#  push_events           :boolean          default(TRUE)
-#  issues_events         :boolean          default(TRUE)
-#  merge_requests_events :boolean          default(TRUE)
-#  tag_push_events       :boolean          default(TRUE)
-#  note_events           :boolean          default(TRUE), not null
-#
+# frozen_string_literal: true
 
 require "addressable/uri"
 
 class BuildkiteService < CiService
+  include ReactiveService
+
   ENDPOINT = "https://buildkite.com"
 
   prop_accessor :project_url, :token
 
-  validates :project_url, presence: true, if: :activated?
+  validates :project_url, presence: true, public_url: true, if: :activated?
   validates :token, presence: true, if: :activated?
 
   after_save :compose_service_hook, if: :activated?
+
+  def self.supported_events
+    %w(push merge_request tag_push)
+  end
+
+  # This is a stub method to work with deprecated API response
+  # TODO: remove enable_ssl_verification after 14.0
+  # https://gitlab.com/gitlab-org/gitlab/-/issues/222808
+  def enable_ssl_verification
+    true
+  end
+
+  # Since SSL verification will always be enabled for Buildkite,
+  # we no longer needs to store the boolean.
+  # This is a stub method to work with deprecated API param.
+  # TODO: remove enable_ssl_verification after 14.0
+  # https://gitlab.com/gitlab-org/gitlab/-/issues/222808
+  def enable_ssl_verification=(_value)
+    self.properties.delete('enable_ssl_verification') # Remove unused key
+  end
 
   def webhook_url
     "#{buildkite_endpoint('webhook')}/deliver/#{webhook_token}"
@@ -37,11 +41,8 @@ class BuildkiteService < CiService
   def compose_service_hook
     hook = service_hook || build_service_hook
     hook.url = webhook_url
+    hook.enable_ssl_verification = true
     hook.save
-  end
-
-  def supported_events
-    %w(push)
   end
 
   def execute(data)
@@ -51,13 +52,7 @@ class BuildkiteService < CiService
   end
 
   def commit_status(sha, ref)
-    response = HTTParty.get(commit_status_path(sha), verify: false)
-
-    if response.code == 200 && response['status']
-      response['status']
-    else
-      :error
-    end
+    with_reactive_cache(sha, ref) {|cached| cached[:commit_status] }
   end
 
   def commit_status_path(sha)
@@ -68,23 +63,15 @@ class BuildkiteService < CiService
     "#{project_url}/builds?commit=#{sha}"
   end
 
-  def builds_path
-    "#{project_url}/builds?branch=#{project.default_branch}"
-  end
-
-  def status_img_path
-    "#{buildkite_endpoint('badge')}/#{status_token}.svg"
-  end
-
   def title
     'Buildkite'
   end
 
   def description
-    'Continuous integration and deployments'
+    'Buildkite is a platform for running fast, secure, and scalable continuous integration pipelines on your own infrastructure'
   end
 
-  def to_param
+  def self.to_param
     'buildkite'
   end
 
@@ -92,12 +79,29 @@ class BuildkiteService < CiService
     [
       { type: 'text',
         name: 'token',
-        placeholder: 'Buildkite project GitLab token' },
+        title: 'Integration Token',
+        help: 'This token will be provided when you create a Buildkite pipeline with a GitLab repository',
+        required: true },
 
       { type: 'text',
         name: 'project_url',
-        placeholder: "#{ENDPOINT}/example/project" }
+        title: 'Pipeline URL',
+        placeholder: "#{ENDPOINT}/acme-inc/test-pipeline",
+        required: true }
     ]
+  end
+
+  def calculate_reactive_cache(sha, ref)
+    response = Gitlab::HTTP.try_get(commit_status_path(sha), request_options)
+
+    status =
+      if response&.code == 200 && response['status']
+        response['status']
+      else
+        :error
+      end
+
+    { commit_status: status }
   end
 
   private
@@ -131,5 +135,9 @@ class BuildkiteService < CiService
     else
       ENDPOINT
     end
+  end
+
+  def request_options
+    { verify: false, extra_log_info: { project_id: project_id } }
   end
 end

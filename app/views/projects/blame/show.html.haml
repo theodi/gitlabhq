@@ -1,36 +1,23 @@
-- page_title "Blame", @blob.path, @ref
-%h3.page-title Blame view
+- page_title _("Blame"), @blob.path, @ref
+- link_icon = sprite_icon("link", size: 12)
 
-#tree-holder.tree-holder
+#blob-content-holder.tree-holder
+  = render "projects/blob/breadcrumb", blob: @blob, blame: true
+
   .file-holder
-    .file-title
-      %i.fa.fa-file
-      %strong
-        = @path
-      %small= number_to_human_size @blob.size
-      .file-actions
-        = render "projects/blob/actions"
-    .file-content.blame.highlight
+    = render "projects/blob/header", blob: @blob, blame: true
+    .file-blame-legend
+      = render 'age_map_legend'
+    .table-responsive.file-content.blame.code.js-syntax-highlight
       %table
-        - @blame.each do |commit, lines, since|
-          - commit = Commit.new(commit, @project)
-          %tr
-            %td.blame-commit
-              %span.commit
-                = link_to commit.short_id, namespace_project_commit_path(@project.namespace, @project, commit), class: "commit_short_id"
-                &nbsp;
-                = commit_author_link(commit, avatar: true, size: 16)
-                &nbsp;
-                = link_to_gfm truncate(commit.title, length: 20), namespace_project_commit_path(@project.namespace, @project, commit.id), class: "row_title"
-            %td.lines.blame-numbers
-              %pre
-                - (since...(since + lines.count)).each do |i|
-                  = i
-                  \
-            %td.lines
-              %pre{class: 'code highlight white'}
-                %code
-                  :erb
-                    <% lines.each do |line| %>
-                      <%= highlight(@blob.name, line, nowrap: true, continue: true).html_safe %>
-                    <% end %>
+        - current_line = 1
+        - @blame.groups.each do |blame_group|
+          - commit_data = @blame.commit_data(blame_group[:commit])
+
+          = render 'blame_group',
+            blame_group: blame_group,
+            current_line: current_line,
+            link_icon: link_icon,
+            commit_data: commit_data
+
+          - current_line += blame_group[:lines].count

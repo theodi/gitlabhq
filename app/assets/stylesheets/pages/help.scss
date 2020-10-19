@@ -1,70 +1,47 @@
-.documentation-index {
-  h1 {
-    margin: 0;
-  }
-
-  h2 {
-    font-size: 20px;
-  }
-
-  li {
-    line-height: 24px;
-    color: #888;
-
-    a {
-      margin-right: 3px;
-    }
-  }
-}
-
-
 .shortcut-mappings {
   font-size: 12px;
-  color: #555;
+  color: $gray-700;
 
   tbody:first-child tr:first-child {
-    padding-top: 0
+    padding-top: 0;
   }
 
   th {
     padding-top: 15px;
     line-height: 1.5;
-    color: #333;
-    text-align: left
+    color: $help-shortcut-header-color;
+    text-align: left;
   }
 
   td {
     padding-top: 3px;
     padding-bottom: 3px;
     vertical-align: top;
-    line-height: 20px
+    line-height: 20px;
   }
 
   .shortcut {
     padding-right: 10px;
-    color: #999;
+    color: $gray-300;
     text-align: right;
-    white-space: nowrap
+    white-space: nowrap;
   }
 
   .key {
-    @extend .label;
-    @extend .label-inverse;
-    font: 11px Consolas, "Liberation Mono", Menlo, Courier, monospace;
+    @extend .badge.badge-pill;
+    background-color: $label-inverse-bg;
+    font: 11px Consolas, 'Liberation Mono', Menlo, Courier, monospace;
     padding: 3px 5px;
   }
 }
 
-.modal-body {
-  position: relative;
-  overflow-y: auto;
-  padding: 15px;
+.documentation {
+  padding: 7px;
+  font-size: $gl-font-size-large;
 }
 
-body.modal-open {
-  overflow: hidden;
-}
-
-.modal .modal-dialog {
-  width: 860px;
+.card.links-card {
+  a {
+    color: $blue-600;
+  }
 }

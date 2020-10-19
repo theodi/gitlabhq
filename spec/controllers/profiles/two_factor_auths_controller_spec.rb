@@ -1,6 +1,8 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe Profiles::TwoFactorAuthsController do
+RSpec.describe Profiles::TwoFactorAuthsController do
   before do
     # `user` should be defined within the action-specific describe blocks
     sign_in(user)
@@ -8,22 +10,29 @@ describe Profiles::TwoFactorAuthsController do
     allow(subject).to receive(:current_user).and_return(user)
   end
 
-  describe 'GET new' do
+  describe 'GET show' do
     let(:user) { create(:user) }
 
     it 'generates otp_secret for user' do
-      expect(User).to receive(:generate_otp_secret).with(32).and_return('secret').once
+      expect(User).to receive(:generate_otp_secret).with(32).and_call_original.once
 
-      get :new
-      get :new # Second hit shouldn't re-generate it
+      get :show
     end
 
     it 'assigns qr_code' do
       code = double('qr code')
       expect(subject).to receive(:build_qr_code).and_return(code)
 
-      get :new
+      get :show
       expect(assigns[:qr_code]).to eq code
+    end
+
+    it 'generates a unique otp_secret every time the page is loaded' do
+      expect(User).to receive(:generate_otp_secret).with(32).and_call_original.twice
+
+      2.times do
+        get :show
+      end
     end
   end
 
@@ -32,19 +41,19 @@ describe Profiles::TwoFactorAuthsController do
     let(:pin)  { 'pin-code' }
 
     def go
-      post :create, pin_code: pin
+      post :create, params: { pin_code: pin }
     end
 
     context 'with valid pin' do
       before do
-        expect(user).to receive(:valid_otp?).with(pin).and_return(true)
+        expect(user).to receive(:validate_and_consume_otp!).with(pin).and_return(true)
       end
 
-      it 'sets otp_required_for_login' do
+      it 'enables 2fa for the user' do
         go
 
         user.reload
-        expect(user.otp_required_for_login).to eq true
+        expect(user).to be_two_factor_enabled
       end
 
       it 'presents plaintext codes for the user to save' do
@@ -55,6 +64,12 @@ describe Profiles::TwoFactorAuthsController do
         expect(assigns[:codes]).to match_array %w(a b c)
       end
 
+      it 'calls to delete other sessions' do
+        expect(ActiveSession).to receive(:destroy_all_but_current)
+
+        go
+      end
+
       it 'renders create' do
         go
         expect(response).to render_template(:create)
@@ -63,12 +78,12 @@ describe Profiles::TwoFactorAuthsController do
 
     context 'with invalid pin' do
       before do
-        expect(user).to receive(:valid_otp?).with(pin).and_return(false)
+        expect(user).to receive(:validate_and_consume_otp!).with(pin).and_return(false)
       end
 
       it 'assigns error' do
         go
-        expect(assigns[:error]).to eq 'Invalid pin code'
+        expect(assigns[:error]).to eq _('Invalid pin code')
       end
 
       it 'assigns qr_code' do
@@ -79,9 +94,9 @@ describe Profiles::TwoFactorAuthsController do
         expect(assigns[:qr_code]).to eq code
       end
 
-      it 'renders new' do
+      it 'renders show' do
         go
-        expect(response).to render_template(:new)
+        expect(response).to render_template(:show)
       end
     end
   end
@@ -105,25 +120,46 @@ describe Profiles::TwoFactorAuthsController do
   end
 
   describe 'DELETE destroy' do
-    let(:user)   { create(:user, :two_factor) }
-    let!(:codes) { user.generate_otp_backup_codes! }
+    subject { delete :destroy }
 
-    it 'clears all 2FA-related fields' do
-      expect(user.otp_required_for_login).to eq true
-      expect(user.otp_backup_codes).not_to be_nil
-      expect(user.encrypted_otp_secret).not_to be_nil
+    context 'for a user that has 2FA enabled' do
+      let(:user) { create(:user, :two_factor) }
 
-      delete :destroy
+      it 'disables two factor' do
+        subject
 
-      expect(user.otp_required_for_login).to eq false
-      expect(user.otp_backup_codes).to be_nil
-      expect(user.encrypted_otp_secret).to be_nil
+        expect(user.reload.two_factor_enabled?).to eq(false)
+      end
+
+      it 'redirects to profile_account_path' do
+        subject
+
+        expect(response).to redirect_to(profile_account_path)
+      end
+
+      it 'displays a notice on success' do
+        subject
+
+        expect(flash[:notice])
+          .to eq _('Two-factor authentication has been disabled successfully!')
+      end
     end
 
-    it 'redirects to profile_account_path' do
-      delete :destroy
+    context 'for a user that does not have 2FA enabled' do
+      let(:user) { create(:user) }
 
-      expect(response).to redirect_to(profile_account_path)
+      it 'redirects to profile_account_path' do
+        subject
+
+        expect(response).to redirect_to(profile_account_path)
+      end
+
+      it 'displays an alert on failure' do
+        subject
+
+        expect(flash[:alert])
+          .to eq _('Two-factor authentication is not enabled for this user')
+      end
     end
   end
 end

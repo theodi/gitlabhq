@@ -1,54 +1,71 @@
+# frozen_string_literal: true
+
 class DashboardController < Dashboard::ApplicationController
-  before_action :load_projects, except: [:projects]
-  before_action :event_filter, only: :show
-  
+  include IssuableCollectionsAction
+  include FiltersEvents
+
+  prepend_before_action(only: [:issues]) { authenticate_sessionless_user!(:rss) }
+  prepend_before_action(only: [:issues_calendar]) { authenticate_sessionless_user!(:ics) }
+
+  before_action :event_filter, only: :activity
+  before_action :projects, only: [:issues, :merge_requests]
+  before_action :set_show_full_reference, only: [:issues, :merge_requests]
+  before_action :check_filters_presence!, only: [:issues, :merge_requests]
+  before_action :set_not_query_feature_flag
+
   respond_to :html
 
-  def show
-    @projects = @projects.includes(:namespace)
-    @last_push = current_user.recent_push
+  feature_category :audit_events, [:activity]
+  feature_category :issue_tracking, [:issues, :issues_calendar]
+  feature_category :code_review, [:merge_requests]
 
+  def activity
     respond_to do |format|
       format.html
 
       format.json do
         load_events
-        pager_json("events/_events", @events.count)
+        pager_json('events/_events', @events.count { |event| event.visible_to_user?(current_user) })
       end
-
-      format.atom do
-        load_events
-        render layout: false
-      end
-    end
-  end
-
-  def merge_requests
-    @merge_requests = get_merge_requests_collection
-    @merge_requests = @merge_requests.page(params[:page]).per(PER_PAGE)
-    @merge_requests = @merge_requests.preload(:author, :target_project)
-  end
-
-  def issues
-    @issues = get_issues_collection
-    @issues = @issues.page(params[:page]).per(PER_PAGE)
-    @issues = @issues.preload(:author, :project)
-
-    respond_to do |format|
-      format.html
-      format.atom { render layout: false }
     end
   end
 
   protected
 
-  def load_projects
-    @projects = current_user.authorized_projects.sorted_by_activity.non_archived
+  def load_events
+    projects =
+      if params[:filter] == "starred"
+        ProjectsFinder.new(current_user: current_user, params: { starred: true }).execute
+      else
+        current_user.authorized_projects
+      end
+
+    @events = EventCollection
+      .new(projects, offset: params[:offset].to_i, filter: event_filter)
+      .to_a
+      .map(&:present)
+
+    Events::RenderService.new(current_user).execute(@events)
   end
 
-  def load_events
-    @events = Event.in_projects(current_user.authorized_projects.pluck(:id))
-    @events = @event_filter.apply_filter(@events).with_associations
-    @events = @events.limit(20).offset(params[:offset] || 0)
+  def set_show_full_reference
+    @show_full_reference = true
+  end
+
+  def check_filters_presence!
+    no_scalar_filters_set = finder_type.scalar_params.none? { |k| params.key?(k) }
+    no_array_filters_set = finder_type.array_params.none? { |k, _| params.key?(k) }
+
+    @no_filters_set = no_scalar_filters_set && no_array_filters_set
+
+    return unless @no_filters_set
+
+    # Call to set selected `state` and `sort` options in view
+    finder_options
+
+    respond_to do |format|
+      format.html { render }
+      format.atom { head :bad_request }
+    end
   end
 end

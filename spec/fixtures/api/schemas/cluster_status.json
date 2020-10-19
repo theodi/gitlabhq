@@ -1,0 +1,59 @@
+{
+  "type": "object",
+  "required" : [
+    "status",
+    "applications"
+  ],
+  "properties" : {
+    "status": { "type": "string" },
+    "status_reason": { "type": ["string", "null"] },
+    "applications": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/application_status" }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "application_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties" : {
+        "name": { "type": "string" },
+        "status": {
+          "type": {
+            "enum": [
+              "installable",
+              "scheduled",
+              "installing",
+              "installed",
+              "errored"
+            ]
+          }
+        },
+        "version": { "type": "string" },
+        "status_reason": { "type": ["string", "null"] },
+        "external_ip": { "type": ["string", "null"] },
+        "external_hostname": { "type": ["string", "null"] },
+        "hostname": { "type": ["string", "null"] },
+        "email": { "type": ["string", "null"] },
+        "stack": { "type": ["string", "null"] },
+        "modsecurity_enabled": { "type": ["boolean", "null"] },
+        "modsecurity_mode": {"type": ["integer", "0"]},
+        "host": {"type": ["string", "null"]},
+        "port": {"type": ["integer", "514"]},
+        "protocol": {"type": ["integer", "0"]},
+        "waf_log_enabled": {"type": ["boolean", "true"]},
+        "cilium_log_enabled": {"type": ["boolean", "true"]},
+        "update_available": { "type": ["boolean", "null"] },
+        "can_uninstall": { "type": "boolean" },
+        "available_domains": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/domain" }
+        },
+        "pages_domain": { "type": [ { "$ref": "#/definitions/domain" }, "null"] }
+      },
+      "required" : [ "name", "status" ]
+    },
+    "domain": { "id": "integer", "domain": "string" }
+  }
+}

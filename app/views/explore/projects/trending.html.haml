@@ -1,18 +1,13 @@
-- page_title "Trending Projects"
-.explore-title
-  %h3
-    Explore GitLab
-  %p.lead
-    Discover projects and groups. Share your projects with others
-%hr
-.explore-trending-block
-  %p.lead
-    %i.fa.fa-comments-o
-    See most discussed projects for last month
-  %hr
-  .public-projects
-    %ul.bordered-list
-      = render @trending_projects
+- @hide_top_links = true
+- page_title    _("Projects")
+- header_title  _("Projects"), dashboard_projects_path
 
-  .center.append-bottom-20
-    = link_to 'Show all projects', explore_projects_path, class: 'btn btn-primary'
+= render_dashboard_gold_trial(current_user)
+
+- if current_user
+  = render 'dashboard/projects_head', project_tab_filter: :explore_trending
+- else
+  = render 'explore/head'
+
+= render 'explore/projects/nav' unless Feature.enabled?(:project_list_filter_bar) && current_user
+= render 'projects', projects: @projects, explore_page: true

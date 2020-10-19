@@ -1,188 +1,169 @@
+# frozen_string_literal: true
+
 require 'mime/types'
 
 module API
-  # Projects API
-  class Repositories < Grape::API
-    before { authenticate! }
+  class Repositories < ::API::Base
+    include PaginationParams
+
+    helpers ::API::Helpers::HeadersHelpers
+
     before { authorize! :download_code, user_project }
 
-    resource :projects do
+    params do
+      requires :id, type: String, desc: 'The ID of a project'
+    end
+    resource :projects, requirements: API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
       helpers do
+        include ::Gitlab::RateLimitHelpers
+
         def handle_project_member_errors(errors)
           if errors[:project_access].any?
             error!(errors[:project_access], 422)
           end
+
           not_found!
         end
-      end
 
-      # Get a project repository tags
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request:
-      #   GET /projects/:id/repository/tags
-      get ":id/repository/tags" do
-        present user_project.repo.tags.sort_by(&:name).reverse,
-                with: Entities::RepoTag, project: user_project
-      end
+        def assign_blob_vars!
+          authorize! :download_code, user_project
 
-      # Create tag
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   tag_name (required) - The name of the tag
-      #   ref (required) - Create tag from commit sha or branch
-      #   message (optional) - Specifying a message creates an annotated tag.
-      # Example Request:
-      #   POST /projects/:id/repository/tags
-      post ':id/repository/tags' do
-        authorize_push_project
-        message = params[:message] || nil
-        result = CreateTagService.new(user_project, current_user).
-          execute(params[:tag_name], params[:ref], message)
+          @repo = user_project.repository
 
-        if result[:status] == :success
-          present result[:tag],
-                  with: Entities::RepoTag,
-                  project: user_project
-        else
-          render_api_error!(result[:message], 400)
+          begin
+            @blob = Gitlab::Git::Blob.raw(@repo, params[:sha])
+            @blob.load_all_data!(@repo)
+          rescue
+            not_found! 'Blob'
+          end
+
+          not_found! 'Blob' unless @blob
         end
       end
 
-      # Get a project repository tree
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   ref_name (optional) - The name of a repository branch or tag, if not given the default branch is used
-      # Example Request:
-      #   GET /projects/:id/repository/tree
+      desc 'Get a project repository tree' do
+        success Entities::TreeObject
+      end
+      params do
+        optional :ref, type: String, desc: 'The name of a repository branch or tag, if not given the default branch is used'
+        optional :path, type: String, desc: 'The path of the tree'
+        optional :recursive, type: Boolean, default: false, desc: 'Used to get a recursive tree'
+        use :pagination
+      end
       get ':id/repository/tree' do
-        ref = params[:ref_name] || user_project.try(:default_branch) || 'master'
+        ref = params[:ref] || user_project.try(:default_branch) || 'master'
         path = params[:path] || nil
 
         commit = user_project.commit(ref)
         not_found!('Tree') unless commit
 
-        tree = user_project.repository.tree(commit.id, path)
-
-        present tree.sorted_entries, with: Entities::RepoTreeObject
+        tree = user_project.repository.tree(commit.id, path, recursive: params[:recursive])
+        entries = ::Kaminari.paginate_array(tree.sorted_entries)
+        present paginate(entries), with: Entities::TreeObject
       end
 
-      # Get a raw file contents
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   sha (required) - The commit or branch name
-      #   filepath (required) - The path to the file to display
-      # Example Request:
-      #   GET /projects/:id/repository/blobs/:sha
-      get [ ":id/repository/blobs/:sha", ":id/repository/commits/:sha/blob" ] do
-        required_attributes! [:filepath]
+      desc 'Get raw blob contents from the repository'
+      params do
+        requires :sha, type: String, desc: 'The commit hash'
+      end
+      get ':id/repository/blobs/:sha/raw' do
+        assign_blob_vars!
 
-        ref = params[:sha]
+        no_cache_headers
 
-        repo = user_project.repository
-
-        commit = repo.commit(ref)
-        not_found! "Commit" unless commit
-
-        blob = Gitlab::Git::Blob.find(repo, commit.id, params[:filepath])
-        not_found! "File" unless blob
-
-        content_type 'text/plain'
-        present blob.data
+        send_git_blob @repo, @blob
       end
 
-      # Get a raw blob contents by blob sha
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   sha (required) - The blob's sha
-      # Example Request:
-      #   GET /projects/:id/repository/raw_blobs/:sha
-      get ':id/repository/raw_blobs/:sha' do
-        ref = params[:sha]
+      desc 'Get a blob from the repository'
+      params do
+        requires :sha, type: String, desc: 'The commit hash'
+      end
+      get ':id/repository/blobs/:sha' do
+        assign_blob_vars!
 
-        repo = user_project.repository
+        {
+          size: @blob.size,
+          encoding: "base64",
+          content: Base64.strict_encode64(@blob.data),
+          sha: @blob.id
+        }
+      end
 
-        begin
-          blob = Gitlab::Git::Blob.raw(repo, ref)
-        rescue
-          not_found! 'Blob'
+      desc 'Get an archive of the repository'
+      params do
+        optional :sha, type: String, desc: 'The commit sha of the archive to be downloaded'
+        optional :format, type: String, desc: 'The archive format'
+      end
+      get ':id/repository/archive', requirements: { format: Gitlab::PathRegex.archive_formats_regex } do
+        if archive_rate_limit_reached?(current_user, user_project)
+          render_api_error!({ error: ::Gitlab::RateLimitHelpers::ARCHIVE_RATE_LIMIT_REACHED_MESSAGE }, 429)
         end
 
-        not_found! 'Blob' unless blob
+        not_acceptable! if Gitlab::HotlinkingDetector.intercept_hotlinking?(request)
 
-        env['api.format'] = :txt
-
-        content_type blob.mime_type
-        present blob.data
+        send_git_archive user_project.repository, ref: params[:sha], format: params[:format], append_sha: true
+      rescue
+        not_found!('File')
       end
 
-      # Get a an archive of the repository
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   sha (optional) - the commit sha to download defaults to the tip of the default branch
-      # Example Request:
-      #   GET /projects/:id/repository/archive
-      get ':id/repository/archive',
-          requirements: { format: Gitlab::Regex.archive_formats_regex } do
-        authorize! :download_code, user_project
-
-        begin
-          file_path = ArchiveRepositoryService.new(
-            user_project,
-            params[:sha],
-            params[:format]
-          ).execute
-        rescue
-          not_found!('File')
-        end
-
-        if file_path && File.exists?(file_path)
-          data = File.open(file_path, 'rb').read
-          basename = File.basename(file_path)
-          header['Content-Disposition'] = "attachment; filename=\"#{basename}\""
-          content_type MIME::Types.type_for(file_path).first.content_type
-          env['api.format'] = :binary
-          present data
-        else
-          redirect request.fullpath
-        end
+      desc 'Compare two branches, tags, or commits' do
+        success Entities::Compare
       end
-
-      # Compare two branches, tags or commits
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   from (required) - the commit sha or branch name
-      #   to (required) - the commit sha or branch name
-      # Example Request:
-      #   GET /projects/:id/repository/compare?from=master&to=feature
+      params do
+        requires :from, type: String, desc: 'The commit, branch name, or tag name to start comparison'
+        requires :to, type: String, desc: 'The commit, branch name, or tag name to stop comparison'
+        optional :straight, type: Boolean, desc: 'Comparison method, `true` for direct comparison between `from` and `to` (`from`..`to`), `false` to compare using merge base (`from`...`to`)', default: false
+      end
       get ':id/repository/compare' do
-        authorize! :download_code, user_project
-        required_attributes! [:from, :to]
-        compare = Gitlab::Git::Compare.new(user_project.repository.raw_repository, params[:from], params[:to])
-        present compare, with: Entities::Compare
+        compare = CompareService.new(user_project, params[:to]).execute(user_project, params[:from], straight: params[:straight])
+
+        if compare
+          present compare, with: Entities::Compare
+        else
+          not_found!("Ref")
+        end
       end
 
-      # Get repository contributors
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request:
-      #   GET /projects/:id/repository/contributors
+      desc 'Get repository contributors' do
+        success Entities::Contributor
+      end
+      params do
+        use :pagination
+        optional :order_by, type: String, values: %w[email name commits], default: 'commits', desc: 'Return contributors ordered by `name` or `email` or `commits`'
+        optional :sort, type: String, values: %w[asc desc], default: 'asc', desc: 'Sort by asc (ascending) or desc (descending)'
+      end
       get ':id/repository/contributors' do
-        authorize! :download_code, user_project
+        contributors = ::Kaminari.paginate_array(user_project.repository.contributors(order_by: params[:order_by], sort: params[:sort]))
+        present paginate(contributors), with: Entities::Contributor
+      rescue
+        not_found!
+      end
 
-        begin
-          present user_project.repository.contributors,
-                  with: Entities::Contributor
-        rescue
-          not_found!
+      desc 'Get the common ancestor between commits' do
+        success Entities::Commit
+      end
+      params do
+        requires :refs, type: Array[String], coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce
+      end
+      get ':id/repository/merge_base' do
+        refs = params[:refs]
+
+        if refs.size < 2
+          render_api_error!('Provide at least 2 refs', 400)
+        end
+
+        merge_base = Gitlab::Git::MergeBase.new(user_project.repository, refs)
+
+        if merge_base.unknown_refs.any?
+          ref_noun = 'ref'.pluralize(merge_base.unknown_refs.size)
+          message = "Could not find #{ref_noun}: #{merge_base.unknown_refs.join(', ')}"
+          render_api_error!(message, 400)
+        end
+
+        if merge_base.commit
+          present merge_base.commit, with: Entities::Commit
+        else
+          not_found!("Merge Base")
         end
       end
     end

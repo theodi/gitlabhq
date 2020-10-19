@@ -1,10 +1,10 @@
 %p
   Assignee changed
-  - if @previous_assignee
+  - if previous_assignees.any?
     from
-    %strong #{@previous_assignee.name}
+    %strong= sanitize_name(previous_assignees.map(&:name).to_sentence)
   to
-  - if issuable.assignee_id
-    %strong #{issuable.assignee_name}
+  - if issuable.assignees.any?
+    %strong= sanitize_name(issuable.assignee_list)
   - else
     %strong Unassigned

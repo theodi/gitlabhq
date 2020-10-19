@@ -1,21 +1,28 @@
-- page_title "Milestones"
-%h3.page-title
-  Milestones
-  %span.pull-right #{@dashboard_milestones.count} milestones
+- @hide_top_links = true
+- page_title _('Milestones')
+- header_title _('Milestones'), dashboard_milestones_path
+- add_page_specific_style 'page_bundles/milestone'
 
-%p.light
-  List all milestones from all projects you have access to.
+.page-title-holder.d-flex.align-items-center
+  %h1.page-title= _('Milestones')
 
-%hr
+  - if current_user
+    .page-title-controls
+      = render 'shared/new_project_item_select',
+        path: '-/milestones/new', label: 'New milestone',
+        include_groups: true, type: :milestones
 
-= render 'shared/milestones_filter'
+.top-area
+  = render 'shared/milestones_filter', counts: @milestone_states
+  .nav-controls
+    = render 'shared/milestones/search_form'
+
 .milestones
-  .panel.panel-default
-    %ul.well-list
-      - if @dashboard_milestones.blank?
-        %li
-          .nothing-here-block No milestones to show
-      - else
-        - @dashboard_milestones.each do |milestone|
-          = render 'milestone', milestone: milestone
-  = paginate @dashboard_milestones, theme: "gitlab"
+  %ul.content-list
+    - if @milestones.blank?
+      %li
+        .nothing-here-block No milestones to show
+    - else
+      - @milestones.each do |milestone|
+        = render 'milestone', milestone: milestone
+  = paginate @milestones, theme: 'gitlab'

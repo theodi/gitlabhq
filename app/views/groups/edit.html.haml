@@ -1,38 +1,59 @@
-- page_title "Settings"
-.panel.panel-default
-  .panel-heading
-    %strong= @group.name
-    group settings:
-  .panel-body
-    = form_for @group, html: { multipart: true, class: "form-horizontal" }, authenticity_token: true do |f|
-      - if @group.errors.any?
-        .alert.alert-danger
-          %span= @group.errors.full_messages.first
-      = render 'shared/group_form', f: f
+- breadcrumb_title _("General Settings")
+- page_title _("General Settings")
+- @content_class = "limit-container-width" unless fluid_layout
+- expanded = expanded_by_default?
 
-      .form-group
-        .col-sm-2
-        .col-sm-10
-          = image_tag group_icon(@group), alt: '', class: 'avatar group-avatar s160'
-          %p.light
-            - if @group.avatar?
-              You can change your group avatar here
-            - else
-              You can upload a group avatar here
-          = render 'shared/choose_group_avatar_button', f: f
-          - if @group.avatar?
-            %hr
-            = link_to 'Remove avatar', group_avatar_path(@group.to_param), data: { confirm: "Group avatar will be removed. Are you sure?"}, method: :delete, class: "btn btn-remove btn-sm remove-avatar"
 
-      .form-actions
-        = f.submit 'Save group', class: "btn btn-save"
-
-.panel.panel-danger
-  .panel-heading Remove group
-  .panel-body
+%section.settings.gs-general.no-animate#js-general-settings{ class: ('expanded') }
+  .settings-header
+    %h4.settings-title.js-settings-toggle.js-settings-toggle-trigger-only{ role: 'button' }
+      = _('Naming, visibility')
+    %button.btn.js-settings-toggle{ type: 'button' }
+      = _('Collapse')
     %p
-      Removing group will cause all child projects and resources to be removed.
-      %br
-      %strong Removed group can not be restored!
+      = _('Update your group name, description, avatar, and visibility.')
+  .settings-content
+    = render 'groups/settings/general'
 
-    = link_to 'Remove Group', @group, data: {confirm: 'Removed group can not be restored! Are you sure?'}, method: :delete, class: "btn btn-remove"
+%section.settings.gs-permissions.no-animate#js-permissions-settings{ class: ('expanded' if expanded), data: { qa_selector: 'permission_lfs_2fa_content' } }
+  .settings-header
+    %h4.settings-title.js-settings-toggle.js-settings-toggle-trigger-only{ role: 'button' }
+      = _('Permissions, LFS, 2FA')
+    %button.btn.js-settings-toggle{ type: 'button' }
+      = expanded ? _('Collapse') : _('Expand')
+    %p
+      = _('Advanced permissions, Large File Storage and Two-Factor authentication settings.')
+  .settings-content
+    = render 'groups/settings/permissions'
+
+= render_if_exists 'groups/insights', expanded: expanded
+
+%section.settings.no-animate#js-badge-settings{ class: ('expanded' if expanded) }
+  .settings-header
+    %h4.settings-title.js-settings-toggle.js-settings-toggle-trigger-only{ role: 'button' }
+      = s_('GroupSettings|Badges')
+    %button.btn.js-settings-toggle{ type: 'button' }
+      = expanded ? _('Collapse') : _('Expand')
+    %p
+      = s_('GroupSettings|Customize your group badges.')
+      = link_to s_('GroupSettings|Learn more about badges.'), help_page_path('user/project/badges')
+  .settings-content
+    = render 'shared/badges/badge_settings'
+
+= render_if_exists 'groups/custom_project_templates_setting'
+= render_if_exists 'groups/templates_setting', expanded: expanded
+
+%section.settings.gs-advanced.no-animate#js-advanced-settings{ class: ('expanded' if expanded) }
+  .settings-header
+    %h4.settings-title.js-settings-toggle.js-settings-toggle-trigger-only{ role: 'button' }
+      = _('Advanced')
+    %button.btn.js-settings-toggle{ type: 'button' }
+      = expanded ? _('Collapse') : _('Expand')
+    %p
+      = _('Perform advanced options such as changing path, transferring, exporting, or removing the group.')
+  .settings-content
+    = render 'groups/settings/advanced'
+
+= render_if_exists 'shared/groups/max_pages_size_setting'
+
+= render 'shared/confirm_modal', phrase: @group.path

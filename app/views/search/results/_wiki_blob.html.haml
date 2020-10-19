@@ -1,9 +1,4 @@
-.blob-result
-  .file-holder
-    .file-title
-      = link_to namespace_project_wiki_path(@project.namespace, @project, wiki_blob.filename) do
-        %i.fa.fa-file
-        %strong
-          = wiki_blob.filename
-    .file-content.code.term
-      = render 'shared/file_highlight', blob: wiki_blob, first_line_number: wiki_blob.startline, user_color_scheme_class: 'white'
+- project = wiki_blob.project
+- wiki_blob_link = project_wiki_path(project, wiki_blob.basename)
+
+= render partial: 'search/results/blob_data', locals: { blob: wiki_blob, project: project, path: wiki_blob.path, blob_link: wiki_blob_link }

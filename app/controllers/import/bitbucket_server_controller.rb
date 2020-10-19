@@ -1,0 +1,195 @@
+# frozen_string_literal: true
+
+class Import::BitbucketServerController < Import::BaseController
+  extend ::Gitlab::Utils::Override
+
+  include ActionView::Helpers::SanitizeHelper
+
+  before_action :verify_bitbucket_server_import_enabled
+  before_action :bitbucket_auth, except: [:new, :configure]
+  before_action :normalize_import_params, only: [:create]
+  before_action :validate_import_params, only: [:create]
+
+  rescue_from BitbucketServer::Connection::ConnectionError, with: :bitbucket_connection_error
+
+  # As a basic sanity check to prevent URL injection, restrict project
+  # repository input and repository slugs to allowed characters. For Bitbucket:
+  #
+  # Project keys must start with a letter and may only consist of ASCII letters, numbers and underscores (A-Z, a-z, 0-9, _).
+  #
+  # Repository names are limited to 128 characters. They must start with a
+  # letter or number and may contain spaces, hyphens, underscores, and periods.
+  # (https://community.atlassian.com/t5/Answers-Developer-Questions/stash-repository-names/qaq-p/499054)
+  #
+  # Bitbucket Server starts personal project names with a tilde.
+  VALID_BITBUCKET_PROJECT_CHARS = /\A~?[\w\-\.\s]+\z/.freeze
+  VALID_BITBUCKET_CHARS = /\A[\w\-\.\s]+\z/.freeze
+
+  def new
+  end
+
+  def create
+    repo = client.repo(@project_key, @repo_slug)
+
+    unless repo
+      return render json: { errors: _("Project %{project_repo} could not be found") % { project_repo: "#{@project_key}/#{@repo_slug}" } }, status: :unprocessable_entity
+    end
+
+    result = Import::BitbucketServerService.new(client, current_user, params).execute(credentials)
+
+    if result[:status] == :success
+      render json: ProjectSerializer.new.represent(result[:project], serializer: :import)
+    else
+      render json: { errors: result[:message] }, status: result[:http_status]
+    end
+  end
+
+  def configure
+    session[personal_access_token_key] = params[:personal_access_token]
+    session[bitbucket_server_username_key] = params[:bitbucket_server_username]
+    session[bitbucket_server_url_key] = params[:bitbucket_server_url]
+
+    redirect_to status_import_bitbucket_server_path
+  end
+
+  def status
+    super
+  end
+
+  def realtime_changes
+    super
+  end
+
+  protected
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  override :importable_repos
+  def importable_repos
+    # Use the import URL to filter beyond what BaseService#find_already_added_projects
+    already_added_projects = filter_added_projects('bitbucket_server', bitbucket_repos.map(&:browse_url))
+    already_added_projects_names = already_added_projects.map(&:import_source)
+
+    bitbucket_repos.reject { |repo| already_added_projects_names.include?(repo.browse_url) || !repo.valid? }
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  override :incompatible_repos
+  def incompatible_repos
+    bitbucket_repos.reject { |repo| repo.valid? }
+  end
+
+  override :provider_name
+  def provider_name
+    :bitbucket_server
+  end
+
+  override :provider_url
+  def provider_url
+    session[bitbucket_server_url_key]
+  end
+
+  private
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def filter_added_projects(import_type, import_sources)
+    current_user.created_projects.where(import_type: import_type, import_source: import_sources).with_import_state
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def client
+    @client ||= BitbucketServer::Client.new(credentials)
+  end
+
+  def bitbucket_repos
+    @bitbucket_repos ||= client.repos(page_offset: page_offset, limit: limit_per_page, filter: sanitized_filter_param).to_a
+  end
+
+  def normalize_import_params
+    project_key, repo_slug = params[:repo_id].split('/')
+    params[:bitbucket_server_project] = project_key
+    params[:bitbucket_server_repo] = repo_slug
+  end
+
+  def validate_import_params
+    @project_key = params[:bitbucket_server_project]
+    @repo_slug = params[:bitbucket_server_repo]
+
+    return render_validation_error('Missing project key') unless @project_key.present? && @repo_slug.present?
+    return render_validation_error('Missing repository slug') unless @repo_slug.present?
+    return render_validation_error('Invalid project key') unless @project_key =~ VALID_BITBUCKET_PROJECT_CHARS
+    return render_validation_error('Invalid repository slug') unless @repo_slug =~ VALID_BITBUCKET_CHARS
+  end
+
+  def render_validation_error(message)
+    render json: { errors: message }, status: :unprocessable_entity
+  end
+
+  def bitbucket_auth
+    unless session[bitbucket_server_url_key].present? &&
+        session[bitbucket_server_username_key].present? &&
+        session[personal_access_token_key].present?
+      redirect_to new_import_bitbucket_server_path
+    end
+  end
+
+  def verify_bitbucket_server_import_enabled
+    render_404 unless bitbucket_server_import_enabled?
+  end
+
+  def bitbucket_server_url_key
+    :bitbucket_server_url
+  end
+
+  def bitbucket_server_username_key
+    :bitbucket_server_username
+  end
+
+  def personal_access_token_key
+    :bitbucket_server_personal_access_token
+  end
+
+  def clear_session_data
+    session[bitbucket_server_url_key] = nil
+    session[bitbucket_server_username_key] = nil
+    session[personal_access_token_key] = nil
+  end
+
+  def credentials
+    {
+      base_uri: session[bitbucket_server_url_key],
+      user: session[bitbucket_server_username_key],
+      password: session[personal_access_token_key]
+    }
+  end
+
+  def page_offset
+    [0, params[:page].to_i].max
+  end
+
+  def limit_per_page
+    BitbucketServer::Paginator::PAGE_LENGTH
+  end
+
+  def sanitized_filter_param
+    sanitize(params[:filter])
+  end
+
+  def bitbucket_connection_error(error)
+    flash[:alert] = _("Unable to connect to server: %{error}") % { error: error }
+    clear_session_data
+
+    respond_to do |format|
+      format.json do
+        render json: {
+          error: {
+            message: _("Unable to connect to server: %{error}") % { error: error },
+            redirect: new_import_bitbucket_server_path
+          }
+        }, status: :unprocessable_entity
+      end
+      format.html do
+        redirect_to new_import_bitbucket_server_path
+      end
+    end
+  end
+end

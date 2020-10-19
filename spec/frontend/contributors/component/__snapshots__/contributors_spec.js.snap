@@ -1,0 +1,67 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Contributors charts should render charts when loading completed and there is chart data 1`] = `
+<div>
+  <div
+    class="contributors-charts"
+  >
+    <h4>
+      Commits to master
+    </h4>
+     
+    <span>
+      Excluding merge commits. Limited to 6,000 commits.
+    </span>
+     
+    <div>
+      <glareachart-stub
+        annotations=""
+        data="[object Object]"
+        height="264"
+        includelegendavgmax="true"
+        legendaveragetext="Avg"
+        legendcurrenttext="Current"
+        legendlayout="inline"
+        legendmaxtext="Max"
+        legendmintext="Min"
+        option="[object Object]"
+        thresholds=""
+        width="0"
+      />
+    </div>
+     
+    <div
+      class="row"
+    >
+      <div
+        class="col-lg-6 col-12"
+      >
+        <h4>
+          John
+        </h4>
+         
+        <p>
+          2 commits (jawnnypoo@gmail.com)
+        </p>
+         
+        <div>
+          <glareachart-stub
+            annotations=""
+            data="[object Object]"
+            height="216"
+            includelegendavgmax="true"
+            legendaveragetext="Avg"
+            legendcurrenttext="Current"
+            legendlayout="inline"
+            legendmaxtext="Max"
+            legendmintext="Min"
+            option="[object Object]"
+            thresholds=""
+            width="0"
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+`;

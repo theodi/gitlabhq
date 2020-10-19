@@ -1,16 +1,27 @@
-= content_for :meta_tags do
-  - if current_user
-    = auto_discovery_link_tag(:atom, namespace_project_path(@project.namespace, @project, format: :atom, private_token: current_user.private_token), title: "#{@project.name} activity")
+- breadcrumb_title _("Details")
+- page_title _("Projects")
+- @content_class = "limit-container-width" unless fluid_layout
 
-- if current_user && can?(current_user, :download_code, @project)
-  = render 'shared/no_ssh'
-  = render 'shared/no_password'
+= content_for :meta_tags do
+  = auto_discovery_link_tag(:atom, project_path(@project, rss_url_options), title: "#{@project.name} activity")
+
+= render partial: 'flash_messages', locals: { project: @project }
+
+= render "projects/last_push"
 
 = render "home_panel"
-= render 'shared/show_aside'
 
-.row
-  %section.col-md-8
-    = render 'section'
-  %aside.col-md-4.project-side
-    = render 'aside'
+- if can?(current_user, :download_code, @project) && @project.repository_languages.present?
+  = repository_languages_bar(@project.repository_languages)
+
+= render "archived_notice", project: @project
+= render_if_exists "projects/marked_for_deletion_notice", project: @project
+= render_if_exists "projects/ancestor_group_marked_for_deletion_notice", project: @project
+
+- view_path = @project.default_view
+
+- if show_auto_devops_callout?(@project)
+  = render 'shared/auto_devops_callout'
+
+%div{ class: project_child_container_class(view_path) }
+  = render view_path, is_project_overview: true

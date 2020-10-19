@@ -1,0 +1,17 @@
+- page_title _("Labels")
+
+%div
+  = link_to new_admin_label_path, class: "float-right btn gl-button btn-nr btn-success" do
+    = _('New label')
+  %h3.page-title
+    = _('Labels')
+%hr
+
+.labels.labels-container.admin-labels
+  - if @labels.present?
+    %ul.manage-labels-list
+      = render @labels
+
+    = paginate @labels, theme: 'gitlab'
+  - else
+    .nothing-here-block= _('There are no labels yet')

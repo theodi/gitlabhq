@@ -1,10 +1,20 @@
-%p
-  %span.light
-    Sign in with &nbsp;
-  - providers = additional_providers
-  - providers.each do |provider|
-    %span.light
-      - if default_providers.include?(provider)
-        = link_to oauth_image_tag(provider), omniauth_authorize_path(resource_name, provider), method: :post, class: 'oauth-image-link'
-      - else
-        = link_to provider.to_s.titleize, omniauth_authorize_path(resource_name, provider), method: :post, class: "btn", "data-no-turbolink" => "true"
+- hide_remember_me = local_assigns.fetch(:hide_remember_me, false)
+
+.omniauth-container.gl-mt-5
+  %label.label-bold.d-block
+    Sign in with
+  - providers = enabled_button_based_providers
+  .d-flex.justify-content-between.flex-wrap
+    - providers.each do |provider|
+      - has_icon = provider_has_icon?(provider)
+      = button_to omniauth_authorize_path(:user, provider), id: "oauth-login-#{provider}", class: "btn d-flex align-items-center omniauth-btn text-left oauth-login #{qa_class_for_provider(provider)}" do
+        - if has_icon
+          = provider_image_tag(provider)
+        %span
+          = label_for_provider(provider)
+  - unless hide_remember_me
+    %fieldset.remember-me
+      %label
+        = check_box_tag :remember_me, nil, false, class: 'remember-me-checkbox'
+        %span
+          Remember me

@@ -1,7 +1,25 @@
+# frozen_string_literal: true
+
 module Gitlab
   module GoogleCodeImport
     class Importer
-      attr_reader :project, :repo
+      attr_reader :project, :repo, :closed_statuses
+
+      NICE_LABEL_COLOR_HASH =
+        {
+          'Status: New'        => '#428bca',
+          'Status: Accepted'   => '#5cb85c',
+          'Status: Started'    => '#8e44ad',
+          'Priority: Critical' => '#ffcfcf',
+          'Priority: High'     => '#deffcf',
+          'Priority: Medium'   => '#fff5cc',
+          'Priority: Low'      => '#cfe9ff',
+          'Type: Defect'       => '#d9534f',
+          'Type: Enhancement'  => '#44ad8e',
+          'Type: Task'         => '#4b6dd0',
+          'Type: Review'       => '#8e44ad',
+          'Type: Other'        => '#7f8c8d'
+        }.freeze
 
       def initialize(project)
         @project = project
@@ -30,7 +48,7 @@ module Gitlab
 
       def user_map
         @user_map ||= begin
-          user_map = Hash.new do |hash, user| 
+          user_map = Hash.new do |hash, user|
             # Replace ... by \.\.\., so `johnsm...@gmail.com` isn't autolinked.
             Client.mask_email(user).sub("...", "\\.\\.\\.")
           end
@@ -62,6 +80,7 @@ module Gitlab
         end
       end
 
+      # rubocop: disable CodeReuse/ActiveRecord
       def import_issues
         return unless repo.issues
 
@@ -76,54 +95,60 @@ module Gitlab
           attachments = format_attachments(raw_issue["id"], 0, issue_comment["attachments"])
 
           body = format_issue_body(author, date, content, attachments)
-
-          labels = []
-          raw_issue["labels"].each do |label|
-            name = nice_label_name(label)
-            labels << name
-
-            unless @known_labels.include?(name)
-              create_label(name)
-              @known_labels << name
-            end
-          end
-          labels << nice_status_name(raw_issue["status"])
+          labels = import_issue_labels(raw_issue)
 
           assignee_id = nil
-          if raw_issue.has_key?("owner")
+          if raw_issue.key?("owner")
             username = user_map[raw_issue["owner"]["name"]]
 
             if username.start_with?("@")
               username = username[1..-1]
 
-              if user = User.find_by(username: username)
+              if user = UserFinder.new(username).find_by_username
                 assignee_id = user.id
               end
             end
           end
 
           issue = Issue.create!(
+            iid:          raw_issue['id'],
             project_id:   project.id,
-            title:        raw_issue["title"],
+            title:        raw_issue['title'],
             description:  body,
             author_id:    project.creator_id,
-            assignee_id:  assignee_id,
-            state:        raw_issue["state"] == "closed" ? "closed" : "opened"
+            assignee_ids: [assignee_id],
+            state_id:     raw_issue['state'] == 'closed' ? Issue.available_states[:closed] : Issue.available_states[:opened]
           )
-          issue.add_labels_by_names(labels)
 
-          if issue.iid != raw_issue["id"]
-            issue.update_attribute(:iid, raw_issue["id"])
-          end
+          issue_labels = ::LabelsFinder.new(nil, project_id: project.id, title: labels).execute(skip_authorization: true)
+          issue.update_attribute(:label_ids, issue_labels.pluck(:id))
 
           import_issue_comments(issue, comments)
         end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      def import_issue_labels(raw_issue)
+        labels = []
+
+        raw_issue["labels"].each do |label|
+          name = nice_label_name(label)
+          labels << name
+
+          unless @known_labels.include?(name)
+            create_label(name)
+            @known_labels << name
+          end
+        end
+
+        labels << nice_status_name(raw_issue["status"])
+        labels
       end
 
       def import_issue_comments(issue, comments)
         Note.transaction do
           while raw_comment = comments.shift
-            next if raw_comment.has_key?("deletedBy")
+            next if raw_comment.key?("deletedBy")
 
             content     = format_content(raw_comment["content"])
             updates     = format_updates(raw_comment["updates"])
@@ -156,45 +181,19 @@ module Gitlab
       end
 
       def nice_label_color(name)
-        case name
-        when /\AComponent:/
-          "#fff39e"
-        when /\AOpSys:/
-          "#e2e2e2"
-        when /\AMilestone:/
-          "#fee3ff"
-
-        when *@closed_statuses.map { |s| nice_status_name(s) }
-          "#cfcfcf"
-        when "Status: New"
-          "#428bca"
-        when "Status: Accepted"
-          "#5cb85c"
-        when "Status: Started"
-          "#8e44ad"
-        
-        when "Priority: Critical"
-          "#ffcfcf"
-        when "Priority: High"
-          "#deffcf"
-        when "Priority: Medium"
-          "#fff5cc"
-        when "Priority: Low"
-          "#cfe9ff"
-        
-        when "Type: Defect"
-          "#d9534f"
-        when "Type: Enhancement"
-          "#44ad8e"
-        when "Type: Task"
-          "#4b6dd0"
-        when "Type: Review"
-          "#8e44ad"
-        when "Type: Other"
-          "#7f8c8d"
-        else
-          "#e2e2e2"
-        end
+        NICE_LABEL_COLOR_HASH[name] ||
+          case name
+          when /\AComponent:/
+            '#fff39e'
+          when /\AOpSys:/
+            '#e2e2e2'
+          when /\AMilestone:/
+            '#fee3ff'
+          when *closed_statuses.map { |s| nice_status_name(s) }
+            '#cfcfcf'
+          else
+            '#e2e2e2'
+          end
       end
 
       def nice_label_name(name)
@@ -205,32 +204,32 @@ module Gitlab
         "Status: #{name}"
       end
 
-      def linkify_issues(s)
-        s = s.gsub(/([Ii]ssue) ([0-9]+)/, '\1 #\2')
-        s = s.gsub(/([Cc]omment) #([0-9]+)/, '\1 \2')
-        s
+      def linkify_issues(str)
+        str = str.gsub(/([Ii]ssue) ([0-9]+)/, '\1 #\2')
+        str = str.gsub(/([Cc]omment) #([0-9]+)/, '\1 \2')
+        str
       end
 
-      def escape_for_markdown(s)
+      def escape_for_markdown(str)
         # No headings and lists
-        s = s.gsub(/^#/, "\\#")
-        s = s.gsub(/^-/, "\\-")
+        str = str.gsub(/^#/, "\\#")
+        str = str.gsub(/^-/, "\\-")
 
         # No inline code
-        s = s.gsub("`", "\\`")
+        str = str.gsub("`", "\\`")
 
         # Carriage returns make me sad
-        s = s.gsub("\r", "")
+        str = str.delete("\r")
 
         # Markdown ignores single newlines, but we need them as <br />.
-        s = s.gsub("\n", "  \n")
+        str = str.gsub("\n", "  \n")
 
-        s
+        str
       end
 
       def create_label(name)
-        color = nice_label_color(name)
-        Label.create!(project_id: project.id, name: name, color: color)
+        params = { name: name, color: nice_label_color(name) }
+        ::Labels::FindOrCreateService.new(nil, project, params).execute(skip_authorization: true)
       end
 
       def format_content(raw_content)
@@ -240,17 +239,17 @@ module Gitlab
       def format_updates(raw_updates)
         updates = []
 
-        if raw_updates.has_key?("status")
+        if raw_updates.key?("status")
           updates << "*Status: #{raw_updates["status"]}*"
         end
 
-        if raw_updates.has_key?("owner")
+        if raw_updates.key?("owner")
           updates << "*Owner: #{user_map[raw_updates["owner"]]}*"
         end
 
-        if raw_updates.has_key?("cc")
-          cc = raw_updates["cc"].map do |l| 
-            deleted = l.start_with?("-") 
+        if raw_updates.key?("cc")
+          cc = raw_updates["cc"].map do |l|
+            deleted = l.start_with?("-")
             l = l[1..-1] if deleted
             l = user_map[l]
             l = "~~#{l}~~" if deleted
@@ -260,9 +259,9 @@ module Gitlab
           updates << "*Cc: #{cc.join(", ")}*"
         end
 
-        if raw_updates.has_key?("labels")
-          labels = raw_updates["labels"].map do |l| 
-            deleted = l.start_with?("-") 
+        if raw_updates.key?("labels")
+          labels = raw_updates["labels"].map do |l|
+            deleted = l.start_with?("-")
             l = l[1..-1] if deleted
             l = nice_label_name(l)
             l = "~~#{l}~~" if deleted
@@ -272,49 +271,44 @@ module Gitlab
           updates << "*Labels: #{labels.join(", ")}*"
         end
 
-        if raw_updates.has_key?("mergedInto")
+        if raw_updates.key?("mergedInto")
           updates << "*Merged into: ##{raw_updates["mergedInto"]}*"
         end
 
-        if raw_updates.has_key?("blockedOn")
+        if raw_updates.key?("blockedOn")
           blocked_ons = raw_updates["blockedOn"].map do |raw_blocked_on|
-            name, id = raw_blocked_on.split(":", 2)
-
-            deleted = name.start_with?("-") 
-            name = name[1..-1] if deleted
-
-            text =
-              if name == project.import_source
-                "##{id}"
-              else
-                "#{project.namespace.path}/#{name}##{id}"
-              end
-            text = "~~#{text}~~" if deleted
-            text
+            format_blocking_updates(raw_blocked_on)
           end
+
           updates << "*Blocked on: #{blocked_ons.join(", ")}*"
         end
 
-        if raw_updates.has_key?("blocking")
+        if raw_updates.key?("blocking")
           blockings = raw_updates["blocking"].map do |raw_blocked_on|
-            name, id = raw_blocked_on.split(":", 2)
-            
-            deleted = name.start_with?("-") 
-            name = name[1..-1] if deleted
-
-            text =
-              if name == project.import_source
-                "##{id}"
-              else
-                "#{project.namespace.path}/#{name}##{id}"
-              end
-            text = "~~#{text}~~" if deleted
-            text
+            format_blocking_updates(raw_blocked_on)
           end
+
           updates << "*Blocking: #{blockings.join(", ")}*"
         end
 
         updates
+      end
+
+      def format_blocking_updates(raw_blocked_on)
+        name, id = raw_blocked_on.split(":", 2)
+
+        deleted = name.start_with?("-")
+        name = name[1..-1] if deleted
+
+        text =
+          if name == project.import_source
+            "##{id}"
+          else
+            "#{project.namespace.full_path}/#{name}##{id}"
+          end
+
+        text = "~~#{text}~~" if deleted
+        text
       end
 
       def format_attachments(issue_id, comment_id, raw_attachments)
@@ -325,9 +319,9 @@ module Gitlab
 
           filename = attachment["fileName"]
           link = "https://storage.googleapis.com/google-code-attachments/#{@repo.name}/issue-#{issue_id}/comment-#{comment_id}/#{filename}"
-          
+
           text = "[#{filename}](#{link})"
-          text = "!#{text}" if filename =~ /\.(png|jpg|jpeg|gif|bmp|tiff)\z/
+          text = "!#{text}" if filename =~ /\.(png|jpg|jpeg|gif|bmp|tiff)\z/i
           text
         end.compact
       end
@@ -340,6 +334,7 @@ module Gitlab
         if content.blank?
           content = "*(No comment has been entered for this change)*"
         end
+
         body << content
 
         if updates.any?
@@ -363,6 +358,7 @@ module Gitlab
         if content.blank?
           content = "*(No description has been entered for this issue)*"
         end
+
         body << content
 
         if attachments.any?

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Gitlab
   module GoogleCodeImport
     class ProjectCreator
@@ -11,7 +13,8 @@ module Gitlab
       end
 
       def execute
-        project = ::Projects::CreateService.new(current_user,
+        ::Projects::CreateService.new(
+          current_user,
           name: repo.name,
           path: repo.name,
           description: repo.summary,
@@ -20,17 +23,9 @@ module Gitlab
           visibility_level: Gitlab::VisibilityLevel::PUBLIC,
           import_type: "google_code",
           import_source: repo.name,
-          import_url: repo.import_url
+          import_url: repo.import_url,
+          import_data: { data: { 'repo' => repo.raw_data, 'user_map' => user_map } }
         ).execute
-
-        import_data = project.create_import_data(
-          data: {
-            "repo"      => repo.raw_data,
-            "user_map"  => user_map
-          }
-        )
-
-        project
       end
     end
   end

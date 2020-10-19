@@ -1,5 +1,15 @@
-- page_title    @group.name
-- header_title  @group.name, group_path(@group)
-- sidebar       "group"
+- page_title       @group.name
+- page_description @group.description_html unless page_description
+- header_title     group_title(@group)     unless header_title
+- nav "group"
+- display_subscription_banner!
+- display_namespace_storage_limit_alert!
+- @left_sidebar = true
+
+- content_for :page_specific_javascripts do
+  - if current_user
+    = javascript_tag nonce: true do
+      :plain
+        window.uploads_path = "#{group_uploads_path(@group)}";
 
 = render template: "layouts/application"

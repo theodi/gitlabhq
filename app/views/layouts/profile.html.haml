@@ -1,5 +1,7 @@
-- page_title    "Settings"
-- header_title  "Settings", profile_path
-- sidebar       "profile"
+- page_title    _("User Settings")
+- header_title  _("User Settings"), profile_path unless header_title
+- sidebar       "dashboard"
+- nav           "profile"
+- @left_sidebar = true
 
 = render template: "layouts/application"

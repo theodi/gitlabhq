@@ -1,5 +1,10 @@
-- page_title "New Snippet"
-%h3.page-title
-  New snippet
-%hr
-= render "shared/snippets/form", url: snippets_path(@snippet), visibility_level: default_snippet_visibility
+- @hide_top_links = true
+- @hide_breadcrumbs = true
+- page_title _("New Snippet")
+- @content_class = "limit-container-width" unless fluid_layout
+
+.page-title-holder.d-flex.align-items-center
+  %h1.page-title= _('New Snippet')
+
+.gl-mt-3
+  = render "shared/snippets/form", url: snippets_path(@snippet)

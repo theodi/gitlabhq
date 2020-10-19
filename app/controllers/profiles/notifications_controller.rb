@@ -1,42 +1,40 @@
+# frozen_string_literal: true
+
 class Profiles::NotificationsController < Profiles::ApplicationController
+  feature_category :users
+
+  # rubocop: disable CodeReuse/ActiveRecord
   def show
     @user = current_user
-    @notification = current_user.notification
-    @project_members = current_user.project_members
-    @group_members = current_user.group_members
+    @user_groups = user_groups
+    @group_notifications = UserGroupNotificationSettingsFinder.new(current_user, user_groups).execute
+
+    @project_notifications = current_user.notification_settings.for_projects.order(:id)
+                             .preload_source_route
+                             .select { |notification| current_user.can?(:read_project, notification.source) }
+    @global_notification_setting = current_user.global_notification_setting
   end
+  # rubocop: enable CodeReuse/ActiveRecord
 
   def update
-    type = params[:notification_type]
+    result = Users::UpdateService.new(current_user, user_params.merge(user: current_user)).execute
 
-    @saved = if type == 'global'
-               current_user.update_attributes(user_params)
-             elsif type == 'group'
-               group_member = current_user.group_members.find(params[:notification_id])
-               group_member.notification_level = params[:notification_level]
-               group_member.save
-             else
-               project_member = current_user.project_members.find(params[:notification_id])
-               project_member.notification_level = params[:notification_level]
-               project_member.save
-             end
-
-    respond_to do |format|
-      format.html do
-        if @saved
-          flash[:notice] = "Notification settings saved"
-        else
-          flash[:alert] = "Failed to save new settings"
-        end
-
-        redirect_to :back
-      end
-
-      format.js
+    if result[:status] == :success
+      flash[:notice] = _("Notification settings saved")
+    else
+      flash[:alert] = _("Failed to save new settings")
     end
+
+    redirect_back_or_default(default: profile_notifications_path)
   end
 
   def user_params
-    params.require(:user).permit(:notification_email, :notification_level)
+    params.require(:user).permit(:notification_email, :notified_of_own_activity)
+  end
+
+  private
+
+  def user_groups
+    GroupsFinder.new(current_user, all_available: false).execute.order_name_asc.page(params[:page])
   end
 end

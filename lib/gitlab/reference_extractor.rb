@@ -1,77 +1,74 @@
+# frozen_string_literal: true
+
 module Gitlab
   # Extract possible GFM references from an arbitrary String for further processing.
-  class ReferenceExtractor
-    attr_accessor :project, :current_user, :references
+  class ReferenceExtractor < Banzai::ReferenceExtractor
+    REFERABLES = %i(user issue label milestone mentioned_user mentioned_group mentioned_project
+                    merge_request snippet commit commit_range directly_addressed_user epic iteration).freeze
+    attr_accessor :project, :current_user, :author
+    # This counter is increased by a number of references filtered out by
+    # banzai reference exctractor. Note that this counter is stateful and
+    # not idempotent and is increased whenever you call `references`.
+    attr_reader :stateful_not_visible_counter
 
     def initialize(project, current_user = nil)
       @project = project
       @current_user = current_user
+      @references = {}
+      @stateful_not_visible_counter = 0
+
+      super()
     end
 
-    def analyze(text)
-      @_text = text.dup
+    def analyze(text, context = {})
+      super(text, context.merge(project: project))
     end
 
-    def users
-      result = pipeline_result(:user)
-      result.uniq
+    def references(type)
+      refs = super(type, project, current_user)
+      @stateful_not_visible_counter += refs[:not_visible].count
+
+      refs[:visible]
     end
 
-    def labels
-      result = pipeline_result(:label)
-      result.uniq
+    def reset_memoized_values
+      @references = {}
+      @stateful_not_visible_counter = 0
+      super()
+    end
+
+    REFERABLES.each do |type|
+      define_method("#{type}s") do
+        @references[type] ||= references(type)
+      end
     end
 
     def issues
-      # TODO (rspeicher): What about external issues?
-
-      result = pipeline_result(:issue)
-      result.uniq
+      if project&.external_references_supported?
+        if project.issues_enabled?
+          @references[:all_issues] ||= references(:external_issue) + references(:issue)
+        else
+          @references[:external_issue] ||= references(:external_issue) +
+            references(:issue).select { |i| i.project_id != project.id }
+        end
+      else
+        @references[:issue] ||= references(:issue)
+      end
     end
 
-    def merge_requests
-      result = pipeline_result(:merge_request)
-      result.uniq
+    def all
+      REFERABLES.each { |referable| send(referable.to_s.pluralize) } # rubocop:disable GitlabSecurity/PublicSend
+      @references.values.flatten
     end
 
-    def snippets
-      result = pipeline_result(:snippet)
-      result.uniq
-    end
+    def self.references_pattern
+      return @pattern if @pattern
 
-    def commits
-      result = pipeline_result(:commit)
-      result.uniq
-    end
+      patterns = REFERABLES.map do |type|
+        Banzai::ReferenceParser[type].reference_type.to_s.classify.constantize.try(:reference_pattern)
+      end.uniq
 
-    def commit_ranges
-      result = pipeline_result(:commit_range)
-      result.uniq
-    end
-
-    private
-
-    # Instantiate and call HTML::Pipeline with a single reference filter type,
-    # returning the result
-    #
-    # filter_type - Symbol reference type (e.g., :commit, :issue, etc.)
-    #
-    # Returns the results Array for the requested filter type
-    def pipeline_result(filter_type)
-      klass  = filter_type.to_s.camelize + 'ReferenceFilter'
-      filter = "Gitlab::Markdown::#{klass}".constantize
-
-      context = {
-        project: project,
-        current_user: current_user,
-        # We don't actually care about the links generated
-        only_path: true
-      }
-
-      pipeline = HTML::Pipeline.new([filter], context)
-      result = pipeline.call(@_text)
-
-      result[:references][filter_type]
+      @pattern = Regexp.union(patterns.compact)
     end
   end
 end

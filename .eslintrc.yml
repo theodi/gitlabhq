@@ -1,0 +1,51 @@
+extends:
+  - plugin:@gitlab/default
+  - plugin:@gitlab/i18n
+  - plugin:no-jquery/slim
+  - plugin:no-jquery/deprecated-3.4
+globals:
+  __webpack_public_path__: true
+  gl: false
+  gon: false
+  localStorage: false
+  IS_EE: false
+plugins:
+  - no-jquery
+settings:
+  import/resolver:
+    webpack:
+      config: './config/webpack.config.js'
+rules:
+  import/no-commonjs: error
+  import/no-default-export: off
+  no-underscore-dangle:
+    - error
+    - allow:
+        - __
+        - _links
+  import/no-unresolved:
+    - error
+    - ignore:
+        # https://gitlab.com/gitlab-org/gitlab/issues/38226
+        - '^ee_component/'
+  # Disabled for now, to make the airbnb-base 12.1.0 -> 13.1.0 update smoother
+  no-else-return:
+    - error
+    - allowElseIf: true
+  lines-between-class-members: off
+  # Disabled for now, to make the plugin-vue 4.5 -> 5.0 update smoother
+  vue/no-confusing-v-for-v-if: error
+  vue/no-use-v-if-with-v-for: off
+  vue/no-v-html: error
+  vue/use-v-on-exact: off
+  # all offenses of no-jquery/no-animate-toggle are false positives ( $toast.show() )
+  no-jquery/no-animate-toggle: off
+  no-jquery/no-event-shorthand: off
+  no-jquery/no-serialize: error
+  promise/always-return: off
+  promise/no-callback-in-promise: off
+overrides:
+  - files:
+      - '**/spec/**/*'
+    rules:
+      "@gitlab/require-i18n-strings": off

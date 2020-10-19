@@ -1,0 +1,13 @@
+%p
+  Following a verification check, your GitLab Pages custom domain has been
+  %strong disabled.
+  This means that your content is no longer visible at #{link_to @domain.url, @domain.url}
+%p
+  Project: #{link_to @project.human_name, project_url(@project)}
+%p
+  Domain: #{link_to @domain.domain, project_pages_domain_url(@project, @domain)}
+%p
+  If this domain has been disabled in error, please follow
+  = link_to 'these instructions', help_page_url('user/project/pages/custom_domains_ssl_tls_certification/index.md', anchor: '4-verify-the-domains-ownership')
+  to verify and re-enable your domain.
+= render 'removal_notification'

@@ -1,0 +1,17 @@
+%section.settings.no-animate.js-prometheus-settings
+  .settings-header
+    %h4
+      = _('Prometheus')
+    %button.btn.js-settings-toggle{ type: 'button' }
+      = _('Expand')
+    %p
+      = _('Link Prometheus monitoring to GitLab.')
+      = link_to _('More information'), help_page_path('user/project/integrations/prometheus'), target: '_blank', rel: 'noopener noreferrer'
+  .settings-content
+    - if @project
+      = render 'projects/settings/operations/configuration_banner', project: @project, service: service
+
+    %b.gl-mb-3
+      = s_('PrometheusService|Manual configuration')
+    %p
+      = s_('PrometheusService|Select the Active checkbox to override the Auto Configuration with custom settings. If unchecked, Auto Configuration settings are used.')

@@ -1,0 +1,718 @@
+/**
+ * Apply Markup (Markdown/AsciiDoc) typography
+ *
+ */
+.md {
+  color: $gl-text-color;
+  word-wrap: break-word;
+
+  [dir='auto'] {
+    text-align: initial;
+  }
+
+  *:first-child {
+    margin-top: 0;
+  }
+
+  > :last-child {
+    margin-bottom: 0;
+  }
+
+  p {
+    color: $gl-text-color;
+    margin: 0 0 16px;
+
+    > code {
+      font-weight: inherit;
+    }
+
+    a:not(.no-attachment-icon) img {
+      // Remove bottom padding because
+      // <p> already has $gl-padding bottom
+      margin-bottom: 0;
+    }
+  }
+
+  a {
+    color: $blue-600;
+
+    > code {
+      color: $blue-600;
+    }
+  }
+
+  img:not(.emoji) {
+    margin: 0 0 8px;
+  }
+
+  img.lazy {
+    min-width: 200px;
+    min-height: 100px;
+    background-color: $gray-lightest;
+  }
+
+  img.js-lazy-loaded,
+  img.emoji {
+    min-width: inherit;
+    min-height: inherit;
+    background-color: inherit;
+    max-width: 100%;
+  }
+
+  &:not(.md) img:not(.emoji) {
+    border: 1px solid $white-normal;
+    padding: 5px;
+    margin: 5px 0;
+    // Ensure that image does not exceed viewport
+    max-height: calc(100vh - 100px);
+  }
+
+  details {
+    margin-bottom: $gl-padding;
+  }
+
+  // Single code lines should wrap
+  code {
+    font-family: $monospace-font;
+    white-space: pre-wrap;
+    word-wrap: normal;
+    word-break: keep-all;
+  }
+
+  kbd {
+    display: inline-block;
+    padding: 3px 5px;
+    font-size: 11px;
+    line-height: 10px;
+    color: $gray-700;
+    vertical-align: middle;
+    background-color: $gray-10;
+    border-width: 1px;
+    border-style: solid;
+    border-color: $gray-100 $gray-100 $gray-200;
+    border-image: none;
+    border-radius: 3px;
+    box-shadow: 0 -1px 0 $gray-200 inset;
+  }
+
+  h1 {
+    font-size: 1.75em;
+    font-weight: $gl-font-weight-bold;
+    margin: 24px 0 16px;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid $white-dark;
+    color: $gl-text-color;
+
+    &:first-child {
+      margin-top: 0;
+    }
+  }
+
+  h2 {
+    font-size: 1.5em;
+    font-weight: $gl-font-weight-bold;
+    margin: 24px 0 16px;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid $white-dark;
+    color: $gl-text-color;
+  }
+
+  h3 {
+    margin: 24px 0 16px;
+    font-size: 1.3em;
+  }
+
+  h4 {
+    margin: 24px 0 16px;
+    font-size: 1.2em;
+  }
+
+  h5 {
+    margin: 24px 0 16px;
+    font-size: 1em;
+  }
+
+  h6 {
+    margin: 24px 0 16px;
+    font-size: 0.95em;
+  }
+
+  blockquote,
+  .blockquote {
+    color: $gl-grayish-blue;
+    font-size: inherit;
+    padding: 8px 24px;
+    margin: 16px 0;
+    border-left: 3px solid $white-dark;
+
+    &:dir(rtl) {
+      border-left: 0;
+      border-right: 3px solid $white-dark;
+    }
+
+    p {
+      color: $gl-grayish-blue !important;
+      font-size: inherit;
+      line-height: 1.5;
+
+      &:last-child {
+        margin: 0;
+      }
+    }
+  }
+
+  hr {
+    // Darken 'whitesmoke' a bit to make it more visible in note bodies
+    border-color: darken($gray-normal, 8%);
+    margin: 10px 0;
+  }
+
+  table:not(.code) {
+    @extend .table;
+    @extend .table-bordered;
+    margin: 16px 0;
+    color: $gl-text-color;
+    border: 0;
+    width: auto;
+    display: block;
+    overflow-x: auto;
+
+    tbody {
+      background-color: $white;
+
+      td {
+        border-color: $gray-100;
+      }
+    }
+
+    tr {
+      th {
+        border-bottom: solid 2px $gray-200;
+      }
+    }
+
+    &.grid-none {
+      > thead > tr {
+        > th {
+          border-bottom-width: 0;
+          border-right-width: 0;
+          border-left-width: 0;
+
+          &:first-child {
+            border-left-width: 1px;
+          }
+
+          &:last-child {
+            border-right-width: 1px;
+          }
+        }
+      }
+
+      > tbody {
+        > tr > td {
+          border-width: 0;
+
+          &:first-child {
+            border-left-width: 1px;
+          }
+
+          &:last-child {
+            border-right-width: 1px;
+          }
+        }
+
+        > tr:last-child > td {
+          border-bottom-width: 1px;
+        }
+      }
+    }
+
+
+    &.grid-rows {
+      > thead > tr > th,
+      > tbody > tr > td {
+        border-right-width: 0;
+        border-left-width: 0;
+      }
+
+      > thead > tr {
+        > th:first-child {
+          border-left-width: 1px;
+        }
+
+        > th:last-child {
+          border-right-width: 1px;
+        }
+      }
+
+      > tbody > tr {
+        > td {
+          border-left-width: 0;
+          border-right-width: 0;
+        }
+
+        > td:first-child {
+          border-left-width: 1px;
+        }
+
+        > td:last-child {
+          border-right-width: 1px;
+        }
+      }
+    }
+
+    &.grid-cols {
+      > thead > tr > th {
+        border-bottom-width: 0;
+      }
+
+      > tbody > tr > td {
+        border-top-width: 0;
+        border-bottom-width: 0;
+      }
+
+      > tbody > tr:last-child > td {
+        border-bottom-width: 1px;
+      }
+    }
+
+    &.frame-sides {
+      > thead > tr > th {
+        border-top-width: 0;
+      }
+
+      > tbody > tr:last-child > td {
+        border-bottom-width: 0;
+      }
+    }
+
+    &.frame-topbot,
+    &.frame-ends {
+      > thead > tr > th:first-child,
+      > tbody > tr > td:first-child {
+        border-left-width: 0;
+      }
+
+      > thead > tr > th:last-child,
+      > tbody > tr > td:last-child {
+        border-right-width: 0;
+      }
+    }
+
+    &.frame-none {
+      > thead > tr > th {
+        border-top-width: 0;
+      }
+
+      > tbody > tr:last-child > td {
+        border-bottom-width: 0;
+      }
+
+      > thead > tr > th:first-child,
+      > tbody > tr > td:first-child {
+        border-left-width: 0;
+      }
+
+      > thead > tr > th:last-child,
+      > tbody > tr > td:last-child {
+        border-right-width: 0;
+      }
+    }
+
+    &.stripes-all tr,
+    &.stripes-odd tr:nth-of-type(odd),
+    &.stripes-even tr:nth-of-type(even),
+    &.stripes-hover tr:hover {
+      background: $gray-light;
+    }
+  }
+
+  table:dir(rtl) th {
+    text-align: right;
+  }
+
+  pre {
+    margin-bottom: 16px;
+    font-size: 13px;
+    line-height: 1.6em;
+    overflow-x: auto;
+    border-radius: 2px;
+
+    // Multi-line code blocks should scroll horizontally
+    code {
+      white-space: pre;
+    }
+
+    &.plain-readme {
+      background: none;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      font-size: 14px;
+    }
+  }
+
+  dd {
+    margin-left: $gl-padding;
+  }
+
+  ul,
+  ol {
+    padding: 0;
+    margin: 0 0 16px;
+
+    ul,
+    ol {
+      margin-bottom: 0;
+    }
+  }
+
+  ul:dir(rtl),
+  ol:dir(rtl) {
+    margin: 3px 28px 3px 0 !important;
+  }
+
+  > ul {
+    list-style-type: disc;
+
+    ul {
+      list-style-type: circle;
+
+      ul {
+        list-style-type: square;
+      }
+    }
+  }
+
+  ul.checklist,
+  ul.none,
+  ol.none,
+  ul.no-bullet,
+  ol.no-bullet,
+  ol.unnumbered,
+  ul.unstyled,
+  ol.unstyled {
+    list-style-type: none;
+
+    li {
+      margin-left: 0;
+    }
+  }
+
+  li {
+    line-height: 1.6em;
+    margin-left: 25px;
+    padding-left: 3px;
+
+    /* Normalize the bullet position on webkit. */
+    @include on-webkit-only {
+      margin-left: 28px;
+      padding-left: 0;
+    }
+  }
+
+  ul.task-list {
+    > li.task-list-item {
+      list-style-type: none;
+      position: relative;
+      min-height: 22px;
+      padding-left: 28px;
+      margin-left: 0 !important;
+
+      > input.task-list-item-checkbox {
+        position: absolute;
+        left: 8px;
+        top: 5px;
+      }
+    }
+  }
+
+  a[href*='/uploads/'],
+  a[href*='storage.googleapis.com/google-code-attachments/'] {
+    &::before {
+      margin-right: 4px;
+
+      font: normal normal normal 14px/1 FontAwesome;
+      font-size: inherit;
+      text-rendering: auto;
+      -webkit-font-smoothing: antialiased;
+      content: '\f0c6';
+    }
+
+    &.no-attachment-icon {
+      &::before {
+        display: none;
+      }
+    }
+  }
+
+  /* Link to current header. */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    position: relative;
+
+    a.anchor {
+      left: -16px;
+      position: absolute;
+      text-decoration: none;
+      outline: none;
+
+      &::after {
+        content: image-url('icon_anchor.svg');
+        visibility: hidden;
+      }
+    }
+
+    &:hover > a.anchor::after {
+      visibility: visible;
+    }
+  }
+
+  .big {
+    font-size: larger;
+  }
+
+  .small {
+    font-size: smaller;
+  }
+
+  .underline {
+    text-decoration: underline;
+  }
+
+  .overline {
+    text-decoration: overline;
+  }
+
+  .line-through {
+    text-decoration: line-through;
+  }
+
+  .admonitionblock td.icon {
+    width: 1%;
+
+    [class^='fa icon-'] {
+      @extend .fa-2x;
+    }
+
+    .icon-note {
+      @extend .fa-thumb-tack;
+    }
+
+    .icon-tip {
+      @extend .fa-lightbulb-o;
+    }
+
+    .icon-warning {
+      @extend .fa-exclamation-triangle;
+    }
+
+    .icon-caution {
+      @extend .fa-fire;
+    }
+
+    .icon-important {
+      @extend .fa-exclamation-circle;
+    }
+  }
+
+  .metrics-embed {
+    h3.popover-header {
+      /** Override <h3> .popover-header
+      * as embed metrics do not follow the same
+      * style as default md <h3> (which are deeply nested)
+      */
+      margin: 0;
+      font-size: $gl-font-size-small;
+    }
+
+    ul.dropdown-menu {
+      margin-top: 4px;
+      margin-bottom: 24px;
+      padding: 8px 0;
+
+      li {
+        margin: 0;
+        padding: 0 1px;
+      }
+    }
+  }
+
+  /* AsciiDoc(tor) built-in alignment roles */
+
+  .text-left {
+    text-align: left !important;
+  }
+
+  .text-right {
+    text-align: right !important;
+  }
+
+  .text-center {
+    text-align: center !important;
+  }
+
+  .text-justify {
+    text-align: justify !important;
+  }
+}
+
+/**
+ * Headers
+ *
+ */
+body {
+  -webkit-text-shadow: $body-text-shadow 0 0 1px;
+}
+
+.page-title {
+  margin: #{2 * $grid-size} 0;
+  line-height: 1.3;
+  font-size: 1.25em;
+  font-weight: $gl-font-weight-bold;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  &.with-button {
+    line-height: 34px;
+  }
+
+}
+
+.page-title-empty {
+  margin: 12px 0;
+  line-height: 1.3;
+  font-size: 1.25em;
+  font-weight: $gl-font-weight-bold;
+}
+
+.light-header {
+  font-weight: $gl-font-weight-bold;
+}
+
+/** CODE **/
+pre {
+  font-family: $monospace-font;
+  display: block;
+  padding: $gl-padding-8 $input-horizontal-padding;
+  margin: 0 0 $gl-padding-8;
+  font-size: 13px;
+  word-break: break-all;
+  word-wrap: break-word;
+  color: $gl-text-color;
+  background-color: $gray-light;
+  border: 1px solid $gray-100;
+  border-radius: $border-radius-small;
+}
+
+code {
+  &.key-fingerprint {
+    background: $body-bg;
+    color: $text-color;
+  }
+}
+
+.monospace {
+  font-family: $monospace-font;
+}
+
+.weight-normal {
+  font-weight: $gl-font-weight-normal;
+}
+
+.commit-sha,
+.ref-name,
+.pipeline-number {
+  @extend .monospace;
+  font-size: 95%;
+}
+
+.git-revision-dropdown .dropdown-content ul li a {
+  @extend .ref-name;
+  word-break: break-all;
+}
+
+/**
+ * Textareas intended for GFM
+ *
+ */
+textarea.js-gfm-input {
+  font-family: $monospace-font;
+  font-size: 13px;
+}
+
+.strikethrough {
+  text-decoration: line-through;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  small {
+    color: $gl-text-color;
+  }
+}
+
+.text-right-md {
+  @include media-breakpoint-up(md) {
+    text-align: right;
+  }
+}
+
+.text-right-lg {
+  @include media-breakpoint-up(lg) {
+    text-align: right;
+  }
+}
+
+.idiff.deletion {
+  background: $line-removed-dark;
+}
+
+.idiff.addition {
+  background: $line-added-dark;
+}
+
+
+/**
+ * form text input i.e. search bar, comments, forms, etc.
+ */
+/* stylelint-disable selector-no-vendor-prefix  */
+input,
+textarea {
+  &::-webkit-input-placeholder {
+    color: $gl-text-color-tertiary;
+  }
+
+  // support firefox 19+ vendor prefix
+  &::-moz-placeholder {
+    color: $gl-text-color-tertiary;
+    opacity: 1; // FF defaults to 0.54
+  }
+
+  // scss-lint:disable PseudoElement
+  // support Edge vendor prefix
+  &::-ms-input-placeholder {
+    color: $gl-text-color-tertiary;
+  }
+
+  // scss-lint:disable PseudoElement
+  // support IE vendor prefix
+  &:-ms-input-placeholder {
+    color: $gl-text-color-tertiary;
+  }
+}
+/* stylelint-enable */
+
+.lh-100 { line-height: 1; }
+
+wbr {
+  display: inline-block;
+}

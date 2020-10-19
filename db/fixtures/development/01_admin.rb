@@ -1,13 +1,15 @@
+require './spec/support/sidekiq_middleware'
+
 Gitlab::Seeder.quiet do
-  User.seed do |s|
-    s.id = 1
-    s.name = 'Administrator'
-    s.email = 'admin@example.com'
-    s.notification_email = 'admin@example.com'
-    s.username = 'root'
-    s.password = '5iveL!fe'
-    s.admin = true
-    s.projects_limit = 100
-    s.confirmed_at = DateTime.now
-  end
+  User.create!(
+    name: 'Administrator',
+    email: 'admin@example.com',
+    username: 'root',
+    password: '5iveL!fe',
+    admin: true,
+    confirmed_at: DateTime.now,
+    password_expires_at: DateTime.now
+  )
+
+  print '.'
 end

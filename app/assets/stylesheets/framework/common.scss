@@ -1,0 +1,521 @@
+/** COLORS **/
+.cgray { color: $gl-text-color; }
+.clgray { color: $common-gray-light; }
+.cred { color: $red-500; }
+.cgreen { color: $green-600; }
+.cdark { color: $common-gray-dark; }
+
+.fwhite { fill: $white; }
+.fgray { fill: $gray-500; }
+
+.text-plain,
+.text-plain:hover {
+  color: $gl-text-color;
+}
+
+.text-secondary {
+  color: $gl-text-color-secondary;
+}
+
+.text-tertiary {
+  color: $gl-text-color-tertiary;
+}
+
+.text-primary,
+.text-primary:hover {
+  color: $brand-primary;
+}
+
+.text-success,
+.text-success:hover {
+  color: $brand-success;
+}
+
+.text-danger,
+.text-danger:hover {
+  color: $brand-danger;
+}
+
+.text-danger-muted,
+.text-danger-muted:hover {
+  color: $red-300;
+}
+
+.text-warning,
+.text-warning:hover {
+  color: $brand-warning;
+}
+
+.text-info,
+.text-info:hover {
+  color: $brand-info;
+}
+
+.bg-gray-light {
+  background-color: $gray-light;
+}
+
+.bg-white {
+  background-color: $white;
+}
+
+.bg-line-target-blue {
+  background: $line-target-blue;
+}
+
+.text-break-word {
+  word-break: break-all;
+}
+
+.text-underline,
+.text-underline:hover {
+  text-decoration: underline;
+}
+
+.hint {
+  font-style: italic;
+  color: $gray-200;
+}
+
+.light { color: $gl-text-color; }
+
+.slead {
+  color: $gl-text-color;
+  font-size: 14px;
+  margin-bottom: 12px;
+  font-weight: $gl-font-weight-normal;
+  line-height: 24px;
+}
+
+.bold {
+  font-weight: $gl-font-weight-bold;
+}
+
+.tab-content {
+  overflow: visible;
+}
+
+pre {
+  &.clean {
+    background: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+  }
+
+  &.wrap {
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+}
+
+hr {
+  margin: 24px 0;
+  border-top: 1px solid $gray-darker;
+}
+
+.str-truncated {
+  @include str-truncated;
+
+  &-30 {
+    @include str-truncated(30%);
+  }
+
+  &-60 {
+    @include str-truncated(60%);
+  }
+
+  &-100 {
+    @include str-truncated(100%);
+  }
+}
+
+.block-truncated {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  > div:not(.block):not(.select2-display-none),
+  .str-truncated {
+    display: inline;
+  }
+}
+
+.item-title { font-weight: $gl-font-weight-bold; }
+
+.author-link {
+  color: $blue-600;
+}
+
+.author-link:hover {
+  text-decoration: none;
+}
+
+table {
+  a code {
+    position: relative;
+    top: -2px;
+    margin-right: 3px;
+  }
+}
+
+.loading {
+  margin: 20px auto;
+  height: 40px;
+  color: $gray-700;
+  font-size: 32px;
+  text-align: center;
+}
+
+p.time {
+  color: $gray-200;
+  font-size: 90%;
+  margin: 30px 3px 3px 2px;
+}
+
+.highlight {
+  text-shadow: none;
+}
+
+.thin-area {
+  height: 150px;
+}
+
+// Fix issue with notes & lists creating a bunch of bottom borders.
+li.note {
+  img { max-width: 100%; }
+
+  .note-title {
+    li {
+      border-bottom: 0 !important;
+    }
+  }
+}
+
+.markdown {
+  img {
+    max-width: 100%;
+  }
+}
+
+.wiki_content code,
+.readme code {
+  background-color: inherit;
+}
+
+.error-message {
+  padding: 10px;
+  background: $red-400;
+  margin: 0;
+  color: $white;
+
+  a {
+    color: $white;
+    text-decoration: underline;
+  }
+}
+
+@mixin message($background-color, $border-color, $text-color) {
+  border-left: 4px solid $border-color;
+  color: $text-color;
+  padding: $gl-padding $gl-padding-24;
+  margin-bottom: $gl-padding-12;
+  background-color: $background-color;
+
+  &.centered {
+    text-align: center;
+  }
+
+  .close {
+    svg {
+      width: $gl-font-size-large;
+      height: $gl-font-size-large;
+    }
+
+    color: inherit;
+  }
+}
+
+.warning_message {
+  @include message($orange-50, $orange-200, $gray-900);
+}
+
+.danger_message {
+  @include message($red-100, $red-200, $red-900);
+}
+
+.gitlab-promo {
+  a {
+    color: $gray-300;
+    margin-right: 30px;
+  }
+}
+
+.milestone {
+  .progress {
+    margin-top: 4px;
+    box-shadow: none;
+    background-color: $border-gray-light;
+  }
+}
+
+img.emoji {
+  height: 20px;
+  vertical-align: top;
+  width: 20px;
+  margin-top: 1px;
+}
+
+.chart {
+  overflow: hidden;
+  height: 220px;
+}
+
+.description-block {
+  @extend .light-well;
+  @extend .light;
+  margin-bottom: 10px;
+}
+
+.footer-links {
+  margin-bottom: 20px;
+
+  a {
+    margin-right: 15px;
+  }
+}
+
+.card.card-body {
+  margin-bottom: $gl-padding;
+
+  hr {
+    border-color: $gray-darker;
+  }
+}
+
+.search_box {
+  @extend .card.card-body;
+  text-align: center;
+}
+
+.dropzone .dz-preview .dz-progress {
+  border-color: $border-color !important;
+
+  .dz-upload {
+    background: $green-500 !important;
+  }
+
+}
+
+.dz-message {
+  margin: 0;
+}
+
+.space-right {
+  margin-right: 10px;
+}
+
+.alert {
+  margin-bottom: $gl-padding;
+}
+
+.progress {
+  height: 4px;
+}
+
+.project-item-select-holder {
+  .project-item-select {
+    min-width: 250px;
+  }
+}
+
+.gl-accessibility {
+  &:focus {
+    display: flex;
+    align-items: center;
+    top: 1px;
+    left: 1px;
+    width: auto;
+    height: 100%;
+    padding: 0 10px;
+    clip: auto;
+    text-decoration: none;
+    color: $gl-text-color;
+    background: $gray-light;
+    z-index: 1;
+  }
+}
+
+.bordered-box {
+  border: 1px solid $border-color;
+  border-radius: $border-radius-default;
+}
+
+.tooltip {
+  .tooltip-inner {
+    word-wrap: break-word;
+  }
+}
+
+.disabled-content {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.break-word {
+  word-wrap: break-word;
+}
+
+.checkbox-icon-inline-wrapper {
+  .checkbox {
+    display: inline;
+
+    label {
+      display: inline;
+    }
+  }
+}
+
+.outline-0 {
+  outline: 0;
+
+  &:focus {
+    outline: 0;
+  }
+}
+
+/** COMMON CLASSES **/
+/**
+  🚨 Do not use these classes — they are deprecated and being removed. 🚨
+  See https://gitlab.com/gitlab-org/gitlab/-/issues/217418 for more details.
+**/
+.prepend-top-15 { margin-top: 15px; }
+.prepend-top-20 { margin-top: 20px; }
+.prepend-left-15 { margin-left: 15px; }
+.prepend-left-20 { margin-left: 20px; }
+.append-right-20 { margin-right: 20px; }
+.append-bottom-20 { margin-bottom: 20px; }
+.ml-10 { margin-left: 4.5rem; }
+.inline { display: inline-block; }
+.center { text-align: center; }
+.block { display: block; }
+.flex { display: flex; }
+.vertical-align-top { vertical-align: top; }
+.vertical-align-text-top { vertical-align: text-top; }
+.vertical-align-middle { vertical-align: middle; }
+.vertical-align-sub { vertical-align: sub; }
+.flex-align-self-center { align-self: center; }
+.flex-grow { flex-grow: 1; }
+.flex-no-shrink { flex-shrink: 0; }
+.ws-initial { white-space: initial; }
+.ws-normal { white-space: normal; }
+.overflow-auto { overflow: auto; }
+.overflow-visible { overflow: visible; }
+
+.d-flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/** COMMON SIZING CLASSES **/
+.w-0 { width: 0; }
+.w-8em { width: 8em; }
+.w-15p { width: 15%; }
+.w-30p { width: 30%; }
+.w-60p { width: 60%; }
+.w-70p { width: 70%; }
+
+.h-12em { height: 12em; }
+.h-32-px { height: 32px;}
+
+.mw-460 { max-width: 460px; }
+.mw-6em { max-width: 6em; }
+.mw-70p { max-width: 70%; }
+.mw-90p { max-width: 90%; }
+
+// By default flex items don't shrink below their minimum content size.
+// To change this, these clases set a min-width or min-height
+.min-width-0 { min-width: 0; }
+.min-height-0 { min-height: 0; }
+
+.svg-w-100 {
+  svg {
+    width: 100%;
+  }
+}
+
+
+/**
+ * Removes browser specific clear icon from input fields in
+ * Internet Explorer 10, Internet Explorer 11, and Microsoft Edge.
+ * This is intended for elements which add a customized clear icon.
+ *
+ * see also https://developer.mozilla.org/en-US/docs/Web/CSS/::-ms-clear
+ */
+.ms-no-clear ::-ms-clear {
+  display: none;
+}
+
+/** COMMON POSITIONING CLASSES */
+.position-bottom-0 { bottom: 0 !important; }
+.position-left-0 { left: 0 !important; }
+.position-right-0 { right: 0 !important; }
+.position-top-0 { top: 0 !important; }
+
+.drag-handle {
+  width: 4px;
+
+  &:hover {
+    background-color: $white-normal;
+  }
+
+  &.is-dragging {
+    background-color: $gray-400;
+  }
+}
+
+.cursor-pointer {
+  cursor: pointer;
+}
+
+.cursor-not-allowed { cursor: not-allowed; }
+
+// this needs to use "!important" due to some very specific styles
+// around buttons
+.cursor-default {
+  cursor: default !important;
+}
+
+// Make buttons/dropdowns full-width on mobile
+.full-width-mobile {
+  @include media-breakpoint-down(xs) {
+    width: 100%;
+
+    > .dropdown-menu,
+    > .btn {
+      width: 100%;
+    }
+  }
+}
+
+.gl-font-sm { font-size: $gl-font-size-small; }
+.gl-font-lg { font-size: $gl-font-size-large; }
+.gl-font-base { font-size: $gl-font-size-14; }
+
+.gl-font-size-0 { font-size: 0; }
+.gl-font-size-28 { font-size: $gl-font-size-28; }
+.gl-font-size-42 { font-size: $gl-font-size-42; }
+
+.border-section {
+  @include gl-py-6;
+  @include gl-m-0;
+
+  border-top: 1px solid $border-color;
+}
+
+/**
+🚨 Do not use these classes — they clash with the Gitlab UI design system and will be removed. 🚨
+See https://gitlab.com/gitlab-org/gitlab/issues/36857 for more details.
+**/
+.gl-line-height-14 { line-height: $gl-line-height-14; }

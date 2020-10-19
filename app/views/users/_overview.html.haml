@@ -1,0 +1,33 @@
+- activity_pane_class = Feature.enabled?(:security_auto_fix) && @user.bot? ? "col-12" : "col-md-12 col-lg-6"
+
+.row
+  .col-12
+    .calendar-block.gl-mt-3.gl-mb-3
+      .user-calendar.d-none.d-sm-block{ data: { calendar_path: user_calendar_path(@user, :json), calendar_activities_path: user_calendar_activities_path, utc_offset: Time.zone.utc_offset } }
+        %h4.center.light
+          .spinner.spinner-md
+      .user-calendar-activities.d-none.d-sm-block
+.row
+  %div{ class: activity_pane_class }
+    - if can?(current_user, :read_cross_project)
+      .activities-block
+        .gl-mt-5
+          .gl-display-flex.gl-align-items-center.gl-border-b-1.gl-border-b-gray-100.gl-border-b-solid
+            %h4.gl-flex-grow-1
+              = Feature.enabled?(:security_auto_fix) && @user.bot? ? s_('UserProfile|Bot activity') : s_('UserProfile|Activity')
+            = link_to s_('UserProfile|View all'), user_activity_path, class: "hide js-view-all"
+          .overview-content-list{ data: { href: user_path } }
+            .center.light.loading
+              .spinner.spinner-md
+
+  - unless Feature.enabled?(:security_auto_fix) && @user.bot?
+    .col-md-12.col-lg-6
+      .projects-block
+        .gl-mt-5
+          .gl-display-flex.gl-align-items-center.gl-border-b-1.gl-border-b-gray-100.gl-border-b-solid
+            %h4.gl-flex-grow-1
+              = s_('UserProfile|Personal projects')
+            = link_to s_('UserProfile|View all'), user_projects_path, class: "hide js-view-all"
+          .overview-content-list{ data: { href: user_projects_path } }
+            .center.light.loading
+              .spinner.spinner-md

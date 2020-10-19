@@ -1,0 +1,94 @@
+# frozen_string_literal: true
+
+require 'digest/md5'
+
+MESSAGE = <<MARKDOWN
+## Reviewer roulette
+
+Changes that require review have been detected! A merge request is normally
+reviewed by both a reviewer and a maintainer in its primary category (e.g.
+~frontend or ~backend), and by a maintainer in all other categories.
+MARKDOWN
+
+CATEGORY_TABLE_HEADER = <<MARKDOWN
+
+To spread load more evenly across eligible reviewers, Danger has picked a candidate for each
+review slot, based on their timezone. Feel free to
+[override these selections](https://about.gitlab.com/handbook/engineering/projects/#gitlab)
+if you think someone else would be better-suited, or the chosen person is unavailable.
+
+To read more on how to use the reviewer roulette, please take a look at the
+[Engineering workflow](https://about.gitlab.com/handbook/engineering/workflow/#basics)
+and [code review guidelines](https://docs.gitlab.com/ee/development/code_review.html).
+Please consider assigning a reviewer or maintainer who is a
+[domain expert](https://about.gitlab.com/handbook/engineering/projects/#gitlab) in the area of the merge request.
+
+Once you've decided who will review this merge request, mention them as you
+normally would! Danger does not automatically notify them for you.
+
+| Category | Reviewer | Maintainer |
+| -------- | -------- | ---------- |
+MARKDOWN
+
+UNKNOWN_FILES_MESSAGE = <<MARKDOWN
+
+These files couldn't be categorised, so Danger was unable to suggest a reviewer.
+Please consider creating a merge request to
+[add support](https://gitlab.com/gitlab-org/gitlab/blob/master/lib/gitlab/danger/helper.rb)
+for them.
+MARKDOWN
+
+OPTIONAL_REVIEW_TEMPLATE = "%{role} review is optional for %{category}".freeze
+NOT_AVAILABLE_TEMPLATE = 'No %{role} available'.freeze
+
+def note_for_spins_role(spins, role)
+  spins.each do |spin|
+    note = note_for_spin_role(spin, role)
+
+    return note if note
+  end
+
+  NOT_AVAILABLE_TEMPLATE % { role: role }
+end
+
+def note_for_spin_role(spin, role)
+  if spin.optional_role == role
+    return OPTIONAL_REVIEW_TEMPLATE % { role: role.capitalize, category: helper.label_for_category(spin.category) }
+  end
+
+  spin.public_send(role)&.markdown_name(author: roulette.team_mr_author) # rubocop:disable GitlabSecurity/PublicSend
+end
+
+def markdown_row_for_spins(category, spins_array)
+  reviewer_note = note_for_spins_role(spins_array, :reviewer)
+  maintainer_note = note_for_spins_role(spins_array, :maintainer)
+
+  "| #{helper.label_for_category(category)} | #{reviewer_note} | #{maintainer_note} |"
+end
+
+changes = helper.changes_by_category
+
+# Ignore any files that are known but uncategorized. Prompt for any unknown files
+changes.delete(:none)
+# To reinstate roulette for documentation, remove this line.
+changes.delete(:docs)
+categories = changes.keys - [:unknown]
+
+# Ensure to spin for database reviewer/maintainer when ~database is applied (e.g. to review SQL queries)
+categories << :database if helper.gitlab_helper&.mr_labels&.include?('database') && !categories.include?(:database)
+
+if changes.any?
+  project = helper.project_name
+
+  random_roulette_spins = roulette.spin(project, categories, timezone_experiment: false)
+
+  rows = random_roulette_spins.map do |spin|
+    markdown_row_for_spins(spin.category, [spin])
+  end
+
+  markdown(MESSAGE)
+  markdown(CATEGORY_TABLE_HEADER + rows.join("\n")) unless rows.empty?
+
+  unknown = changes.fetch(:unknown, [])
+  markdown(UNKNOWN_FILES_MESSAGE + helper.markdown_list(unknown)) unless unknown.empty?
+end

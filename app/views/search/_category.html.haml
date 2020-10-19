@@ -1,77 +1,35 @@
-%ul.nav.nav-pills.search-filter
-  - if @project
-    %li{class: ("active" if @scope == 'blobs')}
-      = link_to search_filter_path(scope: 'blobs') do
-        = icon('code fw')
-        %span
-          Code
-          %span.badge
-            = @search_results.blobs_count
-    %li{class: ("active" if @scope == 'issues')}
-      = link_to search_filter_path(scope: 'issues') do
-        = icon('exclamation-circle fw')
-        %span
-          Issues
-          %span.badge
-            = @search_results.issues_count
-    %li{class: ("active" if @scope == 'merge_requests')}
-      = link_to search_filter_path(scope: 'merge_requests') do
-        = icon('tasks fw')
-        %span
-          Merge requests
-          %span.badge
-            = @search_results.merge_requests_count
-    %li{class: ("active" if @scope == 'notes')}
-      = link_to search_filter_path(scope: 'notes') do
-        = icon('comments fw')
-        %span
-          Comments
-          %span.badge
-            = @search_results.notes_count
-    %li{class: ("active" if @scope == 'wiki_blobs')}
-      = link_to search_filter_path(scope: 'wiki_blobs') do
-        = icon('book fw')
-        %span
-          Wiki
-          %span.badge
-            = @search_results.wiki_blobs_count
+- users = capture_haml do
+  - if show_user_search_tab?
+    = search_filter_link 'users', _("Users")
 
-  - elsif @show_snippets
-    %li{class: ("active" if @scope == 'snippet_blobs')}
-      = link_to search_filter_path(scope: 'snippet_blobs', snippets: true, group_id: nil, project_id: nil) do
-        = icon('code fw')
-        %span
-          Snippet Contents
-          %span.badge
-            = @search_results.snippet_blobs_count
-    %li{class: ("active" if @scope == 'snippet_titles')}
-      = link_to search_filter_path(scope: 'snippet_titles', snippets: true, group_id: nil, project_id: nil) do
-        = icon('book fw')
-        %span
-          Titles and Filenames
-          %span.badge
-            = @search_results.snippet_titles_count
+.scrolling-tabs-container.inner-page-scroll-tabs.is-smaller
+  .fade-left= sprite_icon('chevron-lg-left', size: 12)
+  .fade-right= sprite_icon('chevron-lg-right', size: 12)
+  %ul.nav-links.search-filter.scrolling-tabs.nav.nav-tabs
+    - if @project
+      - if project_search_tabs?(:blobs)
+        = search_filter_link 'blobs', _("Code"), data: { qa_selector: 'code_tab' }
+      - if project_search_tabs?(:issues)
+        = search_filter_link 'issues', _("Issues")
+      - if project_search_tabs?(:merge_requests)
+        = search_filter_link 'merge_requests', _("Merge requests")
+      - if project_search_tabs?(:milestones)
+        = search_filter_link 'milestones', _("Milestones")
+      - if project_search_tabs?(:notes)
+        = search_filter_link 'notes', _("Comments")
+      - if project_search_tabs?(:wiki)
+        = search_filter_link 'wiki_blobs', _("Wiki")
+      - if project_search_tabs?(:commits)
+        = search_filter_link 'commits', _("Commits")
+      = users
 
-  - else
-    %li{class: ("active" if @scope == 'projects')}
-      = link_to search_filter_path(scope: 'projects') do
-        = icon('bookmark fw')
-        %span
-          Projects
-          %span.badge
-            = @search_results.projects_count
-    %li{class: ("active" if @scope == 'issues')}
-      = link_to search_filter_path(scope: 'issues') do
-        = icon('exclamation-circle fw')
-        %span
-          Issues
-          %span.badge
-            = @search_results.issues_count
-    %li{class: ("active" if @scope == 'merge_requests')}
-      = link_to search_filter_path(scope: 'merge_requests') do
-        = icon('tasks fw')
-        %span
-          Merge requests
-          %span.badge
-            = @search_results.merge_requests_count
-
+    - elsif @show_snippets
+      = search_filter_link 'snippet_titles', _("Titles and Descriptions"), search: { snippets: true, group_id: nil, project_id: nil }
+    - else
+      = search_filter_link 'projects', _("Projects"), data: { qa_selector: 'projects_tab' }
+      = search_filter_link 'issues', _("Issues")
+      = search_filter_link 'merge_requests', _("Merge requests")
+      = search_filter_link 'milestones', _("Milestones")
+      = render_if_exists 'search/epics_filter_link'
+      = render_if_exists 'search/category_elasticsearch'
+      = users

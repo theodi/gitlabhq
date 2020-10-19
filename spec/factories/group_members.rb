@@ -1,20 +1,38 @@
-# == Schema Information
-#
-# Table name: group_members
-#
-#  id                 :integer          not null, primary key
-#  group_access       :integer          not null
-#  group_id           :integer          not null
-#  user_id            :integer          not null
-#  created_at         :datetime
-#  updated_at         :datetime
-#  notification_level :integer          default(3), not null
-#
+# frozen_string_literal: true
 
-FactoryGirl.define do
+FactoryBot.define do
   factory :group_member do
     access_level { GroupMember::OWNER }
-    group
+    source { association(:group) }
     user
+
+    trait(:guest)     { access_level { GroupMember::GUEST } }
+    trait(:reporter)  { access_level { GroupMember::REPORTER } }
+    trait(:developer) { access_level { GroupMember::DEVELOPER } }
+    trait(:maintainer) { access_level { GroupMember::MAINTAINER } }
+    trait(:owner) { access_level { GroupMember::OWNER } }
+    trait(:access_request) { requested_at { Time.now } }
+
+    trait(:invited) do
+      user_id { nil }
+      invite_token { 'xxx' }
+      sequence :invite_email do |n|
+        "email#{n}@email.com"
+      end
+    end
+
+    trait(:ldap) do
+      ldap { true }
+    end
+
+    trait :blocked do
+      after(:build) { |group_member, _| group_member.user.block! }
+    end
+
+    trait :minimal_access do
+      to_create { |instance| instance.save!(validate: false) }
+
+      access_level { GroupMember::MINIMAL_ACCESS }
+    end
   end
 end

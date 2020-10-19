@@ -1,0 +1,17 @@
+#!/bin/bash
+# This is based on https://gitlab.com/gitlab-org/gitlab-qa/-/blob/master/bin/slack
+#
+# Sends Slack notification MSG to CI_SLACK_WEBHOOK_URL (which needs to be set).
+# ICON_EMOJI needs to be set to an icon emoji name (without the `:` around it).
+
+CHANNEL=$1
+MSG=$2
+ICON_EMOJI=$3
+USERNAME=$4
+
+if [ -z "$CHANNEL" ] || [ -z "$CI_SLACK_WEBHOOK_URL" ] || [ -z "$MSG" ] || [ -z "$ICON_EMOJI" ] || [ -z "$USERNAME" ]; then
+    echo "Missing argument(s) - Use: $0 channel message icon_emoji username"
+    echo "and set CI_SLACK_WEBHOOK_URL environment variable."
+else
+    curl -X POST --data-urlencode 'payload={"channel": "#'"$CHANNEL"'", "username": "'"$USERNAME"'", "text": "'"$MSG"'", "icon_emoji": "'":$ICON_EMOJI:"'"}' "$CI_SLACK_WEBHOOK_URL"
+fi

@@ -1,51 +1,36 @@
-- blob = project.repository.blob_for_diff(@commit, diff_file.diff)
-- return unless blob
-- blob_diff_path = namespace_project_blob_diff_path(project.namespace, project, tree_join(@commit.id, diff_file.file_path))
-.diff-file{id: "diff-#{i}", data: {blob_diff_path: blob_diff_path }}
-  .diff-header{id: "file-path-#{hexdigest(diff_file.new_path || diff_file.old_path)}"}
-    - if diff_file.deleted_file
-      %span="#{diff_file.old_path} deleted"
+- environment = local_assigns.fetch(:environment, nil)
+- diff_page_context = local_assigns.fetch(:diff_page_context, nil)
+- file_hash = hexdigest(diff_file.file_path)
+- image_diff = diff_file.rich_viewer && diff_file.rich_viewer.partial_name == 'image'
+- image_replaced = diff_file.old_content_sha && diff_file.old_content_sha != diff_file.content_sha
 
-      .diff-btn-group
-        - if @commit.parent_ids.present?
-          = view_file_btn(@commit.parent_id, diff_file, project)
-    - elsif diff_file.diff.submodule?
-      %span
-        - submodule_item = project.repository.blob_at(@commit.id, diff_file.file_path)
-        = submodule_link(submodule_item, @commit.id, project.repository)
-    - else
-      %span
-        - if diff_file.renamed_file
-          = "#{diff_file.old_path} renamed to #{diff_file.new_path}"
-        - else
-          = diff_file.new_path
-        - if diff_file.mode_changed?
-          %span.file-mode= "#{diff_file.diff.a_mode} → #{diff_file.diff.b_mode}"
+.diff-file.file-holder{ id: file_hash, data: diff_file_html_data(project, diff_file.file_path, diff_file.content_sha) }
+  .js-file-title.file-title-flex-parent{ class: diff_page_context }
+    .file-header-content
+      = render "projects/diffs/file_header", diff_file: diff_file, url: "##{file_hash}"
 
-      .diff-btn-group
-        - if blob.text?
-          = link_to '#', class: 'js-toggle-diff-comments btn btn-sm active has_tooltip', title: "Toggle comments for this file" do
-            %i.fa.fa-comments
-          &nbsp;
+    - if diff_file.submodule?
+      .file-actions.d-none.d-sm-block
+        = submodule_diff_compare_link(diff_file)
 
-        - if @merge_request && @merge_request.source_project
-          = edit_blob_link(@merge_request.source_project,
-              @merge_request.source_branch, diff_file.new_path,
-              after: '&nbsp;', from_merge_request_id: @merge_request.id)
+    - unless diff_file.submodule?
+      - blob = diff_file.blob
+      .file-actions.d-none.d-sm-block
+        - if blob&.readable_text?
+          = link_to '#', class: 'js-toggle-diff-comments btn active has-tooltip', title: _("Toggle comments for this file"), disabled: @diff_notes_disabled do
+            = sprite_icon('comment')
+          \
+          - if editable_diff?(diff_file)
+            - link_opts = @merge_request.persisted? ? { from_merge_request_iid: @merge_request.iid } : {}
+            = edit_blob_button(@merge_request.source_project, @merge_request.source_branch, diff_file.new_path,
+                             blob: blob, link_opts: link_opts)
 
-        = view_file_btn(@commit.id, diff_file, project)
+        - if image_diff && image_replaced
+          = view_file_button(diff_file.old_content_sha, diff_file.old_path, project, replaced: true)
 
-  .diff-content.diff-wrap-lines
-    -# Skipp all non non-supported blobs
-    - return unless blob.respond_to?('text?')
-    - if blob.text?
-      - if params[:view] == 'parallel'
-        = render "projects/diffs/parallel_view", diff_file: diff_file, project: project, blob: blob, index: i
-      - else
-        = render "projects/diffs/text_file", diff_file: diff_file, index: i
-    - elsif blob.image?
-      - old_file = project.repository.prev_blob_for_diff(@commit, diff_file)
-      = render "projects/diffs/image", diff_file: diff_file, old_file: old_file, file: blob, index: i
-    - else
-      .nothing-here-block No preview for this file type
+        = view_file_button(diff_file.content_sha, diff_file.file_path, project)
+        = view_on_environment_button(diff_file.content_sha, diff_file.file_path, environment) if environment
 
+  = render 'projects/fork_suggestion'
+
+  = render 'projects/diffs/content', diff_file: diff_file

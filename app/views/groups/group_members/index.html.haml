@@ -1,44 +1,112 @@
-- page_title "Members"
-- show_roles = should_user_see_group_roles?(current_user, @group)
+- page_title _('Group members')
+- can_manage_members = can?(current_user, :admin_group_member, @group)
+- show_invited_members = can_manage_members && @invited_members.exists?
+- show_access_requests = can_manage_members && @requesters.exists?
+- invited_active = params[:search_invited].present? || params[:invited_members_page].present?
+- vue_members_list_enabled = Feature.enabled?(:vue_group_members_list, @group)
 
-%h3.page-title
-  Group members
-- if show_roles
-  %p.light
-    Members of group have access to all group projects.
-    Read more about permissions
-    %strong= link_to "here", help_page_path("permissions", "permissions"), class: "vlink"
+- form_item_label_css_class = 'label-bold gl-mr-2 gl-mb-0 gl-py-2 align-self-md-center'
 
-%hr
+.js-remove-member-modal
+.project-members-page.gl-mt-3
+  %h4
+    = _('Group members')
+  %hr
+  - if can_manage_members
+    %ul.nav-links.nav.nav-tabs.gitlab-tabs{ role: 'tablist' }
+      %li.nav-tab{ role: 'presentation' }
+        %a.nav-link.active{ href: '#invite-member-pane', id: 'invite-member-tab', data: { toggle: 'tab' }, role: 'tab' }= _('Invite member')
+        %li.nav-tab{ role: 'presentation' }
+          %a.nav-link{ href: '#invite-group-pane', id: 'invite-group-tab', data: { toggle: 'tab', qa_selector: 'invite_group_tab' }, role: 'tab' }= _('Invite group')
+    .tab-content.gitlab-tab-content
+      .tab-pane.active{ id: 'invite-member-pane', role: 'tabpanel' }
+        = render_invite_member_for_group(@group, @group_member.access_level)
+      .tab-pane{ id: 'invite-group-pane', role: 'tabpanel' }
+        = render 'shared/members/invite_group', submit_url: group_group_links_path(@group), access_levels: GroupMember.access_level_roles, default_access_level: @group_member.access_level, group_link_field: 'shared_with_group_id', group_access_field: 'shared_group_access'
 
-.clearfix.js-toggle-container
-  = form_tag group_group_members_path(@group), method: :get, class: 'form-inline member-search-form'  do
-    .form-group
-      = search_field_tag :search, params[:search], { placeholder: 'Find existing member by name', class: 'form-control search-text-input input-mn-300' }
-    = button_tag 'Search', class: 'btn'
+  = render_if_exists 'groups/group_members/ldap_sync'
 
-  - if current_user && current_user.can?(:admin_group, @group)
-    .pull-right
-      = button_tag class: 'btn btn-new js-toggle-button', type: 'button' do
-        Add members
-        %i.fa.fa-chevron-down
-
-    .js-toggle-content.hide.new-group-member-holder
-      = render "new_group_member"
-
-.panel.panel-default.prepend-top-20
-  .panel-heading
-    %strong #{@group.name}
-    group members
-    %small
-      (#{@members.total_count})
-  %ul.well-list
-    - @members.each do |member|
-      = render 'groups/group_members/group_member', member: member, show_roles: show_roles, show_controls: true
-
-= paginate @members, theme: 'gitlab'
-
-:coffeescript
-  $('form.member-search-form').on 'submit', (event) ->
-    event.preventDefault()
-    Turbolinks.visit @.action + '?' + $(@).serialize()
+  %ul.nav-links.mobile-separator.nav.nav-tabs
+    %li.nav-item
+      = link_to '#tab-members', class: ['nav-link', ('active' unless invited_active)], data: { toggle: 'tab' } do
+        %span
+          = _('Members')
+        %span.badge.badge-pill= @members.total_count
+    - if @group.shared_with_group_links.any?
+      %li.nav-item
+        = link_to '#tab-groups', class: ['nav-link'] , data: { toggle: 'tab', qa_selector: 'groups_list_tab' } do
+          %span
+            = _('Groups')
+          %span.badge.badge-pill= @group.shared_with_group_links.count
+    - if show_invited_members
+      %li.nav-item
+        = link_to '#tab-invited-members', class: ['nav-link', ('active' if invited_active)], data: { toggle: 'tab' } do
+          %span
+            = _('Invited')
+          %span.badge.badge-pill= @invited_members.total_count
+    - if show_access_requests
+      %li.nav-item
+        = link_to '#tab-access-requests', class: 'nav-link', data: { toggle: 'tab' } do
+          %span
+            = _('Access requests')
+          %span.badge.badge-pill= @requesters.count
+  .tab-content
+    #tab-members.tab-pane{ class: ('active' unless invited_active) }
+      .card.card-without-border
+        = render 'groups/group_members/tab_pane/header' do
+          = render 'groups/group_members/tab_pane/title' do
+            = html_escape(_('Members with access to %{strong_start}%{group_name}%{strong_end}')) % { group_name: @group.name, strong_start: '<strong>'.html_safe, strong_end: '</strong>'.html_safe }
+          = form_tag group_group_members_path(@group), method: :get, class: 'user-search-form gl-display-flex gl-md-align-items-center gl-flex-wrap gl-flex-direction-column gl-md-flex-direction-row gl-mx-n3 gl-my-n3', data: { testid: 'user-search-form' } do
+            .gl-px-3.gl-py-2
+              .search-control-wrap.gl-relative
+                = render 'shared/members/search_field'
+            - if can_manage_members
+              = render 'groups/group_members/tab_pane/form_item' do
+                = label_tag '2fa', _('2FA'), class: form_item_label_css_class
+                = render 'shared/members/filter_2fa_dropdown'
+            = render 'groups/group_members/tab_pane/form_item' do
+              = label_tag :sort_by, _('Sort by'), class: form_item_label_css_class
+              = render 'shared/members/sort_dropdown'
+        - if vue_members_list_enabled
+          .js-group-members-list{ data: group_members_list_data_attributes(@group, @members) }
+        - else
+          %ul.content-list.members-list{ data: { qa_selector: 'members_list' } }
+            = render partial: 'shared/members/member', collection: @members, as: :member
+        = paginate @members, theme: 'gitlab', params: { invited_members_page: nil, search_invited: nil }
+    - if @group.shared_with_group_links.any?
+      #tab-groups.tab-pane
+        .card.card-without-border
+          = render 'groups/group_members/tab_pane/header' do
+            = render 'groups/group_members/tab_pane/title' do
+              = html_escape(_('Groups with access to %{strong_start}%{group_name}%{strong_end}')) % { group_name: @group.name, strong_start: '<strong>'.html_safe, strong_end: '</strong>'.html_safe }
+          - if vue_members_list_enabled
+            .js-group-linked-list{ data: linked_groups_list_data_attributes(@group) }
+          - else
+            %ul.content-list.members-list{ data: { qa_selector: 'groups_list' } }
+              - @group.shared_with_group_links.each do |group_link|
+                = render 'shared/members/group', group_link: group_link, can_admin_member: can_manage_members, group_link_path: group_group_link_path(@group, group_link)
+    - if show_invited_members
+      #tab-invited-members.tab-pane{ class: ('active' if invited_active) }
+        .card.card-without-border
+          = render 'groups/group_members/tab_pane/header' do
+            = render 'groups/group_members/tab_pane/title' do
+              = html_escape(_('Members invited to %{strong_start}%{group_name}%{strong_end}')) % { group_name: @group.name, strong_start: '<strong>'.html_safe, strong_end: '</strong>'.html_safe }
+            = form_tag group_group_members_path(@group), method: :get, class: 'user-search-form', data: { testid: 'user-search-form' } do
+              = render 'shared/members/search_field', name: 'search_invited'
+          - if vue_members_list_enabled
+            .js-group-invited-members-list{ data: group_members_list_data_attributes(@group, @invited_members) }
+          - else
+            %ul.content-list.members-list
+              = render partial: 'shared/members/member', collection: @invited_members, as: :member
+          = paginate @invited_members, param_name: 'invited_members_page', theme: 'gitlab', params: { page: nil }
+    - if show_access_requests
+      #tab-access-requests.tab-pane
+        .card.card-without-border
+          = render 'groups/group_members/tab_pane/header' do
+            = render 'groups/group_members/tab_pane/title' do
+              = html_escape(_('Users requesting access to %{strong_start}%{group_name}%{strong_end}')) % { group_name: @group.name, strong_start: '<strong>'.html_safe, strong_end: '</strong>'.html_safe }
+          - if vue_members_list_enabled
+            .js-group-access-requests-list{ data: group_members_list_data_attributes(@group, @requesters) }
+          - else
+            %ul.content-list.members-list
+              = render partial: 'shared/members/member', collection: @requesters, as: :member

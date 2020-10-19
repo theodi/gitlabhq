@@ -1,30 +1,29 @@
-- page_title "Invitation"
-%h3.page-title Invitation
+- page_title _("Invitation")
+%h3.page-title= _("Invitation")
 
 %p
-  You have been invited
-  - if inviter = @member.created_by
-    by
+  = _("You have been invited")
+  - inviter = @member.created_by
+  - if inviter
+    = _("by")
     = link_to inviter.name, user_url(inviter)
-  to join 
-  - case @member.source
-  - when Project
-    - project = @member.source
-    project
-    %strong
-      = link_to project.name_with_namespace, namespace_project_url(project.namespace, project)
-  - when Group
-    - group = @member.source
-    group
-    %strong
-      = link_to group.name, group_url(group)
-  as #{@member.human_access}.
+  = _("to join %{source_name}") % { source_name: @invite_details[:title] }
+  %strong
+    = link_to @invite_details[:name], @invite_details[:url]
+  = _("as %{role}.") % { role: @member.human_access }
 
-- if @member.source.users.include?(current_user)
+- if member?
   %p
-    However, you are already a member of this #{@member.source.is_a?(Group) ? "group" : "project"}.
-    Sign in using a different account to accept the invitation.
-- else
+    = _("However, you are already a member of this %{member_source}. Sign in using a different account to accept the invitation.") % { member_source: @invite_details[:title] }
+
+- if !current_user_matches_invite?
+  %p
+    - mail_to_invite_email = mail_to(@member.invite_email)
+    - mail_to_current_user = mail_to(current_user.email)
+    - link_to_current_user = link_to(current_user.to_reference, user_url(current_user))
+    = _("Note that this invitation was sent to %{mail_to_invite_email}, but you are signed in as %{link_to_current_user} with email %{mail_to_current_user}.").html_safe % { mail_to_invite_email: mail_to_invite_email, mail_to_current_user: mail_to_current_user, link_to_current_user: link_to_current_user }
+
+- if !member?
   .actions
-    = link_to "Accept invitation", accept_invite_url(@token), method: :post, class: "btn btn-success"
-    = link_to "Decline", decline_invite_url(@token), method: :post, class: "btn btn-danger prepend-left-10"
+    = link_to _("Accept invitation"), accept_invite_url(@token, new_user_invite: params[:new_user_invite]), method: :post, class: "btn gl-button btn-success"
+    = link_to _("Decline"), decline_invite_url(@token), method: :post, class: "btn gl-button btn-danger gl-ml-3"

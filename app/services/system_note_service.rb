@@ -1,8 +1,12 @@
+# frozen_string_literal: true
+
 # SystemNoteService
 #
 # Used for creating system notes (e.g., when a user references a merge request
 # from an issue, an issue's assignee changes, an issue is closed, etc.)
-class SystemNoteService
+module SystemNoteService
+  extend self
+
   # Called when commits are added to a Merge Request
   #
   # noteable         - Noteable object
@@ -12,141 +16,150 @@ class SystemNoteService
   # existing_commits - Array of Commits added in a previous push
   # oldrev           - Optional String SHA of a previous Commit
   #
-  # See new_commit_summary and existing_commit_summary.
-  #
   # Returns the created Note object
-  def self.add_commits(noteable, project, author, new_commits, existing_commits = [], oldrev = nil)
-    total_count  = new_commits.length + existing_commits.length
-    commits_text = "#{total_count} commit".pluralize(total_count)
-
-    body = "Added #{commits_text}:\n\n"
-    body << existing_commit_summary(noteable, existing_commits, oldrev)
-    body << new_commit_summary(new_commits).join("\n")
-
-    create_note(noteable: noteable, project: project, author: author, note: body)
+  def add_commits(noteable, project, author, new_commits, existing_commits = [], oldrev = nil)
+    ::SystemNotes::CommitService.new(noteable: noteable, project: project, author: author).add_commits(new_commits, existing_commits, oldrev)
   end
 
-  # Called when the assignee of a Noteable is changed or removed
+  # Called when a commit was tagged
   #
-  # noteable - Noteable object
-  # project  - Project owning noteable
-  # author   - User performing the change
-  # assignee - User being assigned, or nil
-  #
-  # Example Note text:
-  #
-  #   "Assignee removed"
-  #
-  #   "Reassigned to @rspeicher"
+  # noteable  - Noteable object
+  # project   - Project owning noteable
+  # author    - User performing the tag
+  # tag_name  - The created tag name
   #
   # Returns the created Note object
-  def self.change_assignee(noteable, project, author, assignee)
-    body = assignee.nil? ? 'Assignee removed' : "Reassigned to @#{assignee.username}"
-
-    create_note(noteable: noteable, project: project, author: author, note: body)
+  def tag_commit(noteable, project, author, tag_name)
+    ::SystemNotes::CommitService.new(noteable: noteable, project: project, author: author).tag_commit(tag_name)
   end
 
-  # Called when one or more labels on a Noteable are added and/or removed
-  #
-  # noteable       - Noteable object
-  # project        - Project owning noteable
-  # author         - User performing the change
-  # added_labels   - Array of Labels added
-  # removed_labels - Array of Labels removed
-  #
-  # Example Note text:
-  #
-  #   "Added ~1 and removed ~2 ~3 labels"
-  #
-  #   "Added ~4 label"
-  #
-  #   "Removed ~5 label"
-  #
-  # Returns the created Note object
-  def self.change_label(noteable, project, author, added_labels, removed_labels)
-    labels_count = added_labels.count + removed_labels.count
-
-    references     = ->(label) { "~#{label.id}" }
-    added_labels   = added_labels.map(&references).join(' ')
-    removed_labels = removed_labels.map(&references).join(' ')
-
-    body = ''
-
-    if added_labels.present?
-      body << "added #{added_labels}"
-      body << ' and ' if removed_labels.present?
-    end
-
-    if removed_labels.present?
-      body << "removed #{removed_labels}"
-    end
-
-    body << ' ' << 'label'.pluralize(labels_count)
-    body = "#{body.capitalize}"
-
-    create_note(noteable: noteable, project: project, author: author, note: body)
+  def change_assignee(noteable, project, author, assignee)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).change_assignee(assignee)
   end
 
-  # Called when the milestone of a Noteable is changed
+  def change_issuable_assignees(issuable, project, author, old_assignees)
+    ::SystemNotes::IssuablesService.new(noteable: issuable, project: project, author: author).change_issuable_assignees(old_assignees)
+  end
+
+  def change_issuable_reviewers(issuable, project, author, old_reviewers)
+    ::SystemNotes::IssuablesService.new(noteable: issuable, project: project, author: author).change_issuable_reviewers(old_reviewers)
+  end
+
+  def relate_issue(noteable, noteable_ref, user)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: noteable.project, author: user).relate_issue(noteable_ref)
+  end
+
+  def unrelate_issue(noteable, noteable_ref, user)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: noteable.project, author: user).unrelate_issue(noteable_ref)
+  end
+
+  # Called when the due_date of a Noteable is changed
   #
   # noteable  - Noteable object
   # project   - Project owning noteable
   # author    - User performing the change
-  # milestone - Milestone being assigned, or nil
+  # due_date  - Due date being assigned, or nil
   #
   # Example Note text:
   #
-  #   "Milestone removed"
+  #   "removed due date"
   #
-  #   "Miletone changed to 7.11"
+  #   "changed due date to September 20, 2018"
   #
   # Returns the created Note object
-  def self.change_milestone(noteable, project, author, milestone)
-    body = 'Milestone '
-    body += milestone.nil? ? 'removed' : "changed to #{milestone.title}"
-
-    create_note(noteable: noteable, project: project, author: author, note: body)
+  def change_due_date(noteable, project, author, due_date)
+    ::SystemNotes::TimeTrackingService.new(noteable: noteable, project: project, author: author).change_due_date(due_date)
   end
 
-  # Called when the status of a Noteable is changed
+  # Called when the estimated time of a Noteable is changed
   #
-  # noteable - Noteable object
-  # project  - Project owning noteable
-  # author   - User performing the change
-  # status   - String status
-  # source   - Mentionable performing the change, or nil
+  # noteable      - Noteable object
+  # project       - Project owning noteable
+  # author        - User performing the change
+  # time_estimate - Estimated time
   #
   # Example Note text:
   #
-  #   "Status changed to merged"
+  #   "removed time estimate"
   #
-  #   "Status changed to closed by bc17db76"
+  #   "changed time estimate to 3d 5h"
   #
   # Returns the created Note object
-  def self.change_status(noteable, project, author, status, source)
-    body = "Status changed to #{status}"
-    body += " by #{source.gfm_reference}" if source
-
-    create_note(noteable: noteable, project: project, author: author, note: body)
+  def change_time_estimate(noteable, project, author)
+    ::SystemNotes::TimeTrackingService.new(noteable: noteable, project: project, author: author).change_time_estimate
   end
 
-  # Called when the title of a Noteable is changed
+  # Called when the spent time of a Noteable is changed
   #
-  # noteable  - Noteable object that responds to `title`
-  # project   - Project owning noteable
-  # author    - User performing the change
-  # old_title - Previous String title
+  # noteable   - Noteable object
+  # project    - Project owning noteable
+  # author     - User performing the change
+  # time_spent - Spent time
   #
   # Example Note text:
   #
-  #   "Title changed from **Old** to **New**"
+  #   "removed time spent"
+  #
+  #   "added 2h 30m of time spent"
   #
   # Returns the created Note object
-  def self.change_title(noteable, project, author, old_title)
-    return unless noteable.respond_to?(:title)
+  def change_time_spent(noteable, project, author)
+    ::SystemNotes::TimeTrackingService.new(noteable: noteable, project: project, author: author).change_time_spent
+  end
 
-    body = "Title changed from **#{old_title}** to **#{noteable.title}**"
-    create_note(noteable: noteable, project: project, author: author, note: body)
+  def close_after_error_tracking_resolve(issue, project, author)
+    ::SystemNotes::IssuablesService.new(noteable: issue, project: project, author: author).close_after_error_tracking_resolve
+  end
+
+  def change_status(noteable, project, author, status, source = nil)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).change_status(status, source)
+  end
+
+  # Called when 'merge when pipeline succeeds' is executed
+  def merge_when_pipeline_succeeds(noteable, project, author, sha)
+    ::SystemNotes::MergeRequestsService.new(noteable: noteable, project: project, author: author).merge_when_pipeline_succeeds(sha)
+  end
+
+  # Called when 'merge when pipeline succeeds' is canceled
+  def cancel_merge_when_pipeline_succeeds(noteable, project, author)
+    ::SystemNotes::MergeRequestsService.new(noteable: noteable, project: project, author: author).cancel_merge_when_pipeline_succeeds
+  end
+
+  # Called when 'merge when pipeline succeeds' is aborted
+  def abort_merge_when_pipeline_succeeds(noteable, project, author, reason)
+    ::SystemNotes::MergeRequestsService.new(noteable: noteable, project: project, author: author).abort_merge_when_pipeline_succeeds(reason)
+  end
+
+  def handle_merge_request_wip(noteable, project, author)
+    ::SystemNotes::MergeRequestsService.new(noteable: noteable, project: project, author: author).handle_merge_request_wip
+  end
+
+  def add_merge_request_wip_from_commit(noteable, project, author, commit)
+    ::SystemNotes::MergeRequestsService.new(noteable: noteable, project: project, author: author).add_merge_request_wip_from_commit(commit)
+  end
+
+  def resolve_all_discussions(merge_request, project, author)
+    ::SystemNotes::MergeRequestsService.new(noteable: merge_request, project: project, author: author).resolve_all_discussions
+  end
+
+  def discussion_continued_in_issue(discussion, project, author, issue)
+    ::SystemNotes::MergeRequestsService.new(project: project, author: author).discussion_continued_in_issue(discussion, issue)
+  end
+
+  def diff_discussion_outdated(discussion, project, author, change_position)
+    ::SystemNotes::MergeRequestsService.new(project: project, author: author).diff_discussion_outdated(discussion, change_position)
+  end
+
+  def change_title(noteable, project, author, old_title)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).change_title(old_title)
+  end
+
+  def change_description(noteable, project, author)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).change_description
+  end
+
+  def change_issue_confidentiality(issue, project, author)
+    ::SystemNotes::IssuablesService.new(noteable: issue, project: project, author: author).change_issue_confidentiality
   end
 
   # Called when a branch in Noteable is changed
@@ -156,162 +169,158 @@ class SystemNoteService
   # author      - User performing the change
   # branch_type - 'source' or 'target'
   # old_branch  - old branch name
-  # new_branch  - new branch nmae
+  # new_branch  - new branch name
   #
   # Example Note text:
   #
-  #   "Target branch changed from `Old` to `New`"
+  #   "changed target branch from `Old` to `New`"
   #
   # Returns the created Note object
-  def self.change_branch(noteable, project, author, branch_type, old_branch, new_branch)
-    body = "#{branch_type} branch changed from `#{old_branch}` to `#{new_branch}`".capitalize
-    create_note(noteable: noteable, project: project, author: author, note: body)
+  def change_branch(noteable, project, author, branch_type, old_branch, new_branch)
+    ::SystemNotes::MergeRequestsService.new(noteable: noteable, project: project, author: author).change_branch(branch_type, old_branch, new_branch)
   end
 
-  # Called when a Mentionable references a Noteable
+  # Called when a branch in Noteable is added or deleted
   #
-  # noteable  - Noteable object being referenced
-  # mentioner - Mentionable object
-  # author    - User performing the reference
+  # noteable    - Noteable object
+  # project     - Project owning noteable
+  # author      - User performing the change
+  # branch_type - :source or :target
+  # branch      - branch name
+  # presence    - :add or :delete
   #
   # Example Note text:
   #
-  #   "mentioned in #1"
-  #
-  #   "mentioned in !2"
-  #
-  #   "mentioned in 54f7727c"
-  #
-  # See cross_reference_note_content.
+  #   "restored target branch `feature`"
   #
   # Returns the created Note object
-  def self.cross_reference(noteable, mentioner, author)
-    return if cross_reference_disallowed?(noteable, mentioner)
-
-    gfm_reference = mentioner.gfm_reference(noteable.project)
-
-    note_options = {
-      project: noteable.project,
-      author:  author,
-      note:    cross_reference_note_content(gfm_reference)
-    }
-
-    if noteable.kind_of?(Commit)
-      note_options.merge!(noteable_type: 'Commit', commit_id: noteable.id)
-    else
-      note_options.merge!(noteable: noteable)
-    end
-
-    create_note(note_options)
+  def change_branch_presence(noteable, project, author, branch_type, branch, presence)
+    ::SystemNotes::MergeRequestsService.new(noteable: noteable, project: project, author: author).change_branch_presence(branch_type, branch, presence)
   end
 
-  def self.cross_reference?(note_text)
-    note_text.start_with?(cross_reference_note_prefix)
+  # Called when a branch is created from the 'new branch' button on a issue
+  # Example note text:
+  #
+  #   "created branch `201-issue-branch-button`"
+  def new_issue_branch(issue, project, author, branch, branch_project: nil)
+    ::SystemNotes::MergeRequestsService.new(noteable: issue, project: project, author: author).new_issue_branch(branch, branch_project: branch_project)
   end
 
-  # Check if a cross-reference is disallowed
-  #
-  # This method prevents adding a "mentioned in !1" note on every single commit
-  # in a merge request.
-  #
-  # noteable  - Noteable object being referenced
-  # mentioner - Mentionable object
-  #
-  # Returns Boolean
-  def self.cross_reference_disallowed?(noteable, mentioner)
-    return false unless mentioner.is_a?(MergeRequest)
-    return false unless noteable.is_a?(Commit)
-
-    mentioner.commits.include?(noteable)
+  def new_merge_request(issue, project, author, merge_request)
+    ::SystemNotes::MergeRequestsService.new(noteable: issue, project: project, author: author).new_merge_request(merge_request)
   end
 
-  # Check if a cross reference to a noteable from a mentioner already exists
-  #
-  # This method is used to prevent multiple notes being created for a mention
-  # when a issue is updated, for example.
-  #
-  # noteable  - Noteable object being referenced
-  # mentioner - Mentionable object
-  #
-  # Returns Boolean
-  def self.cross_reference_exists?(noteable, mentioner)
-    # Initial scope should be system notes of this noteable type
-    notes = Note.system.where(noteable_type: noteable.class)
+  def cross_reference(noteable, mentioner, author)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, author: author).cross_reference(mentioner)
+  end
 
-    if noteable.is_a?(Commit)
-      # Commits have non-integer IDs, so they're stored in `commit_id`
-      notes = notes.where(commit_id: noteable.id)
-    else
-      notes = notes.where(noteable_id: noteable.id)
-    end
+  def cross_reference_exists?(noteable, mentioner)
+    ::SystemNotes::IssuablesService.new(noteable: noteable).cross_reference_exists?(mentioner)
+  end
 
-    gfm_reference = mentioner.gfm_reference(noteable.project)
-    notes = notes.where(note: cross_reference_note_content(gfm_reference))
+  def change_task_status(noteable, project, author, new_task)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).change_task_status(new_task)
+  end
 
-    notes.count > 0
+  def noteable_moved(noteable, project, noteable_ref, author, direction:)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).noteable_moved(noteable_ref, direction)
+  end
+
+  def mark_duplicate_issue(noteable, project, author, canonical_issue)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).mark_duplicate_issue(canonical_issue)
+  end
+
+  def mark_canonical_issue_of_duplicate(noteable, project, author, duplicate_issue)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).mark_canonical_issue_of_duplicate(duplicate_issue)
+  end
+
+  def discussion_lock(issuable, author)
+    ::SystemNotes::IssuablesService.new(noteable: issuable, project: issuable.project, author: author).discussion_lock
+  end
+
+  def cross_reference_disallowed?(noteable, mentioner)
+    ::SystemNotes::IssuablesService.new(noteable: noteable).cross_reference_disallowed?(mentioner)
+  end
+
+  def zoom_link_added(issue, project, author)
+    ::SystemNotes::ZoomService.new(noteable: issue, project: project, author: author).zoom_link_added
+  end
+
+  def zoom_link_removed(issue, project, author)
+    ::SystemNotes::ZoomService.new(noteable: issue, project: project, author: author).zoom_link_removed
+  end
+
+  def auto_resolve_prometheus_alert(noteable, project, author)
+    ::SystemNotes::IssuablesService.new(noteable: noteable, project: project, author: author).auto_resolve_prometheus_alert
+  end
+
+  # Parameters:
+  #   - version [DesignManagement::Version]
+  #
+  # Example Note text:
+  #
+  #   "added [1 designs](link-to-version)"
+  #   "changed [2 designs](link-to-version)"
+  #
+  # Returns [Array<Note>]: the created Note objects
+  def design_version_added(version)
+    ::SystemNotes::DesignManagementService.new(noteable: version.issue, project: version.issue.project, author: version.author).design_version_added(version)
+  end
+
+  # Called when a new discussion is created on a design
+  #
+  # discussion_note - DiscussionNote
+  #
+  # Example Note text:
+  #
+  #   "started a discussion on screen.png"
+  #
+  # Returns the created Note object
+  def design_discussion_added(discussion_note)
+    design = discussion_note.noteable
+
+    ::SystemNotes::DesignManagementService.new(noteable: design.issue, project: design.project, author: discussion_note.author).design_discussion_added(discussion_note)
+  end
+
+  # Called when the merge request is approved by user
+  #
+  # noteable - Noteable object
+  # user     - User performing approve
+  #
+  # Example Note text:
+  #
+  #   "approved this merge request"
+  #
+  # Returns the created Note object
+  def approve_mr(noteable, user)
+    merge_requests_service(noteable, noteable.project, user).approve_mr
+  end
+
+  def unapprove_mr(noteable, user)
+    merge_requests_service(noteable, noteable.project, user).unapprove_mr
+  end
+
+  def change_alert_status(alert, author)
+    ::SystemNotes::AlertManagementService.new(noteable: alert, project: alert.project, author: author).change_alert_status(alert)
+  end
+
+  def new_alert_issue(alert, issue, author)
+    ::SystemNotes::AlertManagementService.new(noteable: alert, project: alert.project, author: author).new_alert_issue(issue)
+  end
+
+  def create_new_alert(alert, monitoring_tool)
+    ::SystemNotes::AlertManagementService.new(noteable: alert, project: alert.project).create_new_alert(monitoring_tool)
+  end
+
+  def change_incident_severity(incident, author)
+    ::SystemNotes::IncidentService.new(noteable: incident, project: incident.project, author: author).change_incident_severity
   end
 
   private
 
-  def self.create_note(args = {})
-    Note.create(args.merge(system: true))
-  end
-
-  def self.cross_reference_note_prefix
-    'mentioned in '
-  end
-
-  def self.cross_reference_note_content(gfm_reference)
-    "#{cross_reference_note_prefix}#{gfm_reference}"
-  end
-
-  # Build an Array of lines detailing each commit added in a merge request
-  #
-  # new_commits - Array of new Commit objects
-  #
-  # Returns an Array of Strings
-  def self.new_commit_summary(new_commits)
-    new_commits.collect do |commit|
-      "* #{commit.short_id} - #{commit.title}"
-    end
-  end
-
-  # Build a single line summarizing existing commits being added in a merge
-  # request
-  #
-  # noteable         - MergeRequest object
-  # existing_commits - Array of existing Commit objects
-  # oldrev           - Optional String SHA of a previous Commit
-  #
-  # Examples:
-  #
-  #   "* ea0f8418...2f4426b7 - 24 commits from branch `master`"
-  #
-  #   "* ea0f8418..4188f0ea - 15 commits from branch `fork:master`"
-  #
-  #   "* ea0f8418 - 1 commit from branch `feature`"
-  #
-  # Returns a newline-terminated String
-  def self.existing_commit_summary(noteable, existing_commits, oldrev = nil)
-    return '' if existing_commits.empty?
-
-    count = existing_commits.size
-
-    commit_ids = if count == 1
-                   existing_commits.first.short_id
-                 else
-                   if oldrev
-                     "#{Commit.truncate_sha(oldrev)}...#{existing_commits.last.short_id}"
-                   else
-                     "#{existing_commits.first.short_id}..#{existing_commits.last.short_id}"
-                   end
-                 end
-
-    commits_text = "#{count} commit".pluralize(count)
-
-    branch = noteable.target_branch
-    branch = "#{noteable.target_project_namespace}:#{branch}" if noteable.for_fork?
-
-    "* #{commit_ids} - #{commits_text} from branch `#{branch}`\n"
+  def merge_requests_service(noteable, project, author)
+    ::SystemNotes::MergeRequestsService.new(noteable: noteable, project: project, author: author)
   end
 end
+
+SystemNoteService.prepend_if_ee('EE::SystemNoteService')

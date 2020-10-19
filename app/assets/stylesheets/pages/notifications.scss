@@ -1,22 +1,44 @@
-.global-notifications-form .level-title {
-  font-size: 15px;
-  color: #333;
-  font-weight: bold;
+.notification-list-item {
+  line-height: 34px;
+
+  .dropdown-menu {
+    @extend .dropdown-menu-right;
+  }
+
+  @include media-breakpoint-down(sm) {
+    .notification-dropdown {
+      width: 100%;
+    }
+
+    .notification-form {
+      display: block;
+    }
+
+    .notifications-btn,
+    .btn-group {
+      width: 100%;
+    }
+
+    .table-section {
+      border-top: 0;
+      min-height: unset;
+
+      &:not(:first-child) {
+        padding-top: 0;
+      }
+    }
+
+    .update-notifications {
+      width: 100%;
+    }
+  }
 }
 
-.notification-icon-holder {
-  width: 20px;
-  float: left;
-}
+.notification {
+  position: relative;
+  top: 1px;
 
-.ns-part {
-  color: $gl-primary;
-}
-
-.ns-watch {
-  color: $gl-success;
-}
-
-.ns-mute {
-  color: $gl-danger;
+  .fa {
+    font-size: 18px;
+  }
 }

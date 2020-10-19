@@ -1,18 +1,25 @@
-- page_title "Milestones"
-.pull-right
-  - if can? current_user, :admin_milestone, @project
-    = link_to new_namespace_project_milestone_path(@project.namespace, @project), class: "pull-right btn btn-new", title: "New Milestone" do
-      %i.fa.fa-plus
-      New Milestone
-= render 'shared/milestones_filter'
+- page_title _('Milestones')
+- add_page_specific_style 'page_bundles/milestone'
+
+.top-area
+  = render 'shared/milestones_filter', counts: milestone_counts(@project.milestones)
+
+  .nav-controls
+    = render 'shared/milestones/search_form'
+    = render 'shared/milestones_sort_dropdown'
+    - if can?(current_user, :admin_milestone, @project)
+      = link_to new_project_milestone_path(@project), class: 'btn btn-success', data: { qa_selector: "new_project_milestone_link" }, title: _('New milestone') do
+        = _('New milestone')
 
 .milestones
-  .panel.panel-default
-    %ul.well-list
-      = render @milestones
+  #js-delete-milestone-modal
+  #promote-milestone-modal
 
-      - if @milestones.blank?
-        %li
-          .nothing-here-block No milestones to show
+  %ul.content-list
+    = render @milestones
 
-  = paginate @milestones, theme: "gitlab"
+    - if @milestones.blank?
+      %li
+        .nothing-here-block= _('No milestones to show')
+
+  = paginate @milestones, theme: 'gitlab'

@@ -1,116 +1,77 @@
-- page_title "Account"
-%h3.page-title
-  = page_title
-%p.light
-  Change your username and basic account settings.
-%hr
+- page_title _('Account')
+- @content_class = "limit-container-width" unless fluid_layout
+
 - if current_user.ldap_user?
-  .alert.alert-info
-    Some options are unavailable for LDAP accounts
+  .gl-alert.gl-alert-info.gl-my-5
+    = sprite_icon('information-o', size: 16, css_class: 'gl-icon gl-alert-icon gl-alert-icon-no-title')
+    .gl-alert-body
+      = s_('Profiles|Some options are unavailable for LDAP accounts')
 
-.account-page
-  .panel.panel-default.update-token
-    .panel-heading
-      Reset Private token
-    .panel-body
-      = form_for @user, url: reset_private_token_profile_path, method: :put do |f|
-        .data
-          %p
-            Your private token is used to access application resources without authentication.
-            %br
-            It can be used for atom feeds or the API.
-            %span.cred
-              Keep it secret!
+.row.gl-mt-3
+  .col-lg-4.profile-settings-sidebar
+    %h4.gl-mt-0
+      = s_('Profiles|Two-Factor Authentication')
+    %p
+      = s_("Profiles|Increase your account's security by enabling Two-Factor Authentication (2FA)")
+  .col-lg-8
+    %p
+      #{_('Status')}: #{current_user.two_factor_enabled? ? _('Enabled') : _('Disabled')}
+    - if current_user.two_factor_enabled?
+      = link_to _('Manage two-factor authentication'), profile_two_factor_auth_path, class: 'btn btn-info'
+    - else
+      .gl-mb-3
+        = link_to _('Enable two-factor authentication'), profile_two_factor_auth_path, class: 'btn btn-success', data: { qa_selector: 'enable_2fa_button' }
 
-          %p.cgray
-            - if current_user.private_token
-              = text_field_tag "token", current_user.private_token, class: "form-control"
-              %div
-                = f.submit 'Reset private token', data: { confirm: "Are you sure?" }, class: "btn btn-default btn-build-token"
-            - else
-              %span You don`t have one yet. Click generate to fix it.
-              = f.submit 'Generate', class: "btn btn-default btn-build-token"
+%hr
+- if display_providers_on_profile?
+  .row.gl-mt-3
+    .col-lg-4.profile-settings-sidebar
+      %h4.gl-mt-0
+        = s_('Profiles|Social sign-in')
+      %p
+        = s_('Profiles|Activate signin with one of the following services')
+    .col-lg-8
+      = render 'providers', providers: button_based_providers, group_saml_identities: local_assigns[:group_saml_identities]
+  %hr
+- if current_user.can_change_username?
+  .row.gl-mt-3
+    .col-lg-4.profile-settings-sidebar
+      %h4.gl-mt-0.warning-title
+        = s_('Profiles|Change username')
+      %p
+        = s_('Profiles|Changing your username can have unintended side effects.')
+        = succeed '.' do
+          = link_to s_('Profiles|Learn more'), help_page_path('user/profile/index', anchor: 'changing-your-username'), target: '_blank'
+    .col-lg-8
+      - data = { initial_username: current_user.username, root_url: root_url, action_url: update_username_profile_path(format: :json) }
+      #update-username{ data: data }
+  %hr
 
-  - unless current_user.ldap_user?
-    .panel.panel-default
-      .panel-heading
-        Two-factor Authentication
-      .panel-body
-        - if current_user.otp_required_for_login
-          .pull-right
-            = link_to 'Disable Two-factor Authentication', profile_two_factor_auth_path, method: :delete, class: 'btn btn-close btn-sm',
-                data: { confirm: 'Are you sure?' }
-          %p.text-success
-            %strong
-              Two-factor Authentication is enabled
-          %p
-            If you lose your recovery codes you can
-            %strong
-              = succeed ',' do
-                = link_to 'generate new ones', codes_profile_two_factor_auth_path, method: :post, data: { confirm: 'Are you sure?' }
-            invalidating all previous codes.
+.row.gl-mt-3
+  .col-lg-4.profile-settings-sidebar
+    %h4.gl-mt-0.danger-title
+      = s_('Profiles|Delete account')
+  .col-lg-8
+    - if current_user.can_be_removed? && can?(current_user, :destroy_user, current_user)
+      %p
+        = s_('Profiles|Deleting an account has the following effects:')
+      = render 'users/deletion_guidance', user: current_user
 
-        - else
-          %p
-            Increase your account's security by enabling two-factor authentication (2FA).
-          %p
-            Each time you log in you’ll be required to provide your username and
-            password as usual, plus a randomly-generated code from your phone.
-          %div
-            = link_to 'Enable Two-factor Authentication', new_profile_two_factor_auth_path, class: 'btn btn-success'
+      -# Delete button here
+      %button#delete-account-button.btn.btn-danger.disabled{ data: { qa_selector: 'delete_account_button' } }
+        = s_('Profiles|Delete account')
 
-  - if show_profile_social_tab?
-    .panel.panel-default
-      .panel-heading
-        Connected Accounts
-      .panel-body
-        .oauth-buttons.append-bottom-10
-          %p Click on icon to activate signin with one of the following services
-          - enabled_social_providers.each do |provider|
-            .btn-group
-              = link_to oauth_image_tag(provider), omniauth_authorize_path(User, provider),
-                method: :post, class: "btn btn-lg #{'active' if oauth_active?(provider)}"
-              - if oauth_active?(provider)
-                = link_to unlink_profile_account_path(provider: provider), method: :delete, class: 'btn btn-lg' do
-                  = icon('close')
-
-  - if show_profile_username_tab?
-    .panel.panel-warning.update-username
-      .panel-heading
-        Change Username
-      .panel-body
-        = form_for @user, url: update_username_profile_path,  method: :put, remote: true do |f|
-          %p
-            Changing your username will change path to all personal projects!
-          %div
-            = f.text_field :username, required: true, class: 'form-control'
-            &nbsp;
-          .loading-gif.hide
-            %p
-              = icon('spinner spin')
-              Saving new username
-          %p.light
-            = user_url(@user)
-          %div
-            = f.submit 'Save username', class: "btn btn-warning"
-
-  - if show_profile_remove_tab?
-    .panel.panel-danger.remove-account
-      .panel-heading
-        Remove account
-      .panel-body
-        - if @user.can_be_removed?
-          %p Deleting an account has the following effects:
-          %ul
-            %li All user content like authored issues, snippets, comments will be removed
-            - rp = current_user.personal_projects.count
-            - unless rp.zero?
-              %li #{pluralize rp, 'personal project'} will be removed and cannot be restored
-          = link_to 'Delete account', user_registration_path, data: { confirm: "REMOVE #{current_user.name}? Are you sure?" }, method: :delete, class: "btn btn-remove"
-        - else
-          - if @user.solo_owned_groups.present?
-            %p
-              Your account is currently an owner in these groups:
-              %strong #{@user.solo_owned_groups.map(&:name).join(', ')}
-            %p
-              You must transfer ownership or delete these groups before you can delete yur account.
+      #delete-account-modal{ data: { action_url: user_registration_path,
+        confirm_with_password: ('true' if current_user.confirm_deletion_with_password?),
+        username: current_user.username } }
+    - else
+      - if current_user.solo_owned_groups.present?
+        %p
+          = s_('Profiles|Your account is currently an owner in these groups:')
+          %strong= current_user.solo_owned_groups.map(&:name).join(', ')
+        %p
+          = s_('Profiles|You must transfer ownership or delete these groups before you can delete your account.')
+      - else
+        %p
+          = s_("Profiles|You don't have access to delete this user.")
+.gl-mb-3

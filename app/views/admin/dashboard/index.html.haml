@@ -1,142 +1,159 @@
-.admin-dashboard
-  .row
-    .col-md-4
-      %h4 Statistics
-      %hr
-      %p
-        Forks
-        %span.light.pull-right
-          = ForkedProjectLink.count
-      %p
-        Issues
-        %span.light.pull-right
-          = Issue.count
-      %p
-        Merge Requests
-        %span.light.pull-right
-          = MergeRequest.count
-      %p
-        Notes
-        %span.light.pull-right
-          = Note.count
-      %p
-        Snippets
-        %span.light.pull-right
-          = Snippet.count
-      %p
-        SSH Keys
-        %span.light.pull-right
-          = Key.count
-      %p
-        Milestones
-        %span.light.pull-right
-          = Milestone.count
-      %p
-        Active Users
-        %span.light.pull-right
-          = User.active.count
-    .col-md-4
-      %h4
-        Features
-      %hr
-      %p
-        Sign up
-        %span.light.pull-right
-          = boolean_to_icon signup_enabled?
-      %p
-        LDAP
-        %span.light.pull-right
-          = boolean_to_icon Gitlab.config.ldap.enabled
-      %p
-        Gravatar
-        %span.light.pull-right
-          = boolean_to_icon gravatar_enabled?
-      %p
-        OmniAuth
-        %span.light.pull-right
-          = boolean_to_icon Gitlab.config.omniauth.enabled
-    .col-md-4
-      %h4
-        Components
-        - if current_application_settings.version_check_enabled
-          .pull-right
-            = version_status_badge
+- breadcrumb_title _("Dashboard")
+- page_title _("Dashboard")
 
-      %hr
-      %p
-        GitLab
-        %span.pull-right
-          = Gitlab::VERSION
-      %p
-        GitLab Shell
-        %span.pull-right
-          = Gitlab::Shell.new.version
-      %p
-        GitLab API
-        %span.pull-right
-          = API::API::version
-      %p
-        Ruby
-        %span.pull-right
-          #{RUBY_VERSION}p#{RUBY_PATCHLEVEL}
+- if @notices
+  - @notices.each do |notice|
+    .js-vue-alert{ 'v-cloak': true, data: { variant: notice[:type],
+      dismissible: true.to_s } }
+      = notice[:message].html_safe
 
-      %p
-        Rails
-        %span.pull-right
-          #{Rails::VERSION::STRING}
-  %hr
+- if @license.present? && show_license_breakdown?
+  = render_if_exists 'admin/licenses/breakdown'
+
+.admin-dashboard.gl-mt-3
   .row
     .col-sm-4
-      .light-well
-        %h4 Projects
-        .data
-          = link_to admin_namespaces_projects_path do
-            %h1= Project.count
+      .info-well.dark-well.flex-fill
+        .well-segment.well-centered
+          = link_to admin_projects_path do
+            %h3.text-center
+              = s_('AdminArea|Projects: %{number_of_projects}') % { number_of_projects: approximate_count_with_delimiters(@counts, Project) }
           %hr
-          = link_to('New Project', new_project_path, class: "btn btn-new")
+          = link_to(s_('AdminArea|New project'), new_project_path, class: "btn gl-button btn-success gl-w-full")
     .col-sm-4
-      .light-well
-        %h4 Users
-        .data
+      .info-well.dark-well
+        .well-segment.well-centered
           = link_to admin_users_path do
-            %h1= User.count
+            %h3.text-center
+              = s_('AdminArea|Users: %{number_of_users}') % { number_of_users: approximate_count_with_delimiters(@counts, User) }
           %hr
-          = link_to 'New User', new_admin_user_path, class: "btn btn-new"
+          .btn-group.d-flex{ role: 'group' }
+            = link_to s_('AdminArea|New user'), new_admin_user_path, class: "btn gl-button btn-success gl-w-full"
+            = link_to s_('AdminArea|Users statistics'), admin_dashboard_stats_path, class: 'btn gl-button btn-info gl-w-full'
     .col-sm-4
-      .light-well
-        %h4 Groups
-        .data
+      .info-well.dark-well
+        .well-segment.well-centered
           = link_to admin_groups_path do
-            %h1= Group.count
+            %h3.text-center
+              = s_('AdminArea|Groups: %{number_of_groups}') % { number_of_groups: approximate_count_with_delimiters(@counts, Group) }
           %hr
-          = link_to 'New Group', new_admin_group_path, class: "btn btn-new"
-
-  .row.prepend-top-10
+          = link_to s_('AdminArea|New group'), new_admin_group_path, class: "btn gl-button btn-success gl-w-full"
+  .row
     .col-md-4
-      %h4 Latest projects
-      %hr
-      - @projects.each do |project|
-        %p
-          = link_to project.name_with_namespace, [:admin, project.namespace.becomes(Namespace), project], class: 'str-truncated'
-          %span.light.pull-right
-            #{time_ago_with_tooltip(project.created_at)}
-
+      #js-admin-statistics-container
     .col-md-4
-      %h4 Latest users
-      %hr
-      - @users.each do |user|
-        %p
-          = link_to [:admin, user], class: 'str-truncated' do
-            = user.name
-          %span.light.pull-right
-            #{time_ago_with_tooltip(user.created_at)}
+      .info-well
+        .well-segment.admin-well.admin-well-features
+          %h4= s_('AdminArea|Features')
+          = feature_entry(_('Sign up'),
+            href: general_admin_application_settings_path(anchor: 'js-signup-settings'),
+            enabled: allow_signup?)
 
+          = feature_entry(_('LDAP'),
+            enabled: Gitlab.config.ldap.enabled,
+            doc_href: help_page_path('administration/auth/ldap/index.md'))
+
+          = feature_entry(_('Gravatar'),
+            href: general_admin_application_settings_path(anchor: 'js-account-settings'),
+            enabled: gravatar_enabled?)
+
+          = feature_entry(_('OmniAuth'),
+            href: general_admin_application_settings_path(anchor: 'js-signin-settings'),
+            enabled: Gitlab::Auth.omniauth_enabled?,
+            doc_href: help_page_path('integration/omniauth'))
+
+          = feature_entry(_('Reply by email'),
+            enabled: Gitlab::IncomingEmail.enabled?,
+            doc_href: help_page_path('administration/reply_by_email'))
+
+          = render_if_exists 'admin/dashboard/elastic_and_geo'
+
+          = feature_entry(_('Container Registry'),
+            href: ci_cd_admin_application_settings_path(anchor: 'js-registry-settings'),
+            enabled: Gitlab.config.registry.enabled,
+            doc_href: help_page_path('user/packages/container_registry/index'))
+
+          = feature_entry(_('Gitlab Pages'),
+            enabled: Gitlab.config.pages.enabled,
+            doc_href: help_instance_configuration_url)
+
+          = feature_entry(_('Shared Runners'),
+            href: admin_runners_path,
+            enabled: Gitlab.config.gitlab_ci.shared_runners_enabled)
     .col-md-4
-      %h4 Latest groups
-      %hr
-      - @groups.each do |group|
-        %p
-          = link_to [:admin, group], class: 'str-truncated' do
-            = group.name
-          %span.light.pull-right
-            #{time_ago_with_tooltip(group.created_at)}
+      .info-well
+        .well-segment.admin-well
+          %h4
+            = s_('AdminArea|Components')
+            - if Gitlab::CurrentSettings.version_check_enabled
+              .float-right
+                = version_status_badge
+          %p
+            = link_to _('GitLab'), general_admin_application_settings_path
+            %span.float-right
+              = Gitlab::VERSION
+              = "(#{Gitlab.revision})"
+          %p
+            = _('GitLab Shell')
+            %span.float-right
+              = Gitlab::Shell.version
+          %p
+            = _('GitLab Workhorse')
+            %span.float-right
+              = gitlab_workhorse_version
+          %p
+            = _('GitLab API')
+            %span.float-right
+              = API::API::version
+          - if Gitlab.config.pages.enabled
+            %p
+              = _('GitLab Pages')
+              %span.float-right
+                = Gitlab::Pages::VERSION
+
+          = render_if_exists 'admin/dashboard/geo'
+
+          %p
+            = _('Ruby')
+            %span.float-right
+              #{RUBY_VERSION}p#{RUBY_PATCHLEVEL}
+          %p
+            = _('Rails')
+            %span.float-right
+              #{Rails::VERSION::STRING}
+          %p
+            = Gitlab::Database.human_adapter_name
+            %span.float-right
+              = Gitlab::Database.version
+          %p
+            = link_to _("Gitaly Servers"), admin_gitaly_servers_path
+  .row
+    .col-md-4
+      .info-well
+        .well-segment.admin-well
+          %h4= s_('AdminArea|Latest projects')
+          - @projects.each do |project|
+            %p
+              = link_to project.full_name, admin_project_path(project), class: 'str-truncated-60'
+              %span.light.float-right
+                #{time_ago_with_tooltip(project.created_at)}
+    .col-md-4
+      .info-well
+        .well-segment.admin-well
+          %h4= s_('AdminArea|Latest users')
+          - @users.each do |user|
+            %p
+              = link_to [:admin, user], class: 'str-truncated-60' do
+                = user.name
+              %span.light.float-right
+                #{time_ago_with_tooltip(user.created_at)}
+    .col-md-4
+      .info-well
+        .well-segment.admin-well
+          %h4= s_('AdminArea|Latest groups')
+          - @groups.each do |group|
+            %p
+              = link_to [:admin, group], class: 'str-truncated-60' do
+                = group.full_name
+              %span.light.float-right
+                #{time_ago_with_tooltip(group.created_at)}

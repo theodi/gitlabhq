@@ -1,45 +1,78 @@
-# Web hooks
+# Webhooks administration **(CORE ONLY)**
 
-## Add a web hook for **ALL** projects:
+GitLab provides Rake tasks for webhooks management.
 
-    # omnibus-gitlab
-    sudo gitlab-rake gitlab:web_hook:add URL="http://example.com/hook"
-    # source installations
-    bundle exec rake gitlab:web_hook:add URL="http://example.com/hook" RAILS_ENV=production
+Requests to the [local network by webhooks](../security/webhooks.md) can be allowed or blocked by an
+administrator.
 
-## Add a web hook for projects in a given **NAMESPACE**:
+## Add a webhook to all projects
 
-    # omnibus-gitlab
-    sudo gitlab-rake gitlab:web_hook:add URL="http://example.com/hook" NAMESPACE=acme
-    # source installations
-    bundle exec rake gitlab:web_hook:add URL="http://example.com/hook" NAMESPACE=acme RAILS_ENV=production
+To add a webhook to all projects, run:
 
-## Remove a web hook from **ALL** projects using:
+```shell
+# omnibus-gitlab
+sudo gitlab-rake gitlab:web_hook:add URL="http://example.com/hook"
 
-    # omnibus-gitlab
-    sudo gitlab-rake gitlab:web_hook:rm URL="http://example.com/hook"
-    # source installations
-    bundle exec rake gitlab:web_hook:rm URL="http://example.com/hook" RAILS_ENV=production
+# source installations
+bundle exec rake gitlab:web_hook:add URL="http://example.com/hook" RAILS_ENV=production
+```
 
-## Remove a web hook from projects in a given **NAMESPACE**:
+## Add a webhook to projects in a namespace
 
-    # omnibus-gitlab
-    sudo gitlab-rake gitlab:web_hook:rm URL="http://example.com/hook" NAMESPACE=acme
-    # source installations
-    bundle exec rake gitlab:web_hook:rm URL="http://example.com/hook" NAMESPACE=acme RAILS_ENV=production
+To add a webhook to all projects in a specific namespace, run:
 
-## List **ALL** web hooks:
+```shell
+# omnibus-gitlab
+sudo gitlab-rake gitlab:web_hook:add URL="http://example.com/hook" NAMESPACE=<namespace>
 
-    # omnibus-gitlab
-    sudo gitlab-rake gitlab:web_hook:list
-    # source installations
-    bundle exec rake gitlab:web_hook:list RAILS_ENV=production
+# source installations
+bundle exec rake gitlab:web_hook:add URL="http://example.com/hook" NAMESPACE=<namespace> RAILS_ENV=production
+```
 
-## List the web hooks from projects in a given **NAMESPACE**:
+## Remove a webhook from projects
 
-    # omnibus-gitlab
-    sudo gitlab-rake gitlab:web_hook:list NAMESPACE=/
-    # source installations
-    bundle exec rake gitlab:web_hook:list NAMESPACE=/ RAILS_ENV=production
+To remove a webhook from all projects, run:
 
-> Note: `/` is the global namespace.
+```shell
+# omnibus-gitlab
+sudo gitlab-rake gitlab:web_hook:rm URL="http://example.com/hook"
+
+# source installations
+bundle exec rake gitlab:web_hook:rm URL="http://example.com/hook" RAILS_ENV=production
+```
+
+## Remove a webhook from projects in a namespace
+
+To remove a webhook from projects in a specific namespace, run:
+
+```shell
+# omnibus-gitlab
+sudo gitlab-rake gitlab:web_hook:rm URL="http://example.com/hook" NAMESPACE=<namespace>
+
+# source installations
+bundle exec rake gitlab:web_hook:rm URL="http://example.com/hook" NAMESPACE=<namespace> RAILS_ENV=production
+```
+
+## List all webhooks
+
+To list all webhooks, run:
+
+```shell
+# omnibus-gitlab
+sudo gitlab-rake gitlab:web_hook:list
+
+# source installations
+bundle exec rake gitlab:web_hook:list RAILS_ENV=production
+```
+
+## List webhooks for projects in a namespace
+
+To list all webhook for projects in a specified namespace, run:
+
+```shell
+# omnibus-gitlab
+sudo gitlab-rake gitlab:web_hook:list NAMESPACE=<namespace>
+
+# source installations
+bundle exec rake gitlab:web_hook:list NAMESPACE=<namespace> RAILS_ENV=production
+```

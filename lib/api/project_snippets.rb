@@ -1,124 +1,197 @@
-module API
-  # Projects API
-  class ProjectSnippets < Grape::API
-    before { authenticate! }
+# frozen_string_literal: true
 
-    resource :projects do
+module API
+  class ProjectSnippets < ::API::Base
+    include PaginationParams
+
+    before { check_snippets_enabled }
+
+    params do
+      requires :id, type: String, desc: 'The ID of a project'
+    end
+    resource :projects, requirements: API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      helpers Helpers::SnippetsHelpers
       helpers do
+        def check_snippets_enabled
+          forbidden! unless user_project.feature_available?(:snippets, current_user)
+        end
+
         def handle_project_member_errors(errors)
           if errors[:project_access].any?
             error!(errors[:project_access], 422)
           end
+
           not_found!
         end
+
+        def snippets_for_current_user
+          SnippetsFinder.new(current_user, project: user_project).execute
+        end
       end
 
-      # Get a project snippets
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request:
-      #   GET /projects/:id/snippets
+      desc 'Get all project snippets' do
+        success Entities::ProjectSnippet
+      end
+      params do
+        use :pagination
+      end
       get ":id/snippets" do
-        present paginate(user_project.snippets), with: Entities::ProjectSnippet
+        authenticate!
+
+        present paginate(snippets_for_current_user), with: Entities::ProjectSnippet, current_user: current_user
       end
 
-      # Get a project snippet
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   snippet_id (required) - The ID of a project snippet
-      # Example Request:
-      #   GET /projects/:id/snippets/:snippet_id
+      desc 'Get a single project snippet' do
+        success Entities::ProjectSnippet
+      end
+      params do
+        requires :snippet_id, type: Integer, desc: 'The ID of a project snippet'
+      end
       get ":id/snippets/:snippet_id" do
-        @snippet = user_project.snippets.find(params[:snippet_id])
-        present @snippet, with: Entities::ProjectSnippet
+        snippet = snippets_for_current_user.find(params[:snippet_id])
+
+        not_found!('Snippet') unless snippet
+
+        present snippet, with: Entities::ProjectSnippet, current_user: current_user
       end
 
-      # Create a new project snippet
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   title (required) - The title of a snippet
-      #   file_name (required) - The name of a snippet file
-      #   code (required) - The content of a snippet
-      #   visibility_level (required) - The snippet's visibility
-      # Example Request:
-      #   POST /projects/:id/snippets
+      desc 'Create a new project snippet' do
+        success Entities::ProjectSnippet
+      end
+      params do
+        requires :title, type: String, allow_blank: false, desc: 'The title of the snippet'
+        optional :description, type: String, desc: 'The description of a snippet'
+        requires :visibility, type: String,
+                              values: Gitlab::VisibilityLevel.string_values,
+                              desc: 'The visibility of the snippet'
+        use :create_file_params
+      end
       post ":id/snippets" do
-        authorize! :write_project_snippet, user_project
-        required_attributes! [:title, :file_name, :code, :visibility_level]
+        authenticate!
 
-        attrs = attributes_for_keys [:title, :file_name, :visibility_level]
-        attrs[:content] = params[:code] if params[:code].present?
-        @snippet = CreateSnippetService.new(user_project, current_user,
-                                            attrs).execute
+        authorize! :create_snippet, user_project
 
-        if @snippet.errors.any?
-          render_validation_error!(@snippet)
+        snippet_params = process_create_params(declared_params(include_missing: false))
+
+        service_response = ::Snippets::CreateService.new(user_project, current_user, snippet_params).execute
+        snippet = service_response.payload[:snippet]
+
+        if service_response.success?
+          present snippet, with: Entities::ProjectSnippet, current_user: current_user
         else
-          present @snippet, with: Entities::ProjectSnippet
+          render_spam_error! if snippet.spam?
+
+          render_api_error!({ error: service_response.message }, service_response.http_status)
         end
       end
 
-      # Update an existing project snippet
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   snippet_id (required) - The ID of a project snippet
-      #   title (optional) - The title of a snippet
-      #   file_name (optional) - The name of a snippet file
-      #   code (optional) - The content of a snippet
-      #   visibility_level (optional) - The snippet's visibility
-      # Example Request:
-      #   PUT /projects/:id/snippets/:snippet_id
+      desc 'Update an existing project snippet' do
+        success Entities::ProjectSnippet
+      end
+      params do
+        requires :snippet_id, type: Integer, desc: 'The ID of a project snippet'
+        optional :content, type: String, allow_blank: false, desc: 'The content of the snippet'
+        optional :description, type: String, desc: 'The description of a snippet'
+        optional :file_name, type: String, desc: 'The file name of the snippet'
+        optional :title, type: String, allow_blank: false, desc: 'The title of the snippet'
+        optional :visibility, type: String,
+                              values: Gitlab::VisibilityLevel.string_values,
+                              desc: 'The visibility of the snippet'
+
+        use :update_file_params
+        use :minimum_update_params
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
       put ":id/snippets/:snippet_id" do
-        @snippet = user_project.snippets.find(params[:snippet_id])
-        authorize! :modify_project_snippet, @snippet
+        authenticate!
 
-        attrs = attributes_for_keys [:title, :file_name, :visibility_level]
-        attrs[:content] = params[:code] if params[:code].present?
+        snippet = snippets_for_current_user.find_by(id: params.delete(:snippet_id))
+        not_found!('Snippet') unless snippet
 
-        UpdateSnippetService.new(user_project, current_user, @snippet,
-                                 attrs).execute
-        if @snippet.errors.any?
-          render_validation_error!(@snippet)
+        authorize! :update_snippet, snippet
+
+        validate_params_for_multiple_files(snippet)
+
+        snippet_params = process_update_params(declared_params(include_missing: false))
+
+        service_response = ::Snippets::UpdateService.new(user_project, current_user, snippet_params).execute(snippet)
+        snippet = service_response.payload[:snippet]
+
+        if service_response.success?
+          present snippet, with: Entities::ProjectSnippet, current_user: current_user
         else
-          present @snippet, with: Entities::ProjectSnippet
+          render_spam_error! if snippet.spam?
+
+          render_api_error!({ error: service_response.message }, service_response.http_status)
         end
       end
+      # rubocop: enable CodeReuse/ActiveRecord
 
-      # Delete a project snippet
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   snippet_id (required) - The ID of a project snippet
-      # Example Request:
-      #   DELETE /projects/:id/snippets/:snippet_id
+      desc 'Delete a project snippet'
+      params do
+        requires :snippet_id, type: Integer, desc: 'The ID of a project snippet'
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
       delete ":id/snippets/:snippet_id" do
-        begin
-          @snippet = user_project.snippets.find(params[:snippet_id])
-          authorize! :modify_project_snippet, @snippet
-          @snippet.destroy
-        rescue
-          not_found!('Snippet')
+        authenticate!
+
+        snippet = snippets_for_current_user.find_by(id: params[:snippet_id])
+        not_found!('Snippet') unless snippet
+
+        authorize! :admin_snippet, snippet
+
+        destroy_conditionally!(snippet) do |snippet|
+          service = ::Snippets::DestroyService.new(current_user, snippet)
+          response = service.execute
+
+          if response.error?
+            render_api_error!({ error: response.message }, response.http_status)
+          end
         end
       end
+      # rubocop: enable CodeReuse/ActiveRecord
 
-      # Get a raw project snippet
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   snippet_id (required) - The ID of a project snippet
-      # Example Request:
-      #   GET /projects/:id/snippets/:snippet_id/raw
-      get ":id/snippets/:snippet_id/raw" do
-        @snippet = user_project.snippets.find(params[:snippet_id])
-
-        env['api.format'] = :txt
-        content_type 'text/plain'
-        present @snippet.content
+      desc 'Get a raw project snippet'
+      params do
+        requires :snippet_id, type: Integer, desc: 'The ID of a project snippet'
       end
+      # rubocop: disable CodeReuse/ActiveRecord
+      get ":id/snippets/:snippet_id/raw" do
+        snippet = snippets_for_current_user.find_by(id: params[:snippet_id])
+        not_found!('Snippet') unless snippet
+
+        present content_for(snippet)
+      end
+
+      desc 'Get raw project snippet file contents from the repository'
+      params do
+        use :raw_file_params
+      end
+      get ":id/snippets/:snippet_id/files/:ref/:file_path/raw", requirements: { file_path: API::NO_SLASH_URL_PART_REGEX } do
+        snippet = snippets_for_current_user.find_by(id: params[:snippet_id])
+        not_found!('Snippet') unless snippet&.repo_exists?
+
+        present file_content_for(snippet)
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Get the user agent details for a project snippet' do
+        success Entities::UserAgentDetail
+      end
+      params do
+        requires :snippet_id, type: Integer, desc: 'The ID of a project snippet'
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      get ":id/snippets/:snippet_id/user_agent_detail" do
+        authenticated_as_admin!
+
+        snippet = Snippet.find_by!(id: params[:snippet_id], project_id: params[:id])
+
+        break not_found!('UserAgentDetail') unless snippet.user_agent_detail
+
+        present snippet.user_agent_detail, with: Entities::UserAgentDetail
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
     end
   end
 end

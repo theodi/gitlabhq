@@ -1,79 +1,177 @@
-# Integrate your server with GitHub
+# Integrate your GitLab instance with GitHub
 
-Import projects from GitHub and login to your GitLab instance with your GitHub account.
+You can integrate your GitLab instance with GitHub.com as well as GitHub Enterprise to enable users to import projects from GitHub and/or to login to your GitLab instance with your GitHub account.
 
-To enable the GitHub OmniAuth provider you must register your application with GitHub. 
-GitHub will generate an application ID and secret key for you to use.
+## Enabling GitHub OAuth
 
-1.  Sign in to GitHub.
+To enable the GitHub OmniAuth provider, you'll need an OAuth 2 Client ID and Client Secret from GitHub. To get these credentials, sign into GitHub and follow their procedure for [Creating an OAuth App](https://developer.github.com/apps/building-oauth-apps/creating-an-oauth-app/).
 
-1.  Navigate to your individual user settings or an organization's settings, depending on how you want the application registered. It does not matter if the application is registered as an individual or an organization - that is entirely up to you.
+When you create an OAuth 2 app in GitHub, you'll need the following information:
 
-1.  Select "Applications" in the left menu.
+- The URL of your GitLab instance, such as `https://gitlab.example.com`.
+- The authorization callback URL; in this case, `https://gitlab.example.com/users/auth`. Include the port number if your GitLab instance uses a non-default port.
 
-1.  Select "Register new application".
+NOTE: **Note:**
+To prevent an [OAuth2 covert redirect](https://oauth.net/advisories/2014-1-covert-redirect/) vulnerability, append `/users/auth` to the end of the GitHub authorization callback URL.
 
-1.  Provide the required details.
-    - Application name: This can be anything. Consider something like "\<Organization\>'s GitLab" or "\<Your Name\>'s GitLab" or something else descriptive.
-    - Homepage URL: The URL to your GitLab installation. 'https://gitlab.company.com'
-    - Application description: Fill this in if you wish.
-    - Authorization callback URL: 'https://gitlab.company.com/'
-1.  Select "Register application".
+See [Initial OmniAuth Configuration](omniauth.md#initial-omniauth-configuration) for initial settings.
 
-1.  You should now see a Client ID and Client Secret near the top right of the page (see screenshot). 
-    Keep this page open as you continue configuration.
-    ![GitHub app](github_app.png)
+Once you have configured the GitHub provider, you'll need the following information, which you'll need to substitute in the GitLab configuration file, in the steps shown next.
 
-1.  On your GitLab server, open the configuration file.
+| Setting from GitHub  |  Substitute in the GitLab configuration file | Description |
+|:---------------------|:-----------------------------------------------|:------------|
+| Client ID            | `YOUR_APP_ID`     |  OAuth 2 Client ID     |
+| Client Secret        | `YOUR_APP_SECRET` |  OAuth 2 Client Secret |
+| URL                  | `https://github.example.com/` |  GitHub Deployment URL |
 
-    For omnibus package:
+Follow these steps to incorporate the GitHub OAuth 2 app in your GitLab server:
 
-    ```sh
-      sudo editor /etc/gitlab/gitlab.rb
-    ```
+**For Omnibus installations**
 
-    For instalations from source:
+1. Edit `/etc/gitlab/gitlab.rb`:
 
-    ```sh
-      cd /home/git/gitlab
+   For GitHub.com:
 
-      sudo -u git -H editor config/gitlab.yml
-    ```
+   ```ruby
+   gitlab_rails['omniauth_providers'] = [
+     {
+       "name" => "github",
+       "app_id" => "YOUR_APP_ID",
+       "app_secret" => "YOUR_APP_SECRET",
+       "args" => { "scope" => "user:email" }
+     }
+   ]
+   ```
 
-1.  See [Initial OmniAuth Configuration](omniauth.md#initial-omniauth-configuration) for initial settings.
+   For GitHub Enterprise:
 
-1.  Add the provider configuration:
+   ```ruby
+   gitlab_rails['omniauth_providers'] = [
+     {
+       "name" => "github",
+       "app_id" => "YOUR_APP_ID",
+       "app_secret" => "YOUR_APP_SECRET",
+       "url" => "https://github.example.com/",
+       "args" => { "scope" => "user:email" }
+     }
+   ]
+   ```
 
-    For omnibus package:
+   **Replace `https://github.example.com/` with your GitHub URL.**
 
-    ```ruby
-      gitlab_rails['omniauth_providers'] = [
-        {
-          "name" => "github",
-          "app_id" => "YOUR_APP_ID",
-          "app_secret" => "YOUR_APP_SECRET",
-          "url" => "https://github.com/",
-          "args" => { "scope" => "user:email" }
-        }
-      ]
-    ```
+1. Save the file and [reconfigure](../administration/restart_gitlab.md#omnibus-gitlab-reconfigure) GitLab for the changes to take effect.
 
-    For installation from source:
+---
 
-    ```
-      - { name: 'github', app_id: 'YOUR_APP_ID',
-        app_secret: 'YOUR_APP_SECRET',
-        args: { scope: 'user:email' } }
-    ```
+**For installations from source**
 
-1.  Change 'YOUR_APP_ID' to the client ID from the GitHub application page from step 7.
+1. Navigate to your repository and edit `config/gitlab.yml`:
 
-1.  Change 'YOUR_APP_SECRET' to the client secret from the GitHub application page  from step 7.
+   For GitHub.com:
 
-1.  Save the configuration file.
+   ```yaml
+   - { name: 'github', app_id: 'YOUR_APP_ID',
+       app_secret: 'YOUR_APP_SECRET',
+       args: { scope: 'user:email' } }
+   ```
 
-1.  Restart GitLab for the changes to take effect.
+   For GitHub Enterprise:
 
-On the sign in page there should now be a GitHub icon below the regular sign in form. 
-Click the icon to begin the authentication process. GitHub will ask the user to sign in and authorize the GitLab application. 
-If everything goes well the user will be returned to GitLab and will be signed in.
+   ```yaml
+   - { name: 'github',
+       app_id: 'YOUR_APP_ID',
+       app_secret: 'YOUR_APP_SECRET',
+       url: "https://github.example.com/",
+       args: { scope: 'user:email' } }
+   ```
+
+   **Replace `https://github.example.com/` with your GitHub URL.**
+
+1. Save the file and [restart](../administration/restart_gitlab.md#installations-from-source) GitLab for the changes to take effect.
+
+---
+
+1. Refresh the GitLab sign in page. You should now see a GitHub icon below the regular sign in form.
+
+1. Click the icon to begin the authentication process. GitHub will ask the user to sign in and authorize the GitLab application.
+
+## GitHub Enterprise with self-signed Certificate
+
+If you are attempting to import projects from GitHub Enterprise with a self-signed
+certificate and the imports are failing, you will need to disable SSL verification.
+It should be disabled by adding `verify_ssl` to `false` in the provider configuration
+and changing the global Git `sslVerify` option to `false` in the GitLab server.
+
+For Omnibus package:
+
+```ruby
+gitlab_rails['omniauth_providers'] = [
+  {
+    "name" => "github",
+    "app_id" => "YOUR_APP_ID",
+    "app_secret" => "YOUR_APP_SECRET",
+    "url" => "https://github.example.com/",
+    "verify_ssl" => false,
+    "args" => { "scope" => "user:email" }
+  }
+]
+```
+
+You will also need to disable Git SSL verification on the server hosting GitLab.
+
+```ruby
+omnibus_gitconfig['system'] = { "http" => ["sslVerify = false"] }
+```
+
+For installation from source:
+
+```yaml
+- { name: 'github',
+    app_id: 'YOUR_APP_ID',
+    app_secret: 'YOUR_APP_SECRET',
+    url: "https://github.example.com/",
+    verify_ssl: false,
+    args: { scope: 'user:email' } }
+```
+
+You will also need to disable Git SSL verification on the server hosting GitLab.
+
+```shell
+git config --global http.sslVerify false
+```
+
+For the changes to take effect, [reconfigure GitLab](../administration/restart_gitlab.md#omnibus-gitlab-reconfigure) if you installed
+via Omnibus, or [restart GitLab](../administration/restart_gitlab.md#installations-from-source) if you installed from source.
+
+## Troubleshooting
+
+### Error 500 when trying to sign in to GitLab via GitHub Enterprise
+
+Check the [`production.log`](../administration/logs.md#productionlog)
+on your GitLab server to obtain further details. If you are getting the error like
+`Faraday::ConnectionFailed (execution expired)` in the log, there may be a connectivity issue
+between your GitLab instance and GitHub Enterprise. To verify it, [start the rails console](../administration/operations/rails_console.md#starting-a-rails-console-session)
+and run the commands below replacing `<github_url>` with the URL of your GitHub Enterprise instance:
+
+```ruby
+uri = URI.parse("https://<github_url>") # replace `GitHub-URL` with the real one here
+http = Net::HTTP.new(uri.host, uri.port)
+http.use_ssl = true
+http.verify_mode = 1
+response = http.request(Net::HTTP::Get.new(uri.request_uri))
+```
+
+If you are getting a similar `execution expired` error, it confirms the theory about the
+network connectivity. In that case, make sure that the GitLab server is able to reach your
+GitHub enterprise instance.
+
+### Signing in using your GitHub account without a pre-existing GitLab account is not allowed
+
+If you're getting the message `Signing in using your GitHub account without a pre-existing
+GitLab account is not allowed. Create a GitLab account first, and then connect it to your
+GitHub account` when signing in, in GitLab:
+
+1. Go to your **Profile > Account**.
+1. Under the "Social sign-in" section, click **Connect** near the GitHub icon.
+
+After that, you should be able to sign in via GitHub successfully.

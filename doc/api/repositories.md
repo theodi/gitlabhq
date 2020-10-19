@@ -1,187 +1,157 @@
-# Repositories
+---
+stage: Create
+group: Source Code
+info: "To determine the technical writer assigned to the Stage/Group associated with this page, see https://about.gitlab.com/handbook/engineering/ux/technical-writing/#designated-technical-writers"
+type: reference, api
+---
 
-## List project repository tags
-
-Get a list of repository tags from a project, sorted by name in reverse alphabetical order.
-
-```
-GET /projects/:id/repository/tags
-```
-
-Parameters:
-
-- `id` (required) - The ID of a project
-
-```json
-[
-  {
-    "commit": {
-      "author_name": "John Smith",
-      "author_email": "john@example.com",
-      "authored_date": "2012-05-28T04:42:42-07:00",
-      "committed_date": "2012-05-28T04:42:42-07:00",
-      "committer_name": "Jack Smith",
-      "committer_email": "jack@example.com",
-      "id": "2695effb5807a22ff3d138d593fd856244e155e7",
-      "message": "Initial commit",
-      "parents_ids": [
-        "2a4b78934375d7f53875269ffd4f45fd83a84ebe"
-      ]
-    },
-    "name": "v1.0.0",
-    "message": null
-  }
-]
-```
-
-## Create a new tag
-
-Creates new tag in the repository that points to the supplied ref.
-
-```
-POST /projects/:id/repository/tags
-```
-
-Parameters:
-
-- `id` (required) - The ID of a project
-- `tag_name` (required) - The name of a tag
-- `ref` (required) - Create tag using commit SHA, another tag name, or branch name.
-- `message` (optional) - Creates annotated tag.
-
-```json
-{
-  "commit": {
-    "author_name": "John Smith",
-    "author_email": "john@example.com",
-    "authored_date": "2012-05-28T04:42:42-07:00",
-    "committed_date": "2012-05-28T04:42:42-07:00",
-    "committer_name": "Jack Smith",
-    "committer_email": "jack@example.com",
-    "id": "2695effb5807a22ff3d138d593fd856244e155e7",
-    "message": "Initial commit",
-    "parents_ids": [
-      "2a4b78934375d7f53875269ffd4f45fd83a84ebe"
-    ]
-  },
-  "name": "v1.0.0",
-  "message": null
-}
-```
-The message will be `nil` when creating a lightweight tag otherwise
-it will contain the annotation.
-
-It returns 200 if the operation succeed. In case of an error,
-405 with an explaining error message is returned.
+# Repositories API
 
 ## List repository tree
 
-Get a list of repository files and directories in a project.
+Get a list of repository files and directories in a project. This endpoint can
+be accessed without authentication if the repository is publicly accessible.
 
-```
+This command provides essentially the same functionality as the `git ls-tree` command. For more information, see the section _Tree Objects_ in the [Git internals documentation](https://git-scm.com/book/en/v2/Git-Internals-Git-Objects/#_tree_objects).
+
+```plaintext
 GET /projects/:id/repository/tree
 ```
 
 Parameters:
 
-- `id` (required) - The ID of a project
-- `path` (optional) - The path inside repository. Used to get contend of subdirectories
-- `ref_name` (optional) - The name of a repository branch or tag or if not given the default branch
+- `id` (required) - The ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user
+- `path` (optional) - The path inside repository. Used to get content of subdirectories
+- `ref` (optional) - The name of a repository branch or tag or if not given the default branch
+- `recursive` (optional) - Boolean value used to get a recursive tree (false by default)
+- `per_page` (optional) - Number of results to show per page. If not specified, defaults to `20`.
+  Read more on [pagination](README.md#pagination).
 
 ```json
 [
   {
-    "name": "assets",
+    "id": "a1e8f8d745cc87e3a9248358d9352bb7f9a0aeba",
+    "name": "html",
     "type": "tree",
-    "mode": "040000",
-    "id": "6229c43a7e16fcc7e95f923f8ddadb8281d9c6c6"
+    "path": "files/html",
+    "mode": "040000"
   },
   {
-    "name": "contexts",
+    "id": "4535904260b1082e14f867f7a24fd8c21495bde3",
+    "name": "images",
     "type": "tree",
-    "mode": "040000",
-    "id": "faf1cdf33feadc7973118ca42d35f1e62977e91f"
+    "path": "files/images",
+    "mode": "040000"
   },
   {
-    "name": "controllers",
+    "id": "31405c5ddef582c5a9b7a85230413ff90e2fe720",
+    "name": "js",
     "type": "tree",
-    "mode": "040000",
-    "id": "95633e8d258bf3dfba3a5268fb8440d263218d74"
+    "path": "files/js",
+    "mode": "040000"
   },
   {
-    "name": "Rakefile",
-    "type": "blob",
-    "mode": "100644",
-    "id": "35b2f05cbb4566b71b34554cf184a9d0bd9d46d6"
+    "id": "cc71111cfad871212dc99572599a568bfe1e7e00",
+    "name": "lfs",
+    "type": "tree",
+    "path": "files/lfs",
+    "mode": "040000"
   },
   {
-    "name": "VERSION",
-    "type": "blob",
-    "mode": "100644",
-    "id": "803e4a4f3727286c3093c63870c2b6524d30ec4f"
+    "id": "fd581c619bf59cfdfa9c8282377bb09c2f897520",
+    "name": "markdown",
+    "type": "tree",
+    "path": "files/markdown",
+    "mode": "040000"
   },
   {
-    "name": "config.ru",
+    "id": "23ea4d11a4bdd960ee5320c5cb65b5b3fdbc60db",
+    "name": "ruby",
+    "type": "tree",
+    "path": "files/ruby",
+    "mode": "040000"
+  },
+  {
+    "id": "7d70e02340bac451f281cecf0a980907974bd8be",
+    "name": "whitespace",
     "type": "blob",
-    "mode": "100644",
-    "id": "dfd2d862237323aa599be31b473d70a8a817943b"
+    "path": "files/whitespace",
+    "mode": "100644"
   }
 ]
 ```
 
-## Raw file content
+## Get a blob from repository
 
-Get the raw file contents for a file by commit SHA and path.
+Allows you to receive information about blob in repository like size and
+content. Note that blob content is Base64 encoded. This endpoint can be accessed
+without authentication if the repository is publicly accessible.
 
-```
+```plaintext
 GET /projects/:id/repository/blobs/:sha
 ```
 
 Parameters:
 
-- `id` (required) - The ID of a project
-- `sha` (required) - The commit or branch name
-- `filepath` (required) - The path the file
+- `id` (required) - The ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user
+- `sha` (required) - The blob SHA
 
 ## Raw blob content
 
-Get the raw file contents for a blob by blob SHA.
+Get the raw file contents for a blob by blob SHA. This endpoint can be accessed
+without authentication if the repository is publicly accessible.
 
-```
-GET /projects/:id/repository/raw_blobs/:sha
+```plaintext
+GET /projects/:id/repository/blobs/:sha/raw
 ```
 
 Parameters:
 
-- `id` (required) - The ID of a project
+- `id` (required) - The ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user
 - `sha` (required) - The blob SHA
 
 ## Get file archive
 
-Get an archive of the repository
+Get an archive of the repository. This endpoint can be accessed without
+authentication if the repository is publicly accessible.
 
+This endpoint has a rate limit threshold of 5 requests per minute.
+
+```plaintext
+GET /projects/:id/repository/archive[.format]
 ```
-GET /projects/:id/repository/archive
-```
+
+`format` is an optional suffix for the archive format. Default is
+`tar.gz`. Options are `tar.gz`, `tar.bz2`, `tbz`, `tbz2`, `tb2`,
+`bz2`, `tar`, and `zip`. For example, specifying `archive.zip`
+would send an archive in ZIP format.
 
 Parameters:
 
-- `id` (required) - The ID of a project
-- `sha` (optional) - The commit SHA to download defaults to the tip of the default branch
+- `id` (required) - The ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user
+- `sha` (optional) - The commit SHA to download. A tag, branch reference, or SHA can be used. This defaults to the tip of the default branch if not specified. For example:
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" "https://gitlab.com/api/v4/projects/<project_id>/repository/archive?sha=<commit_sha>"
+```
 
 ## Compare branches, tags or commits
 
-```
+This endpoint can be accessed without authentication if the repository is
+publicly accessible. Note that diffs could have an empty diff string if [diff limits](../development/diffs.md#diff-limits) are reached.
+
+```plaintext
 GET /projects/:id/repository/compare
 ```
 
 Parameters:
 
-- `id` (required) - The ID of a project
+- `id` (required) - The ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user
 - `from` (required) - the commit SHA or branch name
 - `to` (required) - the commit SHA or branch name
+- `straight` (optional) - comparison method, `true` for direct comparison between `from` and `to` (`from`..`to`), `false` to compare using merge base (`from`...`to`)'. Default is `false`.
 
-```
+```plaintext
 GET /projects/:id/repository/compare?from=master&to=feature
 ```
 
@@ -194,16 +164,16 @@ Response:
     "id": "12d65c8dd2b2676fa3ac47d955accc085a37a9c1",
     "short_id": "12d65c8dd2b",
     "title": "JS fix",
-    "author_name": "Dmitriy Zaporozhets",
-    "author_email": "dmitriy.zaporozhets@gmail.com",
+    "author_name": "Example User",
+    "author_email": "user@example.com",
     "created_at": "2014-02-27T10:27:00+02:00"
   },
   "commits": [{
     "id": "12d65c8dd2b2676fa3ac47d955accc085a37a9c1",
     "short_id": "12d65c8dd2b",
     "title": "JS fix",
-    "author_name": "Dmitriy Zaporozhets",
-    "author_email": "dmitriy.zaporozhets@gmail.com",
+    "author_name": "Example User",
+    "author_email": "user@example.com",
     "created_at": "2014-02-27T10:27:00+02:00"
   }],
   "diffs": [{
@@ -223,30 +193,72 @@ Response:
 
 ## Contributors
 
-Get repository contributors list
+Get repository contributors list. This endpoint can be accessed without
+authentication if the repository is publicly accessible.
 
-```
+```plaintext
 GET /projects/:id/repository/contributors
 ```
 
+CAUTION: **Deprecation:**
+The `additions` and `deletions` attributes are deprecated [as of GitLab 13.4](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/39653) because they [always return `0`](https://gitlab.com/gitlab-org/gitlab/-/issues/233119).
+
 Parameters:
 
-- `id` (required) - The ID of a project
+- `id` (required) - The ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user
+- `order_by` (optional) - Return contributors ordered by `name`, `email`, or `commits` (orders by commit date) fields. Default is `commits`
+- `sort` (optional) - Return contributors sorted in `asc` or `desc` order. Default is `asc`
 
 Response:
 
-```
+```json
 [{
-  "name": "Dmitriy Zaporozhets",
-  "email": "dmitriy.zaporozhets@gmail.com",
+  "name": "Example User",
+  "email": "example@example.com",
   "commits": 117,
-  "additions": 2097,
-  "deletions": 517
+  "additions": 0,
+  "deletions": 0
 }, {
-  "name": "Jacob Vosmaer",
-  "email": "contact@jacobvosmaer.nl",
+  "name": "Sample User",
+  "email": "sample@example.com",
   "commits": 33,
-  "additions": 338,
-  "deletions": 244
+  "additions": 0,
+  "deletions": 0
 }]
+```
+
+## Merge Base
+
+Get the common ancestor for 2 or more refs (commit SHAs, branch names or tags).
+
+```plaintext
+GET /projects/:id/repository/merge_base
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer/string | yes | The ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) |
+| `refs` | array | yes | The refs to find the common ancestor of, multiple refs can be passed |
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" "https://gitlab.example.com/api/v4/projects/5/repository/merge_base?refs[]=304d257dcb821665ab5110318fc58a007bd104ed&refs[]=0031876facac3f2b2702a0e53a26e89939a42209"
+```
+
+Example response:
+
+```json
+{
+  "id": "1a0b36b3cdad1d2ee32457c102a8c0b7056fa863",
+  "short_id": "1a0b36b3",
+  "title": "Initial commit",
+  "created_at": "2014-02-27T08:03:18.000Z",
+  "parent_ids": [],
+  "message": "Initial commit\n",
+  "author_name": "Example User",
+  "author_email": "user@example.com",
+  "authored_date": "2014-02-27T08:03:18.000Z",
+  "committer_name": "Example User",
+  "committer_email": "user@example.com",
+  "committed_date": "2014-02-27T08:03:18.000Z"
+}
 ```

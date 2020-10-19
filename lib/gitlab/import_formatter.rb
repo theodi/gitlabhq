@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Gitlab
   class ImportFormatter
     def comment(author, date, body)
@@ -8,8 +10,14 @@ module Gitlab
       "\n\n\n**Imported comments:**\n"
     end
 
-    def author_line(author, body)
-      "*Created by: #{author}*\n\n#{body}"
+    def author_line(author)
+      author ||= "Anonymous"
+      "*Created by: #{author}*\n\n"
+    end
+
+    def assignee_line(assignee)
+      assignee ||= "Anonymous"
+      "*Assigned to: #{assignee}*\n\n"
     end
   end
 end

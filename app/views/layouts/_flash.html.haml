@@ -1,8 +1,13 @@
-.flash-container
-  - if alert
-    .flash-alert
-      = alert
-
-  - elsif notice
-    .flash-notice
-      = notice
+-# We currently only support `alert`, `notice`, `success`, 'toast'
+- icons = {'alert' => 'error', 'notice' => 'information-o', 'success' => 'check-circle'};
+.flash-container.flash-container-page.sticky
+  - flash.each do |key, value|
+    - if key == 'toast' && value
+      .js-toast-message{ data: { message: value } }
+    - elsif value
+      %div{ class: "flash-#{key} mb-2" }
+        = sprite_icon(icons[key], css_class: 'align-middle mr-1') unless icons[key].nil?
+        %span= value
+        - if %w(alert notice success).include?(key)
+          %div{ class: "close-icon-wrapper js-close-icon" }
+            = sprite_icon('close', css_class: 'close-icon gl-vertical-align-baseline!')

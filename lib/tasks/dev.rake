@@ -1,15 +1,20 @@
 task dev: ["dev:setup"]
 
 namespace :dev do
-  desc "GITLAB | Setup developer environment (db, fixtures)"
-  task :setup => :environment do
+  desc "GitLab | Dev | Setup developer environment (db, fixtures)"
+  task setup: :environment do
     ENV['force'] = 'yes'
     Rake::Task["gitlab:setup"].invoke
+
+    # Make sure DB statistics are up to date.
+    ActiveRecord::Base.connection.execute('ANALYZE')
+
     Rake::Task["gitlab:shell:setup"].invoke
   end
 
-  desc 'GITLAB | Start/restart foreman and watch for changes'
-  task :foreman => :environment do
-    sh 'rerun --dir app,config,lib -- foreman start'
+  desc "GitLab | Dev | Eager load application"
+  task load: :environment do
+    Rails.configuration.eager_load = true
+    Rails.application.eager_load!
   end
 end

@@ -1,0 +1,25 @@
+.tree-ref-container
+  .tree-ref-holder
+    = render 'shared/ref_switcher', destination: 'tree', path: @path, show_create: true
+
+  #js-repo-breadcrumb{ data: breadcrumb_data_attributes }
+
+.tree-controls
+  .d-block.d-sm-flex.flex-wrap.align-items-start.gl-children-ml-sm-3<
+    = render_if_exists 'projects/tree/lock_link'
+    #js-tree-history-link.d-inline-block{ data: { history_link: project_commits_path(@project, @ref) } }
+
+    = render 'projects/find_file_link'
+    = render 'shared/web_ide_button', blob: nil
+
+    - if show_xcode_link?(@project)
+      .project-action-button.project-xcode.inline<
+        = render "projects/buttons/xcode_link"
+
+    = render 'projects/buttons/download', project: @project, ref: @ref
+
+    .project-clone-holder.d-none.d-md-inline-block>
+      = render "projects/buttons/clone", dropdown_class: 'dropdown-menu-right'
+
+  .project-clone-holder.d-block.d-md-none.mt-sm-2.mt-md-0.ml-sm-2>
+    = render "shared/mobile_clone_panel"

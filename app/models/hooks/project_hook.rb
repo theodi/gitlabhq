@@ -1,27 +1,32 @@
-# == Schema Information
-#
-# Table name: web_hooks
-#
-#  id                    :integer          not null, primary key
-#  url                   :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  type                  :string(255)      default("ProjectHook")
-#  service_id            :integer
-#  push_events           :boolean          default(TRUE), not null
-#  issues_events         :boolean          default(FALSE), not null
-#  merge_requests_events :boolean          default(FALSE), not null
-#  tag_push_events       :boolean          default(FALSE)
-#  note_events           :boolean          default(FALSE), not null
-#
+# frozen_string_literal: true
 
 class ProjectHook < WebHook
-  belongs_to :project
+  include TriggerableHooks
+  include Presentable
+  include Limitable
 
-  scope :push_hooks, -> { where(push_events: true) }
-  scope :tag_push_hooks, -> { where(tag_push_events: true) }
-  scope :issue_hooks, -> { where(issues_events: true) }
-  scope :note_hooks, -> { where(note_events: true) }
-  scope :merge_request_hooks, -> { where(merge_requests_events: true) }
+  self.limit_scope = :project
+
+  triggerable_hooks [
+    :push_hooks,
+    :tag_push_hooks,
+    :issue_hooks,
+    :confidential_issue_hooks,
+    :note_hooks,
+    :confidential_note_hooks,
+    :merge_request_hooks,
+    :job_hooks,
+    :pipeline_hooks,
+    :wiki_page_hooks,
+    :deployment_hooks
+  ]
+
+  belongs_to :project
+  validates :project, presence: true
+
+  def pluralized_name
+    _('Webhooks')
+  end
 end
+
+ProjectHook.prepend_if_ee('EE::ProjectHook')

@@ -1,35 +1,49 @@
 !!! 5
-%html{ lang: "en"}
+%html.devise-layout-html{ class: system_message_class }
   = render "layouts/head"
-  %body.ui_mars.login-page.application
-    = render "layouts/header/empty"
-    = render "layouts/broadcast"
-    .container.navless-container
-      .content
-        = render "layouts/flash"
-        .row.prepend-top-20
-          .col-sm-5.pull-right
-            = yield
-          .col-sm-7.brand-holder.pull-left
-            %h1
-              = brand_title
-            - if brand_item
+  %body.ui-indigo.login-page.application.navless{ class: "#{client_class_list}", data: { page: body_data_page, qa_selector: 'login_page' } }
+    = header_message
+    = render "layouts/init_client_detection_flags"
+    .page-wrap
+      = render "layouts/header/empty"
+      .login-page-broadcast
+        = render "layouts/broadcast"
+      .container.navless-container
+        .content
+          = render "layouts/flash"
+          .row.mt-3
+            .col-sm-12
+              %h1.mb-3.font-weight-normal
+                = current_appearance&.title.presence || "GitLab"
+          .row.mb-3
+            .col-sm-7.order-12.order-sm-1.brand-holder
               = brand_image
-              = brand_text
-            - else
-              %h3 Open source software to collaborate on code
+              - if current_appearance&.description?
+                = brand_text
+              - else
+                %h3.mt-sm-0
+                  = _('A complete DevOps platform')
 
-              %p
-                Manage git repositories with fine grained access controls that keep your code secure.
-                Perform code reviews and enhance collaboration with merge requests.
-                Each project can also have an issue tracker and a wiki.
+                %p
+                  = _('GitLab is a single application for the entire software development lifecycle. From project planning and source code management to CI/CD, monitoring, and security.')
 
-            - if extra_sign_in_text.present?
-              = markdown(extra_sign_in_text)
+                %p
+                  = _('This is a self-managed instance of GitLab.')
 
-    %hr
-    .container
-      .footer-links
-        = link_to "Explore", explore_root_path
-        = link_to "Documentation", "http://doc.gitlab.com/"
-        = link_to "About GitLab", "https://about.gitlab.com/"
+              - if Gitlab::CurrentSettings.sign_in_text.present?
+                = markdown_field(Gitlab::CurrentSettings.current_application_settings, :sign_in_text)
+
+              = render_if_exists 'layouts/devise_help_text'
+
+            .col-sm-5.order-1.order-sm-12.new-session-forms-container
+              = yield
+
+      %hr.footer-fixed
+      .container.footer-container
+        .footer-links
+          - if !public_visibility_restricted?
+            = link_to _("Explore"), explore_root_path
+            = link_to _("Help"), help_path
+          = link_to _("About GitLab"), "https://about.gitlab.com/"
+
+      = footer_message

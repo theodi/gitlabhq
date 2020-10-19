@@ -1,47 +1,1000 @@
-@media (max-width: $screen-sm-max) {
-  .issuable-affix {
-    margin-top: 20px;
+.issuable-warning-icon {
+  background-color: $orange-50;
+  border-radius: $border-radius-default;
+  width: $issuable-warning-size;
+  height: $issuable-warning-size;
+  text-align: center;
+  margin-right: $issuable-warning-icon-margin;
+  line-height: $gl-line-height-24;
+
+  .icon {
+    fill: $orange-600;
+    vertical-align: text-bottom;
   }
 }
 
-@media (max-width: $screen-md-max) {
-  .issuable-affix {
-    position: static;
+.limit-container-width {
+  .detail-page-header,
+  .page-content-header,
+  .commit-box,
+  .info-well,
+  .commit-ci-menu,
+  .files-changed-inner,
+  .limited-header-width,
+  .limited-width-notes {
+    @include fixed-width-container;
+  }
+
+  .issuable-details {
+    .detail-page-description,
+    .mr-source-target,
+    .mr-state-widget,
+    .merge-manually {
+      @include fixed-width-container;
+    }
+  }
+
+  .merge-request-details {
+    .emoji-list-container {
+      @include fixed-width-container;
+    }
   }
 }
 
-@media (min-width: $screen-md-max) {
-  .issuable-affix {
-    &.affix-top {
-      position: static;
+.issuable-details {
+  section {
+    .issuable-discussion {
+      margin-right: 1px;
+    }
+  }
+
+  .title-container {
+    display: flex;
+    align-items: flex-start;
+  }
+
+  .title {
+    padding: 0;
+    margin-bottom: $gl-padding;
+    border-bottom: 0;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    min-width: 0;
+    width: 100%;
+    text-align: initial;
+  }
+
+  .btn-edit {
+    margin-left: auto;
+  }
+
+  .emoji-block {
+    padding: $gl-padding-4 0;
+
+    @include media-breakpoint-down(md) {
+      padding: $gl-padding-8 0;
+    }
+  }
+}
+
+.issuable-filter-count {
+  span {
+    display: block;
+    margin-bottom: -16px;
+    padding: 13px 0;
+  }
+}
+
+.issuable-show-labels {
+  .gl-label {
+    margin-bottom: 5px;
+    margin-right: 5px;
+  }
+
+  a {
+    display: inline-block;
+
+    .color-label {
+      padding: 4px $grid-size;
+      border-radius: $label-border-radius;
+      margin-right: 4px;
+      margin-bottom: 4px;
     }
 
-    &.affix {
-      position: fixed;
-      top: 70px;
-      margin-right: 35px;
+    &:hover .color-label {
+      text-decoration: underline;
+    }
+  }
+
+  &.has-labels {
+    // this font size is a fix to
+    // prevent unintended spacing between labels
+    // which shows up when rendering markup has white-space
+    // characters present.
+    // see: https://css-tricks.com/fighting-the-space-between-inline-block-elements/#article-header-id-3
+    font-size: 0;
+    margin-bottom: -5px;
+  }
+}
+
+.assignee,
+.reviewer {
+  .merge-icon {
+    color: $orange-400;
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    text-shadow: -1px -1px 2px $white, 1px -1px 2px $white, -1px 1px 2px $white, 1px 1px 2px $white;
+  }
+}
+
+.right-sidebar {
+  position: fixed;
+  top: $header-height;
+  bottom: 0;
+  right: 0;
+  transition: width $sidebar-transition-duration;
+  background: $gray-light;
+  z-index: 200;
+  overflow: hidden;
+
+  @include media-breakpoint-down(sm) {
+    z-index: 251;
+  }
+
+  a:not(.btn) {
+    color: inherit;
+
+    &:hover {
+      color: $blue-800;
+
+      .avatar {
+        border-color: rgba($gray-normal, 0.2);
+      }
+    }
+  }
+
+  .gl-label .gl-label-link:hover {
+    text-decoration: none;
+    color: inherit;
+
+    .gl-label-text:last-of-type {
+      text-decoration: underline;
+    }
+  }
+
+  .btn-link {
+    color: inherit;
+  }
+
+  // TODO remove this class once we can generate a correct hover utility from `gitlab/ui`,
+  // see here: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/39286#note_396767000
+  .btn-link-hover:hover {
+    * {
+      @include gl-text-blue-800;
+    }
+  }
+
+  .issuable-header-text {
+    margin-top: 7px;
+  }
+
+  .gutter-toggle {
+    margin-left: 20px;
+    padding-left: 10px;
+
+    &:hover {
+      color: $gl-text-color;
+    }
+
+    &:hover,
+    &:focus {
+      text-decoration: none;
+    }
+  }
+
+  .block {
+    @include clearfix;
+    padding: $gl-padding 0;
+    border-bottom: 1px solid $border-gray-normal;
+    // This prevents the mess when resizing the sidebar
+    // of elements repositioning themselves..
+    width: $gutter-inner-width;
+    // --
+
+    &.issuable-sidebar-header {
+      padding-top: 0;
+      padding-bottom: 10px;
+    }
+
+    &:last-child {
+      border: 0;
+    }
+
+    .select2-container span {
+      margin-top: 0;
+    }
+
+    &.assignee {
+      .author-link {
+        display: block;
+        position: relative;
+
+        &:hover {
+          .author {
+            text-decoration: underline;
+          }
+        }
+      }
+    }
+  }
+
+  .block-first {
+    padding-top: 0;
+  }
+
+  .title {
+    color: $gl-text-color;
+    margin-bottom: $gl-padding-4;
+    line-height: $gl-line-height-20;
+
+    .avatar {
+      margin-left: 0;
+    }
+  }
+
+  .cross-project-reference,
+  .sidebar-mr-source-branch {
+    color: inherit;
+
+    span {
+      white-space: nowrap;
+      width: 85%;
+      overflow: hidden;
+      position: relative;
+      display: inline-block;
+      text-overflow: ellipsis;
+    }
+
+    cite {
+      font-style: normal;
+    }
+
+    button {
+      float: right;
+      padding: 1px 5px;
+      background-color: $gray-light;
+    }
+  }
+
+  .selectbox {
+    display: none;
+
+    &.show {
+      display: block;
+    }
+  }
+
+  .btn-clipboard:hover {
+    color: $gl-text-color;
+  }
+
+  .issuable-sidebar {
+    height: 100%;
+    overflow-y: scroll;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  &.affix-top .issuable-sidebar {
+    height: 100%;
+  }
+
+  &.right-sidebar-expanded {
+    width: $gutter-width;
+
+    .value {
+      line-height: 1;
+
+      .assign-yourself {
+        margin-top: 10px;
+        display: block;
+      }
+    }
+
+    .issuable-sidebar {
+      padding: 0 20px;
+    }
+
+    .issuable-sidebar-header {
+      padding-top: 10px;
+    }
+
+    &:not(.issue-boards-sidebar):not([data-signed-in]):not([data-always-show-toggle]) {
+      .issuable-sidebar-header {
+        display: none;
+      }
+    }
+
+    .assign-yourself .btn-link {
+      padding-left: 0;
+    }
+
+    .light {
+      font-weight: $gl-font-weight-normal;
+    }
+
+    .no-value,
+    .btn-default-hover-link,
+    .btn-secondary-hover-link {
+      color: $gl-text-color-secondary;
+    }
+
+    .btn-secondary-hover-link:hover {
+      color: $blue-600;
+    }
+
+    .sidebar-collapsed-icon {
+      display: none;
+    }
+
+    .gutter-toggle {
+      margin-top: 7px;
+      border-left: 1px solid $border-gray-normal;
+      text-align: center;
+    }
+
+    .title .gutter-toggle {
+      margin-top: 0;
+    }
+
+    .assignee .user-list .avatar {
+      margin: 0;
+    }
+
+    .hide-expanded {
+      display: none;
+    }
+  }
+
+  &.right-sidebar-collapsed {
+    /* Extra small devices (phones, less than 768px) */
+    display: none;
+    /* Small devices (tablets, 768px and up) */
+    @include media-breakpoint-up(sm) {
+      display: block;
+    }
+
+    width: $gutter-collapsed-width;
+    padding: 0;
+
+    .block {
+      width: $gutter-collapsed-width - 2px;
+      padding: 0;
+      border-bottom: 0;
+      overflow: hidden;
+
+      &.with-sub-blocks .sub-block:hover,
+      &:not(.with-sub-blocks):hover {
+        background-color: $gray-100;
+      }
+
+      &.issuable-sidebar-header {
+        padding-top: 0;
+      }
+    }
+
+    .participants {
+      border-bottom: 1px solid $border-gray-normal;
+    }
+
+    .hide-collapsed {
+      display: none;
+    }
+
+    .gutter-toggle {
+      width: 100%;
+      height: $sidebar-toggle-height;
+      margin-left: 0;
+      padding-left: 0;
+      border-bottom: 1px solid $border-white-normal;
+    }
+
+    a.gutter-toggle {
+      display: flex;
+      justify-content: center;
+      flex-direction: column;
+      text-align: center;
+    }
+
+    .sidebar-collapsed-icon {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      height: $sidebar-toggle-height;
+      text-align: center;
+      color: $gl-text-color-secondary;
+
+      svg {
+        fill: $gl-text-color-secondary;
+      }
+
+      &:hover:not(.disabled),
+      &:hover .todo-undone {
+        color: $gl-text-color;
+
+        svg {
+          fill: $gl-text-color;
+        }
+      }
+
+      .sidebar-avatar-counter {
+        padding-top: 2px;
+      }
+
+      .todo-undone {
+        color: $blue-600;
+        fill: $blue-600;
+      }
+
+      .author {
+        display: none;
+      }
+
+      .avatar-counter:hover {
+        color: $gl-text-color-secondary;
+        border-color: $gl-text-color-secondary;
+      }
+
+      .btn-clipboard {
+        /*
+          This change should be temporary, because the DOM currently gets
+          generated from a ruby definition in `app/helpers/button_helper.rb`.
+          As soon as the `copy to clipboard` button will be transfered to
+          Vue this should be adjusted as well.
+        */
+        flex: 1;
+        align-self: stretch;
+        padding: 0;
+
+        border: 0;
+        background: transparent;
+        color: $gl-text-color-secondary;
+
+        &:hover {
+          color: $gl-text-color;
+        }
+      }
+
+      &.multiple-users {
+        display: flex;
+        justify-content: center;
+      }
+    }
+
+    .sidebar-avatar-counter {
+      width: 24px;
+      height: 24px;
+      border-radius: 12px;
+    }
+
+    .sidebar-collapsed-user {
+      padding-bottom: 0;
+
+      .author-link {
+        padding-left: 0;
+
+        .avatar {
+          position: static;
+          margin: 0;
+        }
+      }
+    }
+
+    .issuable-header-btn {
+      display: none;
+    }
+
+    .merge-icon {
+      font-size: 10px;
+    }
+
+    .multiple-users {
+      position: relative;
+      height: 24px;
+      margin-bottom: 17px;
+      margin-top: 4px;
+      padding-bottom: 4px;
+
+      .btn-link {
+        padding: 0;
+        border: 0;
+
+        .avatar {
+          margin: 0;
+        }
+      }
+
+      .btn-link:first-child {
+        position: absolute;
+        left: 10px;
+        z-index: 1;
+      }
+
+      .btn-link:last-child {
+        position: absolute;
+        right: 10px;
+
+        &:hover {
+          text-decoration: none;
+        }
+      }
+    }
+
+    .milestone-title span,
+    .collapse-truncated-title {
+      @include str-truncated(100%);
+      display: block;
+      margin: 0 4px;
+    }
+  }
+
+  .dropdown-menu-toggle {
+    width: 100%;
+    padding-top: 6px;
+  }
+
+  .dropdown-menu {
+    width: 100%;
+
+    /*
+     * Overwrite hover style for dropdown items, so that they are not blue
+     * This should be removed during dev of https://gitlab.com/gitlab-org/gitlab-foss/issues/44040
+     */
+    li a {
+      &:hover,
+      &:active,
+      &:focus,
+      &.is-focused {
+        @include dropdown-item-hover;
+      }
+    }
+
+  }
+}
+
+.with-performance-bar .right-sidebar {
+  top: $header-height + $performance-bar-height;
+}
+
+.sidebar-move-issue-confirmation-button {
+  width: 100%;
+
+  &.is-loading {
+    .sidebar-move-issue-confirmation-loading-icon {
+      display: inline-block;
     }
   }
 }
 
-.issuable-context-title {
+.sidebar-move-issue-confirmation-loading-icon {
+  display: none;
+}
+
+.detail-page-description {
+  padding: 16px 0;
+
+  small {
+    color: $gray-500;
+  }
+}
+
+.edited-text {
+  color: $gray-500;
+  display: block;
+  margin: 16px 0 0;
+  font-size: 85%;
+
+  .author-link {
+    color: $gray-500;
+  }
+}
+
+.participants-list {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.user-list {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.participants-author {
+  display: inline-block;
+  padding: 0 $gl-padding-8 $gl-padding-8 0;
+
+  &:nth-of-type(7n) {
+    padding-right: 0;
+  }
+
+  .author-link {
+    display: block;
+  }
+
+  .avatar.avatar-inline {
+    margin: 0;
+  }
+}
+
+.user-item {
+  display: inline-block;
+  padding: 5px;
+  flex-basis: 20%;
+
+  .user-link {
+    display: inline-block;
+  }
+}
+
+.participants-more,
+.user-list-more {
+  margin-left: 5px;
+
+  a,
+  .btn-link {
+    color: $gl-text-color-secondary;
+  }
+
+  .btn-link {
+    padding: 0;
+  }
+
+  .btn-link:hover {
+    @extend a:hover;
+    text-decoration: none;
+  }
+
+  .btn-link:focus {
+    text-decoration: none;
+  }
+}
+
+.issuable-form-padding-top {
+  @include media-breakpoint-up(sm) {
+    padding-top: 7px;
+  }
+}
+
+.issuable-status-box {
+  align-self: stretch;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 0;
+  padding: 0 $gl-padding-8;
+
+  @include media-breakpoint-up(sm) {
+    display: inline-block;
+    height: auto;
+    align-self: center;
+  }
+}
+
+.issuable-gutter-toggle {
+  @include media-breakpoint-down(sm) {
+    margin-left: $btn-side-margin;
+  }
+}
+
+.issuable-meta {
+  flex: 1;
+  display: inline-block;
   font-size: 14px;
-  line-height: 1.4;
-  margin-bottom: 5px;
+  align-self: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  .user-status-emoji {
+    margin-left: $gl-padding-4;
+    margin-right: 0;
+  }
+}
+
+.js-issuable-selector-wrap {
+  .js-issuable-selector {
+    width: 100%;
+  }
+
+  @include media-breakpoint-down(sm) {
+    margin-bottom: $gl-padding;
+  }
+}
+
+.issuable-list {
+  li {
+    .issue-box {
+      display: flex;
+    }
+
+    .issuable-info-container {
+      flex: 1;
+      display: flex;
+
+      .issuable-main-info {
+        flex: 1 auto;
+        margin-right: 10px;
+        min-width: 0;
+
+        .issue-weight-icon,
+        .issue-estimate-icon {
+          vertical-align: sub;
+        }
+      }
+
+      .issuable-meta {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        flex: 1 0 auto;
+
+        .controls {
+          margin-bottom: 2px;
+          line-height: 20px;
+          padding: 0;
+        }
+
+        .issue-updated-at {
+          line-height: 20px;
+        }
+      }
+
+      @include media-breakpoint-down(xs) {
+        .issuable-meta {
+          .controls li {
+            margin-right: 0;
+          }
+        }
+      }
+    }
+
+    .issue-check {
+      padding-right: $gl-padding;
+      margin-bottom: 10px;
+      min-width: 15px;
+
+      .selected-issuable {
+        vertical-align: text-top;
+      }
+    }
+
+    .issuable-milestone,
+    .issuable-info,
+    .task-status,
+    .issuable-updated-at {
+      font-weight: $gl-font-weight-normal;
+      color: $gl-text-color-secondary;
+
+      a {
+        color: $gl-text-color;
+      }
+
+      .gl-label-link {
+        color: inherit;
+
+        &:hover {
+          text-decoration: none;
+
+          .gl-label-text:last-of-type {
+            text-decoration: underline;
+          }
+        }
+      }
+
+      .milestone {
+        color: $gray-700;
+      }
+    }
+
+    @media(max-width: map-get($grid-breakpoints, lg)-1) {
+      .task-status,
+      .issuable-due-date,
+      .issuable-weight,
+      .project-ref-path {
+        display: none;
+      }
+    }
+  }
+}
+
+.issuable-list li,
+.issuable-info-container .controls {
+  .avatar-counter {
+    display: inline-block;
+    vertical-align: middle;
+    min-width: 16px;
+    line-height: 14px;
+    height: 16px;
+    padding-left: 2px;
+    padding-right: 2px;
+  }
+}
+
+.time_tracker {
+  padding-bottom: 0;
+  border-bottom: 0;
+
+
+  .sidebar-collapsed-icon {
+    > .stopwatch-svg {
+      display: inline-block;
+    }
+
+    svg {
+      width: 16px;
+      height: 16px;
+      fill: $gl-text-color-secondary;
+    }
+
+    &:hover svg {
+      fill: $gl-text-color;
+    }
+  }
+
+  .help-button,
+  .close-help-button {
+    cursor: pointer;
+  }
+
+  .compare-meter {
+    &.over_estimate {
+      .time-remaining,
+      .compare-value.spent {
+        color: $red-500;
+      }
+    }
+  }
+
+  .compare-display-container {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 5px;
+
+    .compare-display {
+      font-size: 13px;
+      color: $compare-display-color;
+
+      .compare-value {
+        color: $gl-text-color;
+      }
+    }
+  }
+
+  .time-tracking-help-state {
+    background: $white;
+    margin: 16px -20px -20px;
+    padding: 16px 20px;
+    border-top: 1px solid $border-gray-light;
+    border-bottom: 1px solid $border-gray-light;
+
+    a:hover {
+      color: $btn-white-active;
+    }
+  }
+
+  .help-state-toggle-enter-active {
+    transition: all 0.8s ease;
+  }
+
+  .help-state-toggle-leave-active {
+    transition: all 0.5s ease;
+  }
+
+  .help-state-toggle-enter,
+  .help-state-toggle-leave-active {
+    opacity: 0;
+  }
+}
+
+.issuable-todo-btn {
+  .gl-spinner {
+    display: none;
+  }
+
+  &.is-loading {
+    .gl-spinner {
+      display: inline-block;
+    }
+
+    &.sidebar-collapsed-icon {
+      .issuable-todo-inner {
+        display: none;
+      }
+    }
+  }
+}
+
+.issuable-close-button,
+.issuable-close-toggle {
+  @include transition(border-color, color);
+}
+
+.issuable-close-dropdown {
+  .dropdown-menu {
+    min-width: 270px;
+    left: auto;
+    right: 0;
+  }
+
+  .description {
+    .text {
+      margin: 0;
+    }
+  }
+
+  .dropdown-toggle > .icon {
+    margin: 0 3px;
+  }
+}
+
+.right-sidebar-collapsed {
+  .sidebar-grouped-item {
+    .sidebar-collapsed-icon {
+      margin-bottom: 0;
+    }
+
+    .sidebar-collapsed-divider {
+      line-height: 5px;
+      font-size: 12px;
+      color: $gray-500;
+
+      + .sidebar-collapsed-icon {
+        padding-top: 0;
+      }
+    }
+  }
+}
+
+.issuable-suggestions svg {
+  vertical-align: sub;
+}
+
+.suggestion-confidential {
+  color: $orange-500;
+}
+
+.suggestion-state-open {
+  color: $green-500;
+}
+
+.suggestion-state-closed {
+  color: $blue-500;
+}
+
+.suggestion-help-hover {
+  cursor: help;
+}
+
+.suggestion-footer {
+  font-size: 12px;
+  line-height: 15px;
 
   .avatar {
-    margin-left: 0;
-  }
-
-  label {
-    color: #666;
-    font-weight: normal;
-    margin-right: 4px;
+    margin-top: -3px;
+    border: 0;
   }
 }
 
-.issuable-affix .context {
-  font-size: 13px;
-
-  .btn { font-size: 13px; }
+@include media-breakpoint-down(sm) {
+  // Overriding the following rule with the negative margin
+  // https://gitlab.com/gitlab-org/gitlab/-/blob/146c43c931c3743a140529307aea616e4aa9ff21/app/assets/stylesheets/framework/sidebar.scss#L1-5
+  .container-fluid {
+    .issuable-list,
+    .issues-filters,
+    .epics-filters {
+      margin: 0 (-$gl-padding);
+    }
+  }
 }

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # == Referable concern
 #
 # Contains functionality related to making a model referable in Markdown, such
@@ -7,7 +9,7 @@ module Referable
 
   # Returns the String necessary to reference this object in Markdown
   #
-  # from_project - Refering Project object
+  # from - Referring parent object
   #
   # This should be overridden by the including class.
   #
@@ -17,11 +19,36 @@ module Referable
   #   Issue.last.to_reference(other_project) # => "cross-project#1"
   #
   # Returns a String
-  def to_reference(_from_project = nil)
+  def to_reference(_from = nil, full:)
     ''
   end
 
-  module ClassMethods
+  # If this referable object can serve as the base for the
+  # reference of child objects (e.g. projects are the base of
+  # issues), but it is formatted differently, then you may wish
+  # to override this method.
+  def to_reference_base(from = nil, full:)
+    to_reference(from, full: full)
+  end
+
+  def reference_link_text(from = nil)
+    to_reference(from)
+  end
+
+  included do
+    alias_method :non_referable_inspect, :inspect
+    alias_method :inspect, :referable_inspect
+  end
+
+  def referable_inspect
+    if respond_to?(:id)
+      "#<#{self.class.name} id:#{id} #{to_reference(full: true)}>"
+    else
+      "#<#{self.class.name} #{to_reference(full: true)}>"
+    end
+  end
+
+  class_methods do
     # The character that prefixes the actual reference identifier
     #
     # This should be overridden by the including class.
@@ -44,18 +71,29 @@ module Referable
     def reference_pattern
       raise NotImplementedError, "#{self} does not implement #{__method__}"
     end
-  end
 
-  private
+    def reference_valid?(reference)
+      true
+    end
 
-  # Check if a reference is being done cross-project
-  #
-  # from_project - Refering Project object
-  def cross_project_reference?(from_project)
-    if self.is_a?(Project)
-      self != from_project
-    else
-      from_project && self.project && self.project != from_project
+    def link_reference_pattern(route, pattern)
+      %r{
+        (?<url>
+          #{Regexp.escape(Gitlab.config.gitlab.url)}
+          \/#{Project.reference_pattern}
+          (?:\/\-)?
+          \/#{route.is_a?(Regexp) ? route : Regexp.escape(route)}
+          \/#{pattern}
+          (?<path>
+            (\/[a-z0-9_=-]+)*\/*
+          )?
+          (?<query>
+            \?[a-z0-9_=-]+
+            (&[a-z0-9_=-]+)*
+          )?
+          (?<anchor>\#[a-z0-9_-]+)?
+        )
+      }x
     end
   end
 end

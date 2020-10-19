@@ -1,93 +1,43 @@
-class Projects::SnippetsController < Projects::ApplicationController
-  before_action :module_enabled
-  before_action :snippet, only: [:show, :edit, :destroy, :update, :raw]
+# frozen_string_literal: true
 
-  # Allow read any snippet
-  before_action :authorize_read_project_snippet!
+class Projects::SnippetsController < Projects::Snippets::ApplicationController
+  include SnippetsActions
+  include ToggleAwardEmoji
+  include SpammableActions
 
-  # Allow write(create) snippet
-  before_action :authorize_write_project_snippet!, only: [:new, :create]
+  before_action :check_snippets_available!
 
-  # Allow modify snippet
-  before_action :authorize_modify_project_snippet!, only: [:edit, :update]
+  before_action :snippet, only: [:show, :edit, :raw, :toggle_award_emoji, :mark_as_spam]
 
-  # Allow destroy snippet
-  before_action :authorize_admin_project_snippet!, only: [:destroy]
-
-  respond_to :html
+  before_action :authorize_create_snippet!, only: :new
+  before_action :authorize_read_snippet!, except: [:new, :index]
+  before_action :authorize_update_snippet!, only: :edit
 
   def index
-    @snippets = SnippetsFinder.new.execute(current_user, {
-      filter: :by_project,
-      project: @project
-    })
+    @snippet_counts = ::Snippets::CountService
+      .new(current_user, project: @project)
+      .execute
+
+    @snippets = SnippetsFinder.new(current_user, project: @project, scope: params[:scope], sort: sort_param)
+      .execute
+      .page(params[:page])
+      .inc_author
+
+    return if redirect_out_of_range(@snippets)
+
+    @noteable_meta_data = noteable_meta_data(@snippets, 'Snippet')
   end
 
   def new
-    @snippet = @project.snippets.build
-  end
-
-  def create
-    @snippet = CreateSnippetService.new(@project, current_user,
-                                        snippet_params).execute
-    respond_with(@snippet,
-                 location: namespace_project_snippet_path(@project.namespace,
-                                                          @project, @snippet))
-  end
-
-  def edit
-  end
-
-  def update
-    UpdateSnippetService.new(project, current_user, @snippet,
-                             snippet_params).execute
-    respond_with(@snippet,
-                 location: namespace_project_snippet_path(@project.namespace,
-                                                          @project, @snippet))
-  end
-
-  def show
-    @note = @project.notes.new(noteable: @snippet)
-    @notes = @snippet.notes.fresh
-    @noteable = @snippet
-  end
-
-  def destroy
-    return access_denied! unless can?(current_user, :admin_project_snippet, @snippet)
-
-    @snippet.destroy
-
-    redirect_to namespace_project_snippets_path(@project.namespace, @project)
-  end
-
-  def raw
-    send_data(
-      @snippet.content,
-      type: 'text/plain; charset=utf-8',
-      disposition: 'inline',
-      filename: @snippet.sanitized_file_name
-    )
+    @snippet = @noteable = @project.snippets.build
   end
 
   protected
 
-  def snippet
-    @snippet ||= @project.snippets.find(params[:id])
-  end
+  alias_method :awardable, :snippet
+  alias_method :spammable, :snippet
 
-  def authorize_modify_project_snippet!
-    return render_404 unless can?(current_user, :modify_project_snippet, @snippet)
-  end
-
-  def authorize_admin_project_snippet!
-    return render_404 unless can?(current_user, :admin_project_snippet, @snippet)
-  end
-
-  def module_enabled
-    return render_404 unless @project.snippets_enabled
-  end
-
-  def snippet_params
-    params.require(:project_snippet).permit(:title, :content, :file_name, :private, :visibility_level)
+  def spammable_path
+    project_snippet_path(@project, @snippet)
   end
 end

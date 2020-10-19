@@ -1,50 +1,75 @@
-- if current_user && can?(current_user, :download_code, @project)
-  = render 'shared/no_ssh'
-  = render 'shared/no_password'
+- @content_class = "limit-container-width" unless fluid_layout
+- default_branch_name = @project.default_branch || "master"
+- breadcrumb_title _("Details")
+- page_title _("Details")
+
+= render partial: 'flash_messages', locals: { project: @project }
 
 = render "home_panel"
 
-.center.well
-  %h3
-    The repository for this project is empty
-  %h4
-    You can
-    = link_to namespace_project_new_blob_path(@project.namespace, @project, 'master'), class: 'btn btn-new btn-lg' do
-      add a file
-    &nbsp;or do a push via the command line.
+%h4.gl-mt-0.gl-mb-3
+  = _('The repository for this project is empty')
 
-.well
-  = render "shared/clone_panel"
-%h4
-  %strong Command line instructions
-%div.git-empty
-  %fieldset
-    %legend Git global setup
-    %pre.dark
-      :preserve
-        git config --global user.name "#{git_user_name}"
-        git config --global user.email "#{git_user_email}"
+- if @project.can_current_user_push_code?
+  %p
+    = _('You can get started by cloning the repository or start adding files to it with one of the following options.')
 
-  %fieldset
-    %legend Create a new repository
-    %pre.dark
-      :preserve
-        git clone #{ content_tag(:span, default_url_to_repo, class: 'clone')}
-        cd #{@project.path}
-        touch README.md
-        git add README.md
-        git commit -m "add README"
-        git push -u origin master
+.project-buttons.qa-quick-actions
+  .project-clone-holder.d-block.d-md-none.mt-2.mr-2
+    = render "shared/mobile_clone_panel"
 
-  %fieldset
-    %legend Existing folder or Git repository
-    %pre.dark
-      :preserve
-        cd existing_folder
-        git init
-        git remote add origin #{ content_tag(:span, default_url_to_repo, class: 'clone')}
-        git push -u origin master
+  .project-clone-holder.d-none.d-md-inline-block.mb-2.mr-2.float-left
+    = render "projects/buttons/clone"
+  = render 'stat_anchor_list', anchors: @project.empty_repo_statistics_buttons, project_buttons: true
 
-- if can? current_user, :remove_project, @project
-  .prepend-top-20
-    = link_to 'Remove project', [@project.namespace.becomes(Namespace), @project], data: { confirm: remove_project_message(@project)}, method: :delete, class: "btn btn-remove pull-right"
+- if can?(current_user, :push_code, @project)
+  .empty-wrapper.gl-mt-4
+    %h3#repo-command-line-instructions.page-title-empty
+      = _('Command line instructions')
+    %p
+      = _('You can also upload existing files from your computer using the instructions below.')
+    .git-empty.js-git-empty
+      %fieldset
+        %h5= _('Git global setup')
+        %pre.bg-light
+          :preserve
+            git config --global user.name "#{h git_user_name}"
+            git config --global user.email "#{h git_user_email}"
+
+      %fieldset
+        %h5= _('Create a new repository')
+        %pre.bg-light
+          :preserve
+            git clone #{ content_tag(:span, default_url_to_repo, class: 'js-clone')}
+            cd #{h @project.path}
+            touch README.md
+            git add README.md
+            git commit -m "add README"
+          - if @project.can_current_user_push_to_default_branch?
+            %span><
+              git push -u origin #{ default_branch_name }
+
+      %fieldset
+        %h5= _('Push an existing folder')
+        %pre.bg-light
+          :preserve
+            cd existing_folder
+            git init
+            git remote add origin #{ content_tag(:span, default_url_to_repo, class: 'js-clone')}
+            git add .
+            git commit -m "Initial commit"
+          - if @project.can_current_user_push_to_default_branch?
+            %span><
+              git push -u origin #{ default_branch_name }
+
+      %fieldset
+        %h5= _('Push an existing Git repository')
+        %pre.bg-light
+          :preserve
+            cd existing_repo
+            git remote rename origin old-origin
+            git remote add origin #{ content_tag(:span, default_url_to_repo, class: 'js-clone')}
+          - if @project.can_current_user_push_to_default_branch?
+            %span><
+              git push -u origin --all
+              git push -u origin --tags

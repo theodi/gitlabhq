@@ -1,23 +1,24 @@
-- page_title "Milestones"
-%h3.page-title
-  Milestones
-  %span.pull-right #{@group_milestones.count} milestones
+- page_title _("Milestones")
+- add_page_specific_style 'page_bundles/milestone'
 
-%p.light
-  Only milestones from
-  %strong #{@group.name}
-  group are listed here.
+.top-area
+  = render 'shared/milestones_filter', counts: @milestone_states
 
-%hr
+  .nav-controls
+    = render 'shared/milestones/search_form'
+    = render 'shared/milestones_sort_dropdown'
+    - if can?(current_user, :admin_milestone, @group)
+      = link_to "New milestone", new_group_milestone_path(@group), class: "btn btn-success", data: { qa_selector: "new_group_milestone_link" }
 
-= render 'shared/milestones_filter'
 .milestones
-  .panel.panel-default
-    %ul.well-list
-      - if @group_milestones.blank?
-        %li
-          .nothing-here-block No milestones to show
-      - else
-        - @group_milestones.each do |milestone|
+  %ul.content-list
+    - if @milestones.blank?
+      %li
+        .nothing-here-block No milestones to show
+    - else
+      - @milestones.each do |milestone|
+        - if milestone.project_milestone?
+          = render 'projects/milestones/milestone', milestone: milestone
+        - else
           = render 'milestone', milestone: milestone
-  = paginate @group_milestones, theme: "gitlab"
+  = paginate @milestones, theme: "gitlab"

@@ -1,0 +1,63 @@
+- issuable_type = issuable_sidebar[:type]
+
+#js-vue-sidebar-assignees{ data: { field: issuable_type, signed_in: signed_in } }
+  .title.hide-collapsed
+    = _('Assignee')
+    = loading_icon(css_class: 'gl-vertical-align-text-bottom')
+
+.selectbox.hide-collapsed
+  - if assignees.none?
+    = hidden_field_tag "#{issuable_type}[assignee_ids][]", 0, id: nil
+  - else
+    - assignees.each do |assignee|
+      = hidden_field_tag "#{issuable_type}[assignee_ids][]", assignee.id, id: nil, data: assignee_sidebar_data(assignee, merge_request: @merge_request)
+
+  - options = { toggle_class: 'js-user-search js-author-search',
+    title: _('Assign to'),
+    filter: true,
+    dropdown_class: 'dropdown-menu-user dropdown-menu-selectable dropdown-menu-author',
+    placeholder: _('Search users'),
+    data: { first_user: issuable_sidebar.dig(:current_user, :username),
+      current_user: true,
+      iid: issuable_sidebar[:iid],
+      issuable_type: issuable_type,
+      project_id: issuable_sidebar[:project_id],
+      author_id: issuable_sidebar[:author_id],
+      field_name: "#{issuable_type}[assignee_ids][]",
+      issue_update: issuable_sidebar[:issuable_json_path],
+      ability_name: issuable_type,
+      null_user: true,
+      display: 'static' } }
+
+  - dropdown_options = assignees_dropdown_options(issuable_type)
+  - title = dropdown_options[:title]
+  - options[:toggle_class] += ' js-multiselect js-save-user-data'
+  - data = { field_name: "#{issuable_type}[assignee_ids][]" }
+  - data[:multi_select] = true
+  - data['dropdown-title'] = title
+  - data['dropdown-header'] = dropdown_options[:data][:'dropdown-header']
+  - data['max-select'] = dropdown_options[:data][:'max-select'] if dropdown_options[:data][:'max-select']
+  - options[:data].merge!(data)
+
+  - if directly_invite_members? || indirectly_invite_members?
+    - options[:dropdown_class] += ' dropdown-extended-height'
+    - options[:footer_content] = true
+    - options[:wrapper_class] = 'js-sidebar-assignee-dropdown'
+    - invite_text = _('Invite Members')
+    - track_label = 'edit_assignee'
+
+    = dropdown_tag(title, options: options) do
+      %ul.dropdown-footer-list
+        %li
+          - if directly_invite_members?
+            = link_to invite_text,
+              project_project_members_path(@project),
+              title: invite_text,
+              data: { 'is-link': true, 'track-event': 'click_invite_members', 'track-label': track_label }
+          - else
+            .js-invite-member-trigger{ data: { display_text: invite_text, event: 'click_invite_members_version_b', label: track_label } }
+  - else
+    = dropdown_tag(title, options: options)
+
+- if indirectly_invite_members?
+  .js-invite-member-modal{ data: { members_path: project_project_members_path(@project, sort: :access_level_desc) } }

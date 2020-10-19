@@ -1,0 +1,82 @@
+.broadcast-message.broadcast-banner-message.gl-alert-warning.js-broadcast-banner-message-preview.gl-mt-3{ style: broadcast_message_style(@broadcast_message), class: ('gl-display-none' unless @broadcast_message.banner? ) }
+  = sprite_icon('bullhorn', css_class:'vertical-align-text-top')
+  .js-broadcast-message-preview
+    - if @broadcast_message.message.present?
+      = render_broadcast_message(@broadcast_message)
+    - else
+      Your message here
+.d-flex.justify-content-center
+  .broadcast-message.broadcast-notification-message.preview.js-broadcast-notification-message-preview.mt-2{ class: ('hidden' unless @broadcast_message.notification? ) }
+    = sprite_icon('bullhorn', css_class:'vertical-align-text-top')
+    .js-broadcast-message-preview
+      - if @broadcast_message.message.present?
+        = render_broadcast_message(@broadcast_message)
+      - else
+        Your message here
+
+= form_for [:admin, @broadcast_message], html: { class: 'broadcast-message-form js-quick-submit js-requires-input'} do |f|
+  = form_errors(@broadcast_message)
+
+  .form-group.row.mt-4
+    .col-sm-2.col-form-label
+      = f.label :message
+    .col-sm-10
+      = f.text_area :message, class: "form-control js-autosize js-broadcast-message-message",
+        required: true,
+        dir: 'auto',
+        data: { preview_path: preview_admin_broadcast_messages_path }
+  .form-group.row
+    .col-sm-2.col-form-label
+      = f.label :broadcast_type, _('Type')
+    .col-sm-10
+      = f.select :broadcast_type, broadcast_type_options, {}, class: 'form-control js-broadcast-message-type'
+  .form-group.row.js-broadcast-message-background-color-form-group{ class: ('hidden' unless @broadcast_message.banner? ) }
+    .col-sm-2.col-form-label
+      = f.label :color, _("Background color")
+    .col-sm-10
+      .input-group
+        .input-group-prepend
+          .input-group-text.label-color-preview{ :style => 'background-color: ' + @broadcast_message.color + '; color: ' + @broadcast_message.font }
+            = '&nbsp;'.html_safe
+        = f.text_field :color, class: "form-control js-broadcast-message-color"
+      .form-text.text-muted
+        = _('Choose any color.')
+        %br
+        = _("Or you can choose one of the suggested colors below")
+
+      = render_suggested_colors
+
+  .form-group.row.js-broadcast-message-dismissable-form-group{ class: ('hidden' unless @broadcast_message.banner? ) }
+    .col-sm-2.col-form-label.pt-0
+      = f.label :starts_at, _("Dismissable")
+    .col-sm-10
+      = f.check_box :dismissable
+      = f.label :dismissable do
+        = _('Allow users to dismiss the broadcast message')
+  .form-group.row.js-toggle-colors-container.toggle-colors.hide
+    .col-sm-2.col-form-label
+      = f.label :font, "Font Color"
+    .col-sm-10
+      = f.color_field :font, class: "form-control text-font-color"
+  .form-group.row
+    .col-sm-2.col-form-label
+      = f.label :target_path, _('Target Path')
+    .col-sm-10
+      = f.text_field :target_path, class: "form-control"
+      .form-text.text-muted
+        = _('Paths can contain wildcards, like */welcome')
+  .form-group.row
+    .col-sm-2.col-form-label
+      = f.label :starts_at, _("Starts at (UTC)")
+    .col-sm-10.datetime-controls
+      = f.datetime_select :starts_at, {}, class: 'form-control form-control-inline'
+  .form-group.row
+    .col-sm-2.col-form-label
+      = f.label :ends_at, _("Ends at (UTC)")
+    .col-sm-10.datetime-controls
+      = f.datetime_select :ends_at, {}, class: 'form-control form-control-inline'
+  .form-actions
+    - if @broadcast_message.persisted?
+      = f.submit "Update broadcast message", class: "btn gl-button btn-success"
+    - else
+      = f.submit "Add broadcast message", class: "btn gl-button btn-success"

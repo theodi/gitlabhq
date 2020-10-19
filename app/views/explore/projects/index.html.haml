@@ -1,12 +1,13 @@
-- page_title "Projects"
-.clearfix
-  = render 'filter'
+- @hide_top_links = true
+- page_title    _("Projects")
+- header_title  _("Projects"), dashboard_projects_path
 
-%hr
-.public-projects
-  %ul.bordered-list.top-list
-    = render @projects
-    - unless @projects.present?
-      .nothing-here-block No public projects
+= render_dashboard_gold_trial(current_user)
 
-  = paginate @projects, theme: "gitlab"
+- if current_user
+  = render 'dashboard/projects_head', project_tab_filter: :explore
+- else
+  = render 'explore/head'
+
+= render 'explore/projects/nav' unless Feature.enabled?(:project_list_filter_bar) && current_user
+= render 'projects', projects: @projects

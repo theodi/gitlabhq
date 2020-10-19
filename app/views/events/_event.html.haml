@@ -1,16 +1,21 @@
-- if event.proper?
-  .event-item{class: "#{event.body? ? "event-block" : "event-inline" }"}
+- event = event.present
+
+- if event.visible_to_user?(current_user)
+  .event-item
     .event-item-timestamp
       #{time_ago_with_tooltip(event.created_at)}
 
-    = cache [event, current_user] do
-      = image_tag avatar_icon(event.author_email, 24), class: "avatar s24", alt:''
-
-      - if event.push?
-        = render "events/event/push", event: event
-      - elsif event.commented?
-        = render "events/event/note", event: event
-      - elsif event.created_project?
-        = render "events/event/created_project", event: event
-      - else
-        = render "events/event/common", event: event
+    - if event.wiki_page?
+      = render "events/event/wiki", event: event
+    - elsif event.design?
+      = render 'events/event/design', event: event
+    - elsif event.created_project_action?
+      = render "events/event/created_project", event: event
+    - elsif event.push_action?
+      = render "events/event/push", event: event
+    - elsif event.commented_action?
+      = render "events/event/note", event: event
+    - else
+      = render "events/event/common", event: event
+- elsif @user&.include_private_contributions?
+  = render "events/event/private", event: event

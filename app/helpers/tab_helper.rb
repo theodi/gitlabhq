@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module TabHelper
   # Navigation link helper
   #
@@ -6,10 +8,11 @@ module TabHelper
   # element is the value passed to the block.
   #
   # options - The options hash used to determine if the element is "active" (default: {})
-  #           :controller   - One or more controller names to check (optional).
+  #           :controller   - One or more controller names to check, use path notation when namespaced (optional).
   #           :action       - One or more action names to check (optional).
   #           :path         - A shorthand path, such as 'dashboard#index', to check (optional).
   #           :html_options - Extra options to be passed to the list element (optional).
+  #           :unless       - Callable object to skip rendering the 'active' class on `li` element (optional).
   # block   - An optional block that will become the contents of the returned
   #           `li` element.
   #
@@ -40,6 +43,28 @@ module TabHelper
   #   nav_link(controller: :tree, html_options: {class: 'home'}) { "Hello" }
   #   # => '<li class="home active">Hello</li>'
   #
+  #   # For namespaced controllers like Admin::AppearancesController#show
+  #
+  #   # Controller and namespace matches
+  #   nav_link(controller: 'admin/appearances') { "Hello" }
+  #   # => '<li class="active">Hello</li>'
+  #
+  #   # Controller and namespace matches but action doesn't
+  #   nav_link(controller: 'admin/appearances', action: :edit) { "Hello" }
+  #   # => '<li>Hello</li>'
+  #
+  #   # Shorthand path with namespace
+  #   nav_link(path: 'admin/appearances#show') { "Hello"}
+  #   # => '<li class="active">Hello</li>'
+  #
+  #   # Shorthand path + unless
+  #   # Add `active` class when TreeController is requested, except the `index` action.
+  #   nav_link(controller: 'tree', unless: -> { action_name?('index') }) { "Hello" }
+  #   # => '<li class="active">Hello</li>'
+  #
+  #   # When `TreeController#index` is requested
+  #   # => '<li>Hello</li>'
+  #
   # Returns a list item element String
   def nav_link(options = {}, &block)
     klass = active_nav_link?(options) ? 'active' : ''
@@ -47,9 +72,7 @@ module TabHelper
     # Add our custom class into the html_options, which may or may not exist
     # and which may or may not already have a :class key
     o = options.delete(:html_options) || {}
-    o[:class] ||= ''
-    o[:class] += ' ' + klass
-    o[:class].strip!
+    o[:class] = [*o[:class], klass].join(' ').strip
 
     if block_given?
       content_tag(:li, capture(&block), o)
@@ -59,6 +82,8 @@ module TabHelper
   end
 
   def active_nav_link?(options)
+    return false if options[:unless]&.call
+
     if path = options.delete(:path)
       unless path.respond_to?(:each)
         path = [path]
@@ -66,6 +91,14 @@ module TabHelper
 
       path.any? do |single_path|
         current_path?(single_path)
+      end
+    elsif page = options.delete(:page)
+      unless page.respond_to?(:each)
+        page = [page]
+      end
+
+      page.any? do |single_page|
+        current_page?(single_page)
       end
     else
       c = options.delete(:controller)
@@ -86,38 +119,11 @@ module TabHelper
     current_controller?(c) && current_action?(a)
   end
 
-  def project_tab_class
-    return "active" if current_page?(controller: "/projects", action: :edit, id: @project)
-
-    if ['services', 'hooks', 'deploy_keys', 'project_members', 'protected_branches'].include? controller.controller_name
-      "active"
-    end
-  end
-
   def branches_tab_class
     if current_controller?(:protected_branches) ||
-      current_controller?(:branches) ||
-      current_page?(namespace_project_repository_path(@project.namespace,
-                                                      @project))
+        current_controller?(:branches) ||
+        current_page?(project_repository_path(@project))
       'active'
-    end
-  end
-
-  # Use nav_tab for save controller/action  but different params
-  def nav_tab(key, value, &block)
-    o = {}
-    o[:class] = ""
-
-    if value.nil?
-      o[:class] << " active" if params[key].blank?
-    else
-      o[:class] << " active" if params[key] == value
-    end
-
-    if block_given?
-      content_tag(:li, capture(&block), o)
-    else
-      content_tag(:li, nil, o)
     end
   end
 end

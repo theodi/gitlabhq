@@ -1,0 +1,24 @@
+.design-list-item {
+  height: 280px;
+  text-decoration: none;
+
+  .icon-version-status {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+  }
+
+  .design-event {
+    top: $gl-padding;
+    right: $gl-padding;
+  }
+
+  .card-body {
+    height: 230px;
+  }
+}
+
+// This is temporary class to be removed after feature flag removal: https://gitlab.com/gitlab-org/gitlab/-/issues/223197
+.design-list-item-new {
+  height: 210px;
+}

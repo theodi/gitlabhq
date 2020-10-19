@@ -1,18 +1,15 @@
-%ul.nav.nav-sidebar
-  = nav_link(path: 'projects#trending') do
-    = link_to explore_root_path, title: 'Trending Projects', data: {placement: 'right'} do
-      = icon('comments fw')
-      %span Trending Projects
-  = nav_link(path: 'projects#starred') do
-    = link_to starred_explore_projects_path, title: 'Most-starred Projects', data: {placement: 'right'} do
-      = icon('star fw')
-      %span Most-starred Projects
-  = nav_link(path: 'projects#index') do
-    = link_to explore_projects_path, title: 'All Projects', data: {placement: 'right'} do
-      = icon('bookmark fw')
-      %span All Projects
-  = nav_link(controller: :groups) do
-    = link_to explore_groups_path, title: 'All Groups', data: {placement: 'right'} do
-      = icon('group fw')
-      %span All Groups
-
+%ul.list-unstyled.navbar-sub-nav
+  - if explore_nav_link?(:projects)
+    = nav_link(path: ['dashboard#show', 'root#show', 'projects#trending', 'projects#starred', 'projects#index'], html_options: {class: 'home'}) do
+      = link_to explore_root_path, title: _('Projects'), class: 'dashboard-shortcuts-projects' do
+        = _('Projects')
+  - if explore_nav_link?(:groups)
+    = nav_link(controller: [:groups, 'groups/milestones', 'groups/group_members']) do
+      = link_to explore_groups_path, title: _('Groups'), class: 'dashboard-shortcuts-groups' do
+        = _('Groups')
+  - if explore_nav_link?(:snippets)
+    = nav_link(controller: :snippets) do
+      = link_to explore_snippets_path, title: _('Snippets'), class: 'dashboard-shortcuts-snippets' do
+        = _('Snippets')
+  %li
+    = link_to _("Help"), help_path, title: _('About GitLab CE')

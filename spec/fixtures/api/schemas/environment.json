@@ -1,0 +1,57 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "state",
+    "external_url",
+    "environment_type",
+    "has_stop_action",
+    "environment_path",
+    "stop_path",
+    "folder_path",
+    "created_at",
+    "updated_at",
+    "can_stop"
+  ],
+  "properties": {
+    "id": { "type": "integer" },
+    "name": { "type": "string" },
+    "state": { "type": "string" },
+    "external_url": { "$ref": "types/nullable_string.json" },
+    "environment_type": { "$ref": "types/nullable_string.json" },
+    "name_without_type": { "type": "string" },
+    "has_stop_action": { "type": "boolean" },
+    "environment_path": { "type": "string" },
+    "stop_path": { "type": "string" },
+    "cancel_auto_stop_path": { "type": "string" },
+    "folder_path": { "type": "string" },
+    "logs_path": { "type": "string" },
+    "logs_api_path": { "type": "string" },
+    "enable_advanced_logs_querying": { "type": "boolean" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "auto_stop_at": { "type": "string", "format": "date-time" },
+    "can_stop": { "type": "boolean" },
+    "has_opened_alert": { "type": "boolean" },
+    "cluster_type": { "type": "types/nullable_string.json" },
+    "terminal_path": { "type": "types/nullable_string.json" },
+    "last_deployment": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "deployment.json" },
+        {
+          "type": "object",
+          "properties" : {
+            "name": { "type": "string" },
+            "build_path": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "can_delete": { "type": "boolean" }
+    ,
+    "delete_path": { "type": "string" }
+  },
+  "additionalProperties": false
+}

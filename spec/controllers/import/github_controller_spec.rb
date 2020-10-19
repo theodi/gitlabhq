@@ -1,153 +1,159 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe Import::GithubController do
-  let(:user) { create(:user, github_access_token: 'asd123') }
+RSpec.describe Import::GithubController do
+  include ImportSpecHelper
 
-  before do
-    sign_in(user)
-    controller.stub(:github_import_enabled?).and_return(true)
+  let(:provider) { :github }
+
+  include_context 'a GitHub-ish import controller'
+
+  describe "GET new" do
+    it_behaves_like 'a GitHub-ish import controller: GET new'
+
+    it "redirects to GitHub for an access token if logged in with GitHub" do
+      allow(controller).to receive(:logged_in_with_provider?).and_return(true)
+      expect(controller).to receive(:go_to_provider_for_permissions).and_call_original
+      allow(controller).to receive(:authorize_url).and_call_original
+
+      get :new
+
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    it "prompts for an access token if GitHub not configured" do
+      allow(controller).to receive(:github_import_configured?).and_return(false)
+      expect(controller).not_to receive(:go_to_provider_for_permissions)
+
+      get :new
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    context 'when importing a CI/CD project' do
+      it 'always prompts for an access token' do
+        allow(controller).to receive(:github_import_configured?).and_return(true)
+
+        get :new, params: { ci_cd_only: true }
+
+        expect(response).to render_template(:new)
+      end
+    end
   end
 
   describe "GET callback" do
+    before do
+      allow(controller).to receive(:get_token).and_return(token)
+      allow(controller).to receive(:oauth_options).and_return({})
+
+      stub_omniauth_provider('github')
+    end
+
     it "updates access token" do
       token = "asdasd12345"
-      allow_any_instance_of(Gitlab::GithubImport::Client).
-        to receive(:get_token).and_return(token)
-      Gitlab.config.omniauth.providers << OpenStruct.new(app_id: 'asd123',
-                                                         app_secret: 'asd123',
-                                                         name: 'github')
 
       get :callback
 
-      expect(user.reload.github_access_token).to eq(token)
+      expect(session[:github_access_token]).to eq(token)
       expect(controller).to redirect_to(status_import_github_url)
     end
   end
 
+  describe "POST personal_access_token" do
+    it_behaves_like 'a GitHub-ish import controller: POST personal_access_token'
+  end
+
   describe "GET status" do
-    before do
-      @repo = OpenStruct.new(login: 'vim', full_name: 'asd/vim')
-      @org = OpenStruct.new(login: 'company')
-      @org_repo = OpenStruct.new(login: 'company', full_name: 'company/repo')
+    context 'when using OAuth' do
+      before do
+        allow(controller).to receive(:logged_in_with_provider?).and_return(true)
+      end
+
+      context 'when OAuth config is missing' do
+        let(:new_import_url) { public_send("new_import_#{provider}_url") }
+
+        before do
+          allow(controller).to receive(:oauth_config).and_return(nil)
+        end
+
+        it 'returns missing config error' do
+          expect(controller).to receive(:go_to_provider_for_permissions).and_call_original
+
+          get :status
+
+          expect(session[:"#{provider}_access_token"]).to be_nil
+          expect(controller).to redirect_to(new_import_url)
+          expect(flash[:alert]).to eq('Missing OAuth configuration for GitHub.')
+        end
+      end
     end
 
-    it "assigns variables" do
-      @project = create(:project, import_type: 'github', creator_id: user.id)
-      controller.stub_chain(:client, :repos).and_return([@repo])
-      controller.stub_chain(:client, :orgs).and_return([@org])
-      controller.stub_chain(:client, :org_repos).with(@org.login).and_return([@org_repo])
+    context 'when feature remove_legacy_github_client is disabled' do
+      before do
+        stub_feature_flags(remove_legacy_github_client: false)
+        session[:"#{provider}_access_token"] = 'asdasd12345'
+      end
 
-      get :status
+      it_behaves_like 'a GitHub-ish import controller: GET status'
 
-      expect(assigns(:already_added_projects)).to eq([@project])
-      expect(assigns(:repos)).to eq([@repo, @org_repo])
+      it 'uses Gitlab::LegacyGitHubImport::Client' do
+        expect(controller.send(:client)).to be_instance_of(Gitlab::LegacyGithubImport::Client)
+      end
+
+      it 'fetches repos using legacy client' do
+        expect_next_instance_of(Gitlab::LegacyGithubImport::Client) do |client|
+          expect(client).to receive(:repos)
+        end
+
+        get :status
+      end
     end
 
-    it "does not show already added project" do
-      @project = create(:project, import_type: 'github', creator_id: user.id, import_source: 'asd/vim')
-      controller.stub_chain(:client, :repos).and_return([@repo])
-      controller.stub_chain(:client, :orgs).and_return([])
+    context 'when feature remove_legacy_github_client is enabled' do
+      before do
+        stub_feature_flags(remove_legacy_github_client: true)
+        session[:"#{provider}_access_token"] = 'asdasd12345'
+      end
 
-      get :status
+      it_behaves_like 'a GitHub-ish import controller: GET status'
 
-      expect(assigns(:already_added_projects)).to eq([@project])
-      expect(assigns(:repos)).to eq([])
+      it 'uses Gitlab::GithubImport::Client' do
+        expect(controller.send(:client)).to be_instance_of(Gitlab::GithubImport::Client)
+      end
+
+      it 'fetches repos using latest github client' do
+        expect_next_instance_of(Gitlab::GithubImport::Client) do |client|
+          expect(client).to receive(:each_page).with(:repos).and_return([].to_enum)
+        end
+
+        get :status
+      end
+
+      it 'concatenates list of repos from multiple pages' do
+        repo_1 = OpenStruct.new(login: 'emacs', full_name: 'asd/emacs', name: 'emacs', owner: { login: 'owner' })
+        repo_2 = OpenStruct.new(login: 'vim', full_name: 'asd/vim', name: 'vim', owner: { login: 'owner' })
+        repos = [OpenStruct.new(objects: [repo_1]), OpenStruct.new(objects: [repo_2])].to_enum
+
+        allow(stub_client).to receive(:each_page).and_return(repos)
+
+        get :status, format: :json
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.dig('provider_repos').count).to eq(2)
+        expect(json_response.dig('provider_repos', 0, 'id')).to eq(repo_1.id)
+        expect(json_response.dig('provider_repos', 1, 'id')).to eq(repo_2.id)
+      end
     end
   end
 
   describe "POST create" do
-    let(:github_username) { user.username }
+    it_behaves_like 'a GitHub-ish import controller: POST create'
 
-    let(:github_user) {
-      OpenStruct.new(login: github_username)
-    }
+    it_behaves_like 'project import rate limiter'
+  end
 
-    let(:github_repo) {
-      OpenStruct.new(name: 'vim', full_name: "#{github_username}/vim", owner: OpenStruct.new(login: github_username))
-    }
-
-    before do
-      controller.stub_chain(:client, :user).and_return(github_user)
-      controller.stub_chain(:client, :repo).and_return(github_repo)
-    end
-
-    context "when the repository owner is the GitHub user" do
-      context "when the GitHub user and GitLab user's usernames match" do
-        it "takes the current user's namespace" do
-          expect(Gitlab::GithubImport::ProjectCreator).
-            to receive(:new).with(github_repo, user.namespace, user).
-            and_return(double(execute: true))
-
-          post :create, format: :js
-        end
-      end
-
-      context "when the GitHub user and GitLab user's usernames don't match" do
-        let(:github_username) { "someone_else" }
-
-        it "takes the current user's namespace" do
-          expect(Gitlab::GithubImport::ProjectCreator).
-            to receive(:new).with(github_repo, user.namespace, user).
-            and_return(double(execute: true))
-
-          post :create, format: :js
-        end
-      end
-    end
-
-    context "when the repository owner is not the GitHub user" do
-      let(:other_username) { "someone_else" }
-
-      before do
-        github_repo.owner = OpenStruct.new(login: other_username)
-      end
-
-      context "when a namespace with the GitHub user's username already exists" do
-        let!(:existing_namespace) { create(:namespace, name: other_username, owner: user) }
-
-        context "when the namespace is owned by the GitLab user" do
-          it "takes the existing namespace" do
-            expect(Gitlab::GithubImport::ProjectCreator).
-              to receive(:new).with(github_repo, existing_namespace, user).
-              and_return(double(execute: true))
-
-            post :create, format: :js
-          end
-        end
-
-        context "when the namespace is not owned by the GitLab user" do
-          before do
-            existing_namespace.owner = create(:user)
-            existing_namespace.save
-          end
-
-          it "doesn't create a project" do
-            expect(Gitlab::GithubImport::ProjectCreator).
-              not_to receive(:new)
-
-            post :create, format: :js
-          end
-        end
-      end
-
-      context "when a namespace with the GitHub user's username doesn't exist" do
-        it "creates the namespace" do
-          expect(Gitlab::GithubImport::ProjectCreator).
-            to receive(:new).and_return(double(execute: true))
-
-          post :create, format: :js
-
-          expect(Namespace.where(name: other_username).first).not_to be_nil
-        end
-
-        it "takes the new namespace" do
-          expect(Gitlab::GithubImport::ProjectCreator).
-            to receive(:new).with(github_repo, an_instance_of(Group), user).
-            and_return(double(execute: true))
-
-          post :create, format: :js
-        end
-      end
-    end
+  describe "GET realtime_changes" do
+    it_behaves_like 'a GitHub-ish import controller: GET realtime_changes'
   end
 end

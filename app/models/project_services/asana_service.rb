@@ -1,22 +1,5 @@
-# == Schema Information
-#
-# Table name: services
-#
-#  id                    :integer          not null, primary key
-#  type                  :string(255)
-#  title                 :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  active                :boolean          default(FALSE), not null
-#  properties            :text
-#  template              :boolean          default(FALSE)
-#  push_events           :boolean          default(TRUE)
-#  issues_events         :boolean          default(TRUE)
-#  merge_requests_events :boolean          default(TRUE)
-#  tag_push_events       :boolean          default(TRUE)
-#  note_events           :boolean          default(TRUE), not null
-#
+# frozen_string_literal: true
+
 require 'asana'
 
 class AsanaService < Service
@@ -28,7 +11,7 @@ class AsanaService < Service
   end
 
   def description
-    'Asana - Teamwork without email'
+    s_('AsanaService|Asana - Teamwork without email')
   end
 
   def help
@@ -40,11 +23,11 @@ get the commit comment added to it.
 
 You can also close a task with a message containing: `fix #123456`.
 
-You can find your Api Keys here:
-http://developer.asana.com/documentation/#api_keys'
+You can create a Personal Access Token here:
+https://app.asana.com/0/developer-console'
   end
 
-  def to_param
+  def self.to_param
     'asana'
   end
 
@@ -53,74 +36,73 @@ http://developer.asana.com/documentation/#api_keys'
       {
         type: 'text',
         name: 'api_key',
-        placeholder: 'User API token. User must have access to task,
-all comments will be attributed to this user.'
+        placeholder: s_('AsanaService|User Personal Access Token. User must have access to task, all comments will be attributed to this user.'),
+        required: true
       },
       {
         type: 'text',
         name: 'restrict_to_branch',
-        placeholder: 'Comma-separated list of branches which will be
-automatically inspected. Leave blank to include all branches.'
+        placeholder: s_('AsanaService|Comma-separated list of branches which will be automatically inspected. Leave blank to include all branches.')
       }
     ]
   end
 
-  def supported_events
+  def self.supported_events
     %w(push)
+  end
+
+  def client
+    @_client ||= begin
+      Asana::Client.new do |c|
+        c.authentication :access_token, api_key
+      end
+    end
   end
 
   def execute(data)
     return unless supported_events.include?(data[:object_kind])
 
-    Asana.configure do |client|
-      client.api_key = api_key
-    end
-
-    user = data[:user_name]
-    branch = Gitlab::Git.ref_name(data[:ref])
-
-    branch_restriction = restrict_to_branch.to_s
-
     # check the branch restriction is poplulated and branch is not included
-    if branch_restriction.length > 0 && branch_restriction.index(branch).nil?
+    branch = Gitlab::Git.ref_name(data[:ref])
+    branch_restriction = restrict_to_branch.to_s
+    if branch_restriction.present? && branch_restriction.index(branch).nil?
       return
     end
 
-    project_name = project.name_with_namespace
-    push_msg = user + ' pushed to branch ' + branch + ' of ' + project_name
+    user = data[:user_name]
+    project_name = project.full_name
 
     data[:commits].each do |commit|
-      check_commit(' ( ' + commit[:url] + ' ): ' + commit[:message], push_msg)
+      push_msg = s_("AsanaService|%{user} pushed to branch %{branch} of %{project_name} ( %{commit_url} ):") % { user: user, branch: branch, project_name: project_name, commit_url: commit[:url] }
+      check_commit(commit[:message], push_msg)
     end
   end
 
   def check_commit(message, push_msg)
-    task_list = []
-    close_list = []
+    # matches either:
+    # - #1234
+    # - https://app.asana.com/0/{project_gid}/{task_gid}
+    # optionally preceded with:
+    # - fix/ed/es/ing
+    # - close/s/d
+    # - closing
+    issue_finder = %r{(fix\w*|clos[ei]\w*+)?\W*(?:https://app\.asana\.com/\d+/\w+/(\w+)|#(\w+))}i
 
-    message.split("\n").each do |line|
-      # look for a task ID or a full Asana url
-      task_list.concat(line.scan(/#(\d+)/))
-      task_list.concat(line.scan(/https:\/\/app\.asana\.com\/\d+\/\d+\/(\d+)/))
-      # look for a word starting with 'fix' followed by a task ID
-      close_list.concat(line.scan(/(fix\w*)\W*#(\d+)/i))
-    end
+    message.scan(issue_finder).each do |tuple|
+      # tuple will be
+      # [ 'fix', 'id_from_url', 'id_from_pound' ]
+      taskid = tuple[2] || tuple[1]
 
-    # post commit to every taskid found
-    task_list.each do |taskid|
-      task = Asana::Task.find(taskid[0])
+      begin
+        task = Asana::Resources::Task.find_by_id(client, taskid)
+        task.add_comment(text: "#{push_msg} #{message}")
 
-      if task
-        task.create_story(text: push_msg + ' ' + message)
-      end
-    end
-
-    # close all tasks that had 'fix(ed/es/ing) #:id' in them
-    close_list.each do |taskid|
-      task = Asana::Task.find(taskid.last)
-
-      if task
-        task.modify(completed: true)
+        if tuple[0]
+          task.update(completed: true)
+        end
+      rescue => e
+        log_error(e.message)
+        next
       end
     end
   end

@@ -1,21 +1,26 @@
-- page_title "Issues"
+- @hide_top_links = true
+- page_title _("Issues")
+- @breadcrumb_link = issues_dashboard_path(assignee_username: current_user.username)
 = content_for :meta_tags do
+  = auto_discovery_link_tag(:atom, safe_params.merge(rss_url_options).to_h, title: "#{current_user.name} issues")
+
+= render_dashboard_gold_trial(current_user)
+
+.page-title-holder.d-flex.align-items-center
+  %h1.page-title= _('Issues')
+
   - if current_user
-    = auto_discovery_link_tag(:atom, issues_dashboard_url(format: :atom, private_token: current_user.private_token), title: "#{current_user.name} issues")
+    .page-title-controls
+      = render 'shared/new_project_item_select', path: 'issues/new', label: "New issue", with_feature_enabled: 'issues', type: :issues
 
-%h3.page-title
-  Issues
+.top-area
+  = render 'shared/issuable/nav', type: :issues, display_count: !@no_filters_set
+  .nav-controls
+    = render 'shared/issuable/feed_buttons'
 
-%p.light
-  List all issues from all projects you have access to.
-%hr
+= render 'shared/issuable/search_bar', type: :issues
 
-.append-bottom-20
-  .pull-right
-    - if current_user
-      .hidden-xs.pull-left
-        = link_to issues_dashboard_url(format: :atom, private_token: current_user.private_token), class: 'btn' do
-          %i.fa.fa-rss
-
-  = render 'shared/issuable_filter', type: :issues
-= render 'shared/issues'
+- if current_user && @no_filters_set
+  = render 'shared/dashboard/no_filter_selected'
+- else
+  = render 'shared/issues'

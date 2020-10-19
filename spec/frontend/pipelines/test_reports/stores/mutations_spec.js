@@ -1,0 +1,82 @@
+import { getJSONFixture } from 'helpers/fixtures';
+import * as types from '~/pipelines/stores/test_reports/mutation_types';
+import mutations from '~/pipelines/stores/test_reports/mutations';
+
+describe('Mutations TestReports Store', () => {
+  let mockState;
+
+  const testReports = getJSONFixture('pipelines/test_report.json');
+
+  const defaultState = {
+    endpoint: '',
+    testReports: {},
+    selectedSuite: null,
+    isLoading: false,
+  };
+
+  beforeEach(() => {
+    mockState = { ...defaultState };
+  });
+
+  describe('set suite', () => {
+    it('should set the suite at the given index', () => {
+      mockState.testReports = testReports;
+      const suite = { name: 'test_suite' };
+      const index = 0;
+      const expectedState = { ...mockState };
+      expectedState.testReports.test_suites[index] = { suite, hasFullSuite: true };
+      mutations[types.SET_SUITE](mockState, { suite, index });
+
+      expect(mockState.testReports.test_suites[index]).toEqual(
+        expectedState.testReports.test_suites[index],
+      );
+    });
+  });
+
+  describe('set selected suite index', () => {
+    it('should set selectedSuiteIndex', () => {
+      const selectedSuiteIndex = 0;
+      mutations[types.SET_SELECTED_SUITE_INDEX](mockState, selectedSuiteIndex);
+
+      expect(mockState.selectedSuiteIndex).toEqual(selectedSuiteIndex);
+    });
+  });
+
+  describe('set summary', () => {
+    it('should set summary', () => {
+      const summary = {
+        total: { time: 0, count: 10, success: 1, failed: 2, skipped: 3, error: 4 },
+      };
+      const expectedSummary = {
+        ...summary,
+        total_time: 0,
+        total_count: 10,
+        success_count: 1,
+        failed_count: 2,
+        skipped_count: 3,
+        error_count: 4,
+      };
+      mutations[types.SET_SUMMARY](mockState, summary);
+
+      expect(mockState.testReports).toEqual(expectedSummary);
+    });
+  });
+
+  describe('toggle loading', () => {
+    it('should set to true', () => {
+      const expectedState = { ...mockState, isLoading: true };
+      mutations[types.TOGGLE_LOADING](mockState);
+
+      expect(mockState.isLoading).toEqual(expectedState.isLoading);
+    });
+
+    it('should toggle back to false', () => {
+      const expectedState = { ...mockState, isLoading: false };
+      mockState.isLoading = true;
+
+      mutations[types.TOGGLE_LOADING](mockState);
+
+      expect(mockState.isLoading).toEqual(expectedState.isLoading);
+    });
+  });
+});

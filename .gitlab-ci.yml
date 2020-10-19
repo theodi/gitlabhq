@@ -1,0 +1,108 @@
+stages:
+  - sync
+  - prepare
+  - build-images
+  - fixtures
+  - test
+  - post-test
+  - review-prepare
+  - review
+  - dast
+  - qa
+  - post-qa
+  - pages
+  - notify
+
+# always use `gitlab-org` runners, however
+# in cases where jobs require Docker-in-Docker, the job
+# definition must be extended with `.use-docker-in-docker`
+default:
+  image: "registry.gitlab.com/gitlab-org/gitlab-build-images:ruby-2.6.6-golang-1.14-git-2.28-lfs-2.9-chrome-85-node-12.18-yarn-1.22-postgresql-11-graphicsmagick-1.3.34"
+  tags:
+    - gitlab-org
+  # All jobs are interruptible by default
+  interruptible: true
+  # Default job timeout set to 90m https://gitlab.com/gitlab-com/gl-infra/infrastructure/-/issues/10520
+  timeout: 90m
+
+workflow:
+  rules:
+    # If `$FORCE_GITLAB_CI` is set, create a pipeline.
+    - if: '$FORCE_GITLAB_CI'
+    # As part of the process of creating RCs automatically, we update stable
+    # branches with the changes of the most recent production deployment. The
+    # merge requests used for this merge a branch release-tools/X into a stable
+    # branch. For these merge requests we don't want to run any pipelines, as
+    # they serve no purpose and will run anyway when the changes are merged.
+    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^release-tools\/\d+\.\d+\.\d+-rc\d+$/ && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^[\d-]+-stable(-ee)?$/ && $CI_PROJECT_PATH == "gitlab-org/gitlab"'
+      when: never
+    # For merge requests, create a pipeline.
+    - if: '$CI_MERGE_REQUEST_IID'
+    # For `master` branch, create a pipeline (this includes on schedules, pushes, merges, etc.).
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    # For tags, create a pipeline.
+    - if: '$CI_COMMIT_TAG'
+    # If `$GITLAB_INTERNAL` isn't set, don't create a pipeline.
+    - if: '$GITLAB_INTERNAL == null'
+      when: never
+    # For stable, auto-deploy, and security branches, create a pipeline.
+    - if: '$CI_COMMIT_BRANCH =~ /^[\d-]+-stable(-ee)?$/'
+    - if: '$CI_COMMIT_BRANCH =~ /^\d+-\d+-auto-deploy-\d+$/'
+    - if: '$CI_COMMIT_BRANCH =~ /^security\//'
+
+variables:
+  RAILS_ENV: "test"
+  NODE_ENV: "test"
+  SIMPLECOV: "true"
+  GIT_DEPTH: "20"
+  GIT_SUBMODULE_STRATEGY: "none"
+  GET_SOURCES_ATTEMPTS: "3"
+  KNAPSACK_RSPEC_SUITE_REPORT_PATH: knapsack/report-master.json
+  FLAKY_RSPEC_SUITE_REPORT_PATH: rspec_flaky/report-suite.json
+  BUILD_ASSETS_IMAGE: "false"
+  ES_JAVA_OPTS: "-Xms256m -Xmx256m"
+  ELASTIC_URL: "http://elastic:changeme@elasticsearch:9200"
+  DOCKER_VERSION: "19.03.0"
+
+  # Preparing custom clone path to reduce space used by all random forks
+  # on GitLab.com's Shared Runners. Our main forks - especially the security
+  # ones - will have this variable overwritten in the project settings, so that
+  # a security-related code or code using our protected variables will be never
+  # stored on the same path as the community forks.
+  # Part of the solution for the `no space left on device` problem described at
+  # https://gitlab.com/gitlab-org/gitlab/issues/197876.
+  #
+  # For this purpose the https://gitlab.com/gitlab-org-forks group was created
+  # to host a placeholder for the `/builds/gitlab-org-forks` path and ensure
+  # that no legitimate project will ever use it and - by mistake - execute its
+  # job on a shared working directory. It also requires proper configuration of
+  # the Runner that executes the job (which was prepared for our shared runners
+  # by https://ops.gitlab.net/gitlab-cookbooks/chef-repo/-/merge_requests/3977).
+  #
+  # Because of all of that PLEASE DO NOT CHANGE THE PATH.
+  #
+  # For more details and reasoning that brought this change please check
+  # https://gitlab.com/gitlab-org/gitlab/-/merge_requests/24887
+  GIT_CLONE_PATH: "/builds/gitlab-org-forks/${CI_PROJECT_NAME}"
+
+include:
+  - local: .gitlab/ci/build-images.gitlab-ci.yml
+  - local: .gitlab/ci/cache-repo.gitlab-ci.yml
+  - local: .gitlab/ci/cng.gitlab-ci.yml
+  - local: .gitlab/ci/docs.gitlab-ci.yml
+  - local: .gitlab/ci/frontend.gitlab-ci.yml
+  - local: .gitlab/ci/global.gitlab-ci.yml
+  - local: .gitlab/ci/memory.gitlab-ci.yml
+  - local: .gitlab/ci/pages.gitlab-ci.yml
+  - local: .gitlab/ci/qa.gitlab-ci.yml
+  - local: .gitlab/ci/reports.gitlab-ci.yml
+  - local: .gitlab/ci/rails.gitlab-ci.yml
+  - local: .gitlab/ci/review.gitlab-ci.yml
+  - local: .gitlab/ci/rules.gitlab-ci.yml
+  - local: .gitlab/ci/setup.gitlab-ci.yml
+  - local: .gitlab/ci/dev-fixtures.gitlab-ci.yml
+  - local: .gitlab/ci/test-metadata.gitlab-ci.yml
+  - local: .gitlab/ci/yaml.gitlab-ci.yml
+  - local: .gitlab/ci/releases.gitlab-ci.yml
+  - local: .gitlab/ci/notify.gitlab-ci.yml
+  - local: .gitlab/ci/dast.gitlab-ci.yml

@@ -1,56 +1,174 @@
-- page_title    @user.name
-- header_title  @user.name, user_path(@user)
+- @hide_top_links = true
+- @hide_breadcrumbs = true
+- @no_container = true
+- page_title       @user.blocked? ? s_('UserProfile|Blocked user') : @user.name
+- page_description @user.bio_html
+- header_title     @user.name, user_path(@user)
+- link_classes = "flex-grow-1 mx-1 "
 
 = content_for :meta_tags do
   = auto_discovery_link_tag(:atom, user_url(@user, format: :atom), title: "#{@user.name} activity")
 
-= render 'shared/show_aside'
+.user-profile
+  .cover-block.user-cover-block{ class: [('border-bottom' if profile_tabs.empty?)] }
+    = render layout: 'users/cover_controls' do
+      - if @user == current_user
+        = link_to profile_path, class: link_classes + 'btn gl-button btn-default has-tooltip', title: s_('UserProfile|Edit profile'), 'aria-label': 'Edit profile' do
+          = sprite_icon('pencil')
+      - elsif current_user
+        - if @user.abuse_report
+          %button{ class: link_classes + 'btn gl-button btn-danger', title: s_('UserProfile|Already reported for abuse'),
+            data: { toggle: 'tooltip', placement: 'bottom', container: 'body' } }>
+            = sprite_icon('error')
+        - else
+          = link_to new_abuse_report_path(user_id: @user.id, ref_url: request.referrer), class: link_classes + 'btn gl-button',
+            title: s_('UserProfile|Report abuse'), data: { toggle: 'tooltip', placement: 'bottom', container: 'body' } do
+            = sprite_icon('error')
+      - if can?(current_user, :read_user_profile, @user)
+        = link_to user_path(@user, rss_url_options), class: link_classes + 'btn gl-button btn-svg btn-default has-tooltip', title: s_('UserProfile|Subscribe'), 'aria-label': 'Subscribe' do
+          = sprite_icon('rss', css_class: 'qa-rss-icon')
+      - if current_user && current_user.admin?
+        = link_to [:admin, @user], class: link_classes + 'btn gl-button btn-default', title: s_('UserProfile|View user in admin area'),
+          data: {toggle: 'tooltip', placement: 'bottom', container: 'body'} do
+          = sprite_icon('user')
 
-.row
-  %section.col-md-8
-    .header-with-avatar
-      = image_tag avatar_icon(@user.email, 90), class: "avatar avatar-tile s90", alt: ''
-      %h3
-        = @user.name
-        - if @user == current_user
-          .pull-right
-            = link_to profile_path, class: 'btn btn-sm' do
-              %i.fa.fa-pencil-square-o
-              Edit Profile settings
-      .username
-        @#{@user.username}
-      .description
+    .profile-header{ class: [('with-no-profile-tabs' if profile_tabs.empty?)] }
+      .avatar-holder
+        = link_to avatar_icon_for_user(@user, 400), target: '_blank', rel: 'noopener noreferrer' do
+          = image_tag avatar_icon_for_user(@user, 90), class: "avatar s90", alt: ''
+
+      - if @user.blocked?
+        .user-info
+          .cover-title
+            = s_('UserProfile|Blocked user')
+        = render "users/profile_basic_info"
+      - else
+        .user-info
+          .cover-title
+            = @user.name
+
+          - if @user.status
+            .cover-status
+              = emoji_icon(@user.status.emoji)
+              = markdown_field(@user.status, :message)
+          = render "users/profile_basic_info"
+          .cover-desc.cgray.mb-1.mb-sm-2
+            - unless @user.location.blank?
+              .profile-link-holder.middle-dot-divider-sm.d-block.d-sm-inline.mb-1.mb-sm-0
+                = sprite_icon('location', css_class: 'vertical-align-sub fgray')
+                %span.vertical-align-middle
+                  = @user.location
+            - unless work_information(@user).blank?
+              .profile-link-holder.middle-dot-divider-sm.d-block.d-sm-inline
+                = sprite_icon('work', css_class: 'vertical-align-middle fgray')
+                %span.vertical-align-middle
+                  = work_information(@user)
+          .cover-desc.cgray.mb-1.mb-sm-2
+            - unless @user.skype.blank?
+              .profile-link-holder.middle-dot-divider
+                = link_to "skype:#{@user.skype}", title: "Skype" do
+                  = sprite_icon('skype')
+            - unless @user.linkedin.blank?
+              .profile-link-holder.middle-dot-divider
+                = link_to linkedin_url(@user), title: "LinkedIn", target: '_blank', rel: 'noopener noreferrer nofollow' do
+                  = sprite_icon('linkedin')
+            - unless @user.twitter.blank?
+              .profile-link-holder.middle-dot-divider-sm
+                = link_to twitter_url(@user), title: "Twitter", target: '_blank', rel: 'noopener noreferrer nofollow' do
+                  = sprite_icon('twitter')
+            - unless @user.website_url.blank?
+              .profile-link-holder.middle-dot-divider-sm.d-block.d-sm-inline.mt-1.mt-sm-0
+                - if Feature.enabled?(:security_auto_fix) && @user.bot?
+                  = sprite_icon('question', css_class: 'gl-text-blue-600')
+                = link_to @user.short_website_url, @user.full_website_url, class: 'text-link', target: '_blank', rel: 'me noopener noreferrer nofollow'
+            - unless @user.public_email.blank?
+              .profile-link-holder.middle-dot-divider-sm.d-block.d-sm-inline.mt-1.mt-sm-0
+                = link_to @user.public_email, "mailto:#{@user.public_email}", class: 'text-link'
         - if @user.bio.present?
-          = @user.bio
+          .cover-desc.cgray
+            .profile-user-bio
+              = markdown(@user.bio_html)
 
-    .clearfix
 
-    - if @groups.any?
-      .prepend-top-20
-        %h4 Groups
-        = render 'groups', groups: @groups
-        %hr
+    - unless profile_tabs.empty?
+      .scrolling-tabs-container
+        .fade-left= sprite_icon('chevron-lg-left', size: 12)
+        .fade-right= sprite_icon('chevron-lg-right', size: 12)
+        %ul.nav-links.user-profile-nav.scrolling-tabs.nav.nav-tabs
+          - if profile_tab?(:overview)
+            %li.js-overview-tab
+              = link_to user_path, data: { target: 'div#js-overview', action: 'overview', toggle: 'tab' } do
+                = s_('UserProfile|Overview')
+          - if profile_tab?(:activity)
+            %li.js-activity-tab
+              = link_to user_activity_path, data: { target: 'div#activity', action: 'activity', toggle: 'tab' } do
+                = s_('UserProfile|Activity')
+          - unless Feature.enabled?(:security_auto_fix) && @user.bot?
+            - if profile_tab?(:groups)
+              %li.js-groups-tab
+                = link_to user_groups_path, data: { target: 'div#groups', action: 'groups', toggle: 'tab', endpoint: user_groups_path(format: :json) } do
+                  = s_('UserProfile|Groups')
+            - if profile_tab?(:contributed)
+              %li.js-contributed-tab
+                = link_to user_contributed_projects_path, data: { target: 'div#contributed', action: 'contributed', toggle: 'tab', endpoint: user_contributed_projects_path(format: :json) } do
+                  = s_('UserProfile|Contributed projects')
+            - if profile_tab?(:projects)
+              %li.js-projects-tab
+                = link_to user_projects_path, data: { target: 'div#projects', action: 'projects', toggle: 'tab', endpoint: user_projects_path(format: :json) } do
+                  = s_('UserProfile|Personal projects')
+            - if profile_tab?(:starred)
+              %li.js-starred-tab
+                = link_to user_starred_projects_path, data: { target: 'div#starred', action: 'starred', toggle: 'tab', endpoint: user_starred_projects_path(format: :json) } do
+                  = s_('UserProfile|Starred projects')
+            - if profile_tab?(:snippets)
+              %li.js-snippets-tab
+                = link_to user_snippets_path, data: { target: 'div#snippets', action: 'snippets', toggle: 'tab', endpoint: user_snippets_path(format: :json) } do
+                  = s_('UserProfile|Snippets')
 
-    .hidden-xs
-      .user-calendar
-        %h4.center.light
-          %i.fa.fa-spinner.fa-spin
-      .user-calendar-activities
-      %hr
-    %h4
-      User Activity
+  %div{ class: container_class }
+    .tab-content
+      - if profile_tab?(:overview)
+        #js-overview.tab-pane
+          = render "users/overview"
 
-      - if current_user
-        %span.rss-icon.pull-right
-          = link_to user_path(@user, :atom, { private_token: current_user.private_token }) do
-            %strong
-              %i.fa.fa-rss
+      - if profile_tab?(:activity)
+        #activity.tab-pane
+          - if can?(current_user, :read_cross_project)
+            %h4.prepend-top-20
+              = s_('UserProfile|Most Recent Activity')
+            .content_list{ data: { href: user_path } }
+            .loading
+              .spinner.spinner-md
+      - unless @user.bot?
+        - if profile_tab?(:groups)
+          #groups.tab-pane
+            -# This tab is always loaded via AJAX
 
-    .content_list
-    = spinner
-  %aside.col-md-4
-    = render 'profile', user: @user
-    = render 'projects', projects: @projects, contributed_projects: @contributed_projects
+        - if profile_tab?(:contributed)
+          #contributed.tab-pane
+            -# This tab is always loaded via AJAX
 
-:coffeescript
-  $(".user-calendar").load("#{user_calendar_path}")
+        - if profile_tab?(:projects)
+          #projects.tab-pane
+            -# This tab is always loaded via AJAX
+
+        - if profile_tab?(:starred)
+          #starred.tab-pane
+            -# This tab is always loaded via AJAX
+
+        - if profile_tab?(:snippets)
+          #snippets.tab-pane
+            -# This tab is always loaded via AJAX
+
+    .loading.hide
+      .spinner.spinner-md
+
+    - if profile_tabs.empty?
+      .svg-content
+        = image_tag 'illustrations/profile_private_mode.svg'
+      .text-content.text-center
+        %h4
+          - if @user.blocked?
+            = s_('UserProfile|This user is blocked')
+          - else
+            = s_('UserProfile|This user has a private profile')

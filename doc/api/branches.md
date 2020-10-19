@@ -1,20 +1,54 @@
-# Branches
+---
+stage: Create
+group: Source Code
+info: "To determine the technical writer assigned to the Stage/Group associated with this page, see https://about.gitlab.com/handbook/engineering/ux/technical-writing/#designated-technical-writers"
+type: reference, api
+---
+
+# Branches API
+
+This API operates on [repository branches](../user/project/repository/branches/index.md).
+
+TIP: **Tip:**
+See also [Protected branches API](protected_branches.md).
 
 ## List repository branches
 
 Get a list of repository branches from a project, sorted by name alphabetically.
 
-```
+NOTE: **Note:**
+This endpoint can be accessed without authentication if the repository is publicly accessible.
+
+```plaintext
 GET /projects/:id/repository/branches
 ```
 
 Parameters:
 
-- `id` (required) - The ID of a project
+| Attribute | Type           | Required | Description |
+|:----------|:---------------|:---------|:------------|
+| `id`      | integer/string | yes      | ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user.|
+| `search`  | string         | no       | Return list of branches containing the search string. You can use `^term` and `term$` to find branches that begin and end with `term` respectively. |
+
+Example request:
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" "https://gitlab.example.com/api/v4/projects/5/repository/branches"
+```
+
+Example response:
 
 ```json
 [
   {
+    "name": "master",
+    "merged": false,
+    "protected": true,
+    "default": true,
+    "developers_can_push": false,
+    "developers_can_merge": false,
+    "can_push": true,
+    "web_url": "http://gitlab.example.com/my-group/my-project/-/tree/master",
     "commit": {
       "author_email": "john@example.com",
       "author_name": "John Smith",
@@ -23,14 +57,15 @@ Parameters:
       "committer_email": "john@example.com",
       "committer_name": "John Smith",
       "id": "7b5c3cc8be40ee161ae89a06bba6229da1032a0c",
+      "short_id": "7b5c3cc",
+      "title": "add projects API",
       "message": "add projects API",
       "parent_ids": [
         "4ad91d3c1144c406e50c7b33bae684bd6837faf8"
       ]
-    },
-    "name": "master",
-    "protected": true
-  }
+    }
+  },
+  ...
 ]
 ```
 
@@ -38,17 +73,38 @@ Parameters:
 
 Get a single project repository branch.
 
-```
+NOTE: **Note:**
+This endpoint can be accessed without authentication if the repository is publicly accessible.
+
+```plaintext
 GET /projects/:id/repository/branches/:branch
 ```
 
 Parameters:
 
-- `id` (required) - The ID of a project
-- `branch` (required) - The name of the branch
+| Attribute | Type           | Required | Description                                                                                                  |
+|:----------|:---------------|:---------|:-------------------------------------------------------------------------------------------------------------|
+| `id`      | integer/string | yes      | ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user. |
+| `branch`  | string         | yes      | Name of the branch.                                                                                          |
+
+Example request:
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" "https://gitlab.example.com/api/v4/projects/5/repository/branches/master"
+```
+
+Example response:
 
 ```json
 {
+  "name": "master",
+  "merged": false,
+  "protected": true,
+  "default": true,
+  "developers_can_push": false,
+  "developers_can_merge": false,
+  "can_push": true,
+  "web_url": "http://gitlab.example.com/my-group/my-project/-/tree/master",
   "commit": {
     "author_email": "john@example.com",
     "author_name": "John Smith",
@@ -57,95 +113,49 @@ Parameters:
     "committer_email": "john@example.com",
     "committer_name": "John Smith",
     "id": "7b5c3cc8be40ee161ae89a06bba6229da1032a0c",
+    "short_id": "7b5c3cc",
+    "title": "add projects API",
     "message": "add projects API",
     "parent_ids": [
       "4ad91d3c1144c406e50c7b33bae684bd6837faf8"
     ]
-  },
-  "name": "master",
-  "protected": true
+  }
 }
 ```
 
 ## Protect repository branch
 
-Protects a single project repository branch. This is an idempotent function, protecting an already
-protected repository branch still returns a `200 OK` status code.
-
-```
-PUT /projects/:id/repository/branches/:branch/protect
-```
-
-Parameters:
-
-- `id` (required) - The ID of a project
-- `branch` (required) - The name of the branch
-
-```json
-{
-  "commit": {
-    "author_email": "john@example.com",
-    "author_name": "John Smith",
-    "authored_date": "2012-06-27T05:51:39-07:00",
-    "committed_date": "2012-06-28T03:44:20-07:00",
-    "committer_email": "john@example.com",
-    "committer_name": "John Smith",
-    "id": "7b5c3cc8be40ee161ae89a06bba6229da1032a0c",
-    "message": "add projects API",
-    "parent_ids": [
-      "4ad91d3c1144c406e50c7b33bae684bd6837faf8"
-    ]
-  },
-  "name": "master",
-  "protected": true
-}
-```
+See [`POST /projects/:id/protected_branches`](protected_branches.md#protect-repository-branches) for
+information on protecting repository branches.
 
 ## Unprotect repository branch
 
-Unprotects a single project repository branch. This is an idempotent function, unprotecting an already
-unprotected repository branch still returns a `200 OK` status code.
-
-```
-PUT /projects/:id/repository/branches/:branch/unprotect
-```
-
-Parameters:
-
-- `id` (required) - The ID of a project
-- `branch` (required) - The name of the branch
-
-```json
-{
-  "commit": {
-    "author_email": "john@example.com",
-    "author_name": "John Smith",
-    "authored_date": "2012-06-27T05:51:39-07:00",
-    "committed_date": "2012-06-28T03:44:20-07:00",
-    "committer_email": "john@example.com",
-    "committer_name": "John Smith",
-    "id": "7b5c3cc8be40ee161ae89a06bba6229da1032a0c",
-    "message": "add projects API",
-    "parent_ids": [
-      "4ad91d3c1144c406e50c7b33bae684bd6837faf8"
-    ]
-  },
-  "name": "master",
-  "protected": false
-}
-```
+See [`DELETE /projects/:id/protected_branches/:name`](protected_branches.md#unprotect-repository-branches)
+for information on unprotecting repository branches.
 
 ## Create repository branch
 
-```
+Create a new branch in the repository.
+
+```plaintext
 POST /projects/:id/repository/branches
 ```
 
 Parameters:
 
-- `id` (required) - The ID of a project
-- `branch_name` (required) - The name of the branch
-- `ref` (required) - Create branch from commit SHA or existing branch
+| Attribute | Type    | Required | Description                                                                                                  |
+|:----------|:--------|:---------|:-------------------------------------------------------------------------------------------------------------|
+| `id`      | integer | yes      | ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user. |
+| `branch`  | string  | yes      | Name of the branch.                                                                                          |
+| `ref`     | string  | yes      | Branch name or commit SHA to create branch from.                                                             |
+
+Example request:
+
+```shell
+curl --request POST --header "PRIVATE-TOKEN: <your_access_token>" "https://gitlab.example.com/api/v4/projects/5/repository/branches?branch=newbranch&ref=master"
+```
+
+Example response:
 
 ```json
 {
@@ -157,36 +167,67 @@ Parameters:
     "committer_email": "john@example.com",
     "committer_name": "John Smith",
     "id": "7b5c3cc8be40ee161ae89a06bba6229da1032a0c",
+    "short_id": "7b5c3cc",
+    "title": "add projects API",
     "message": "add projects API",
     "parent_ids": [
       "4ad91d3c1144c406e50c7b33bae684bd6837faf8"
     ]
   },
-  "name": "master",
-  "protected": false
+  "name": "newbranch",
+  "merged": false,
+  "protected": false,
+  "default": false,
+  "developers_can_push": false,
+  "developers_can_merge": false,
+  "can_push": true,
+  "web_url": "http://gitlab.example.com/my-group/my-project/-/tree/newbranch"
 }
 ```
 
-It return 200 if succeed or 400 if failed with error message explaining reason.
-
 ## Delete repository branch
 
-```
+Delete a branch from the repository.
+
+NOTE: **Note:**
+In the case of an error, an explanation message is provided.
+
+```plaintext
 DELETE /projects/:id/repository/branches/:branch
 ```
 
 Parameters:
 
-- `id` (required) - The ID of a project
-- `branch` (required) - The name of the branch
+| Attribute | Type           | Required | Description                                                                                                  |
+|:----------|:---------------|:---------|:-------------------------------------------------------------------------------------------------------------|
+| `id`      | integer/string | yes      | ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user. |
+| `branch`  | string         | yes      | Name of the branch.                                                                                          |
 
-It return 200 if succeed, 404 if the branch to be deleted does not exist
-or 400 for other reasons. In case of an error, an explaining message is provided.
+Example request:
 
-Success response: 
+```shell
+curl --request DELETE --header "PRIVATE-TOKEN: <your_access_token>" "https://gitlab.example.com/api/v4/projects/5/repository/branches/newbranch"
+```
 
-```json
-{
-  "branch_name": "my-removed-branch"
-}
+## Delete merged branches
+
+Will delete all branches that are merged into the project's default branch.
+
+NOTE: **Note:**
+[Protected branches](../user/project/protected_branches.md) will not be deleted as part of this operation.
+
+```plaintext
+DELETE /projects/:id/repository/merged_branches
+```
+
+Parameters:
+
+| Attribute | Type           | Required | Description                                                                                                  |
+|:----------|:---------------|:---------|:-------------------------------------------------------------------------------------------------------------|
+| `id`      | integer/string | yes      | ID or [URL-encoded path of the project](README.md#namespaced-path-encoding) owned by the authenticated user. |
+
+Example request:
+
+```shell
+curl --request DELETE --header "PRIVATE-TOKEN: <your_access_token>" "https://gitlab.example.com/api/v4/projects/5/repository/merged_branches"
 ```

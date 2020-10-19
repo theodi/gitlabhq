@@ -1,0 +1,13 @@
+= form_for @project, url: project_pages_path(@project), html: { class: 'inline', title: pages_https_only_title } do |f|
+  - if Gitlab.config.pages.external_http || Gitlab.config.pages.external_https
+    = render_if_exists 'shared/pages/max_pages_size_input', form: f
+
+    .form-group
+      .form-check
+        = f.check_box :pages_https_only, class: 'form-check-input', disabled: pages_https_only_disabled?
+        = f.label :pages_https_only, class: pages_https_only_label_class do
+          %strong
+            = s_('GitLabPages|Force HTTPS (requires valid certificates)')
+
+    .gl-mt-3
+      = f.submit s_('GitLabPages|Save'), class: 'btn btn-success'

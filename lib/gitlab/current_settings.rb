@@ -1,28 +1,82 @@
+# frozen_string_literal: true
+
 module Gitlab
   module CurrentSettings
-    def current_application_settings
-      key = :current_application_settings
+    class << self
+      def current_application_settings
+        Gitlab::SafeRequestStore.fetch(:current_application_settings) { ensure_application_settings! }
+      end
 
-      RequestStore.store[key] ||= begin
-        if ActiveRecord::Base.connected? && ActiveRecord::Base.connection.table_exists?('application_settings')
-          ApplicationSetting.current || ApplicationSetting.create_from_defaults
-        else
-          fake_application_settings
+      def expire_current_application_settings
+        ::ApplicationSetting.expire
+        Gitlab::SafeRequestStore.delete(:current_application_settings)
+      end
+
+      def clear_in_memory_application_settings!
+        @in_memory_application_settings = nil
+      end
+
+      def method_missing(name, *args, &block)
+        current_application_settings.send(name, *args, &block) # rubocop:disable GitlabSecurity/PublicSend
+      end
+
+      def respond_to_missing?(name, include_private = false)
+        current_application_settings.respond_to?(name, include_private) || super
+      end
+
+      private
+
+      def ensure_application_settings!
+        cached_application_settings || uncached_application_settings
+      end
+
+      def cached_application_settings
+        return in_memory_application_settings if ENV['IN_MEMORY_APPLICATION_SETTINGS'] == 'true'
+
+        begin
+          ::ApplicationSetting.cached
+        rescue
+          # In case Redis isn't running
+          # or the Redis UNIX socket file is not available
+          # or the DB is not running (we use migrations in the cache key)
         end
       end
-    end
 
-    def fake_application_settings
-      OpenStruct.new(
-        default_projects_limit: Settings.gitlab['default_projects_limit'],
-        default_branch_protection: Settings.gitlab['default_branch_protection'],
-        signup_enabled: Settings.gitlab['signup_enabled'],
-        signin_enabled: Settings.gitlab['signin_enabled'],
-        gravatar_enabled: Settings.gravatar['enabled'],
-        sign_in_text: Settings.extra['sign_in_text'],
-        restricted_visibility_levels: Settings.gitlab['restricted_visibility_levels'],
-        max_attachment_size: Settings.gitlab['max_attachment_size']
-      )
+      def uncached_application_settings
+        return fake_application_settings if Gitlab::Runtime.rake? && !connect_to_db?
+
+        current_settings = ::ApplicationSetting.current
+        # If there are pending migrations, it's possible there are columns that
+        # need to be added to the application settings. To prevent Rake tasks
+        # and other callers from failing, use any loaded settings and return
+        # defaults for missing columns.
+        if Gitlab::Runtime.rake? && ActiveRecord::Base.connection.migration_context.needs_migration?
+          db_attributes = current_settings&.attributes || {}
+          fake_application_settings(db_attributes)
+        elsif current_settings.present?
+          current_settings
+        else
+          ::ApplicationSetting.create_from_defaults
+        end
+      end
+
+      def fake_application_settings(attributes = {})
+        Gitlab::FakeApplicationSettings.new(::ApplicationSetting.defaults.merge(attributes || {}))
+      end
+
+      def in_memory_application_settings
+        @in_memory_application_settings ||= ::ApplicationSetting.build_from_defaults
+      end
+
+      def connect_to_db?
+        # When the DBMS is not available, an exception (e.g. PG::ConnectionBad) is raised
+        active_db_connection = ActiveRecord::Base.connection.active? rescue false
+
+        active_db_connection &&
+          Gitlab::Database.cached_table_exists?('application_settings')
+      rescue ActiveRecord::NoDatabaseError
+        false
+      end
     end
   end
 end

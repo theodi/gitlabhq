@@ -1,27 +1,38 @@
-= form_for [:admin, @group], html: { class: "form-horizontal" } do |f|
-  - if @group.errors.any?
-    .alert.alert-danger
-      %span= @group.errors.full_messages.first
-
+= form_for [:admin, @group] do |f|
+  = form_errors(@group)
   = render 'shared/group_form', f: f
 
-  .form-group.group-description-holder
-    = f.label :avatar, "Group avatar", class: 'control-label'
+  = render_if_exists 'shared/old_repository_size_limit_setting', form: f, type: :group
+  = render_if_exists 'admin/namespace_plan', f: f
+
+  .form-group.row.group-description-holder
+    .col-sm-2.col-form-label
+      = f.label :avatar, _("Group avatar")
     .col-sm-10
-      = render 'shared/choose_group_avatar_button', f: f
+      = render 'shared/choose_avatar_button', f: f
+
+  = render 'shared/old_visibility_level', f: f, visibility_level: visibility_level, can_change_visibility_level: can_change_group_visibility_level?(@group), form_model: @group, with_label: false
+
+  .form-group.row
+    .offset-sm-2.col-sm-10
+      = render 'shared/allow_request_access', form: f, bold_label: true
+
+  = render 'groups/group_admin_settings', f: f
+
+  = render_if_exists 'namespaces/shared_runners_minutes_settings', group: @group, form: f
 
   - if @group.new_record?
-    .form-group
-      .col-sm-2
-      .col-sm-10
-        .alert.alert-info
-          = render 'shared/group_tips'
+    .form-group.row
+      .offset-sm-2.col-sm-10
+        .gl-alert.gl-alert-info
+          = sprite_icon('information-o', size: 16, css_class: 'gl-icon gl-alert-icon gl-alert-icon-no-title')
+          .gl-alert-body
+            = render 'shared/group_tips'
     .form-actions
-      = f.submit 'Create group', class: "btn btn-create"
-      = link_to  'Cancel', admin_groups_path, class: "btn btn-cancel"
+      = f.submit _('Create group'), class: "gl-button btn btn-success"
+      = link_to  _('Cancel'), admin_groups_path, class: "gl-button btn btn-cancel"
 
   - else
     .form-actions
-      = f.submit 'Save changes', class: "btn btn-primary"
-      = link_to  'Cancel', admin_group_path(@group), class: "btn btn-cancel"
-
+      = f.submit _('Save changes'), class: "gl-button btn btn-success", data: { qa_selector: 'save_changes_button' }
+      = link_to  _('Cancel'), admin_group_path(@group), class: "gl-button btn btn-cancel"

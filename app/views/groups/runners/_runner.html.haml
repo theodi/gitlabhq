@@ -1,0 +1,86 @@
+.gl-responsive-table-row{ id: dom_id(runner) }
+  .table-section.section-10.section-wrap
+    .table-mobile-header{ role: 'rowheader' }= _('Type')
+    .table-mobile-content
+      - if runner.group_type?
+        %span.badge.badge-success
+          = _('group')
+      - else
+        %span.badge.badge-info
+          = _('specific')
+      - if runner.locked?
+        %span.badge.badge-warning
+          = _('locked')
+      - unless runner.active?
+        %span.badge.badge-danger
+          = _('paused')
+
+  .table-section.section-10
+    .table-mobile-header{ role: 'rowheader' }= _('Runner token')
+    .table-mobile-content
+      = link_to runner.short_sha, group_runner_path(@group, runner)
+
+  .table-section.section-20
+    .table-mobile-header{ role: 'rowheader' }= _('Description')
+    .table-mobile-content.str-truncated.has-tooltip{ title: runner.description }
+      = runner.description
+
+  .table-section.section-10
+    .table-mobile-header{ role: 'rowheader' }= _('Version')
+    .table-mobile-content.str-truncated.has-tooltip{ title: runner.version }
+      = runner.version
+
+  .table-section.section-10
+    .table-mobile-header{ role: 'rowheader' }= _('IP Address')
+    .table-mobile-content.str-truncated.has-tooltip{ title: runner.ip_address }
+      = runner.ip_address
+
+  .table-section.section-5
+    .table-mobile-header{ role: 'rowheader' }= _('Projects')
+    .table-mobile-content
+      - if runner.group_type?
+        = _('n/a')
+      - else
+        = runner.projects.count(:all)
+
+  .table-section.section-5
+    .table-mobile-header{ role: 'rowheader' }= _('Jobs')
+    .table-mobile-content
+      = limited_counter_with_delimiter(runner.builds)
+
+  .table-section.section-10.section-wrap
+    .table-mobile-header{ role: 'rowheader' }= _('Tags')
+    .table-mobile-content
+      - runner.tags.map(&:name).sort.each do |tag|
+        %span.badge.badge-primary.str-truncated.has-tooltip{ title: tag }
+          = tag
+
+  .table-section.section-10
+    .table-mobile-header{ role: 'rowheader' }= _('Last contact')
+    .table-mobile-content
+      - contacted_at = runner_contacted_at(runner)
+      - if contacted_at
+        = time_ago_with_tooltip contacted_at
+      - else
+        = _('Never')
+
+  .table-section.table-button-footer.section-10
+    .btn-group.table-action-buttons
+      .btn-group
+        = link_to edit_group_runner_path(@group, runner), class: 'btn btn-default has-tooltip', title: _('Edit'), ref: 'tooltip', aria: { label: _('Edit') }, data: { placement: 'top', container: 'body'} do
+          = sprite_icon('pencil')
+      .btn-group
+        - if runner.active?
+          = link_to pause_group_runner_path(@group, runner), method: :post, class: 'btn btn-default has-tooltip', title: _('Pause'), ref: 'tooltip', aria: { label: _('Pause') }, data: { placement: 'top', container: 'body', confirm: _('Are you sure?') } do
+            = sprite_icon('pause')
+        - else
+          = link_to resume_group_runner_path(@group, runner), method: :post, class: 'btn btn-default has-tooltip', title: _('Resume'), ref: 'tooltip', aria: { label: _('Resume') }, data: { placement: 'top', container: 'body'} do
+            = sprite_icon('play')
+      - if runner.belongs_to_more_than_one_project?
+        .btn-group
+          .btn.btn-danger.has-tooltip{ 'aria-label' => 'Remove', 'data-container' => 'body', 'data-original-title' => _('Multi-project Runners cannot be removed'), 'data-placement' => 'top', disabled: 'disabled' }
+            = sprite_icon('close')
+      - else
+        .btn-group
+          = link_to group_runner_path(@group, runner), method: :delete, class: 'btn btn-danger has-tooltip', title: _('Remove'), ref: 'tooltip', aria: { label: _('Remove') }, data: { placement: 'top', container: 'body', confirm: _('Are you sure?') } do
+            = sprite_icon('close')

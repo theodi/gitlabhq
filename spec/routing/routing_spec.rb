@@ -1,7 +1,48 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
+# user                       GET    /users/:username/
+# user_groups                GET    /users/:username/groups(.:format)
+# user_projects              GET    /users/:username/projects(.:format)
+# user_contributed_projects  GET    /users/:username/contributed(.:format)
+# user_snippets              GET    /users/:username/snippets(.:format)
+# user_calendar              GET    /users/:username/calendar(.:format)
+# user_calendar_activities   GET    /users/:username/calendar_activities(.:format)
+RSpec.describe UsersController, "routing" do
+  it "to #show" do
+    allow_any_instance_of(::Constraints::UserUrlConstrainer).to receive(:matches?).and_return(true)
+
+    expect(get("/User")).to route_to('users#show', username: 'User')
+  end
+
+  it "to #groups" do
+    expect(get("/users/User/groups")).to route_to('users#groups', username: 'User')
+  end
+
+  it "to #projects" do
+    expect(get("/users/User/projects")).to route_to('users#projects', username: 'User')
+  end
+
+  it "to #contributed" do
+    expect(get("/users/User/contributed")).to route_to('users#contributed', username: 'User')
+  end
+
+  it "to #snippets" do
+    expect(get("/users/User/snippets")).to route_to('users#snippets', username: 'User')
+  end
+
+  it "to #calendar" do
+    expect(get("/users/User/calendar")).to route_to('users#calendar', username: 'User')
+  end
+
+  it "to #calendar_activities" do
+    expect(get("/users/User/calendar_activities")).to route_to('users#calendar_activities', username: 'User')
+  end
+end
+
 # search GET    /search(.:format) search#show
-describe SearchController, "routing" do
+RSpec.describe SearchController, "routing" do
   it "to #show" do
     expect(get("/search")).to route_to('search#show')
   end
@@ -9,7 +50,7 @@ end
 
 # gitlab_api /api         API::API
 #            /:path       Grack
-describe "Mounted Apps", "routing" do
+RSpec.describe "Mounted Apps", "routing" do
   it "to API" do
     expect(get("/api/issues")).to be_routable
   end
@@ -20,79 +61,53 @@ describe "Mounted Apps", "routing" do
 end
 
 #     snippets GET    /snippets(.:format)          snippets#index
-#          POST   /snippets(.:format)          snippets#create
 #  new_snippet GET    /snippets/new(.:format)      snippets#new
 # edit_snippet GET    /snippets/:id/edit(.:format) snippets#edit
 #      snippet GET    /snippets/:id(.:format)      snippets#show
-#          PUT    /snippets/:id(.:format)      snippets#update
-#          DELETE /snippets/:id(.:format)      snippets#destroy
-describe SnippetsController, "routing" do
-  it "to #user_index" do
-    expect(get("/s/User")).to route_to('snippets#index', username: 'User')
-  end
-
+RSpec.describe SnippetsController, "routing" do
   it "to #raw" do
-    expect(get("/snippets/1/raw")).to route_to('snippets#raw', id: '1')
+    expect(get("/-/snippets/1/raw")).to route_to('snippets#raw', id: '1')
   end
 
   it "to #index" do
-    expect(get("/snippets")).to route_to('snippets#index')
-  end
-
-  it "to #create" do
-    expect(post("/snippets")).to route_to('snippets#create')
+    expect(get("/-/snippets")).to route_to('snippets#index')
   end
 
   it "to #new" do
-    expect(get("/snippets/new")).to route_to('snippets#new')
+    expect(get("/-/snippets/new")).to route_to('snippets#new')
   end
 
   it "to #edit" do
-    expect(get("/snippets/1/edit")).to route_to('snippets#edit', id: '1')
+    expect(get("/-/snippets/1/edit")).to route_to('snippets#edit', id: '1')
   end
 
   it "to #show" do
+    expect(get("/-/snippets/1")).to route_to('snippets#show', id: '1')
+  end
+
+  it 'to #show from unscoped routing' do
     expect(get("/snippets/1")).to route_to('snippets#show', id: '1')
-  end
-
-  it "to #update" do
-    expect(put("/snippets/1")).to route_to('snippets#update', id: '1')
-  end
-
-  it "to #destroy" do
-    expect(delete("/snippets/1")).to route_to('snippets#destroy', id: '1')
   end
 end
 
 #            help GET /help(.:format)                 help#index
-#       help_page GET /help/:category/:file(.:format) help#show {:category=>/.*/, :file=>/[^\/\.]+/}
+#       help_page GET /help/*path(.:format)           help#show
 #  help_shortcuts GET /help/shortcuts(.:format)       help#shortcuts
-#         help_ui GET /help/ui(.:format)              help#ui
-describe HelpController, "routing" do
+RSpec.describe HelpController, "routing" do
   it "to #index" do
     expect(get("/help")).to route_to('help#index')
   end
 
   it 'to #show' do
-    path = '/help/markdown/markdown.md'
+    path = '/help/user/markdown.md'
     expect(get(path)).to route_to('help#show',
-                                  category: 'markdown',
-                                  file: 'markdown',
+                                  path: 'user/markdown',
                                   format: 'md')
 
-    path = '/help/workflow/protected_branches/protected_branches1.png'
+    path = '/help/user/markdown/markdown_logo.png'
     expect(get(path)).to route_to('help#show',
-                                  category: 'workflow/protected_branches',
-                                  file: 'protected_branches1',
+                                  path: 'user/markdown/markdown_logo',
                                   format: 'png')
-  end
-
-  it 'to #shortcuts' do
-    expect(get('/help/shortcuts')).to route_to('help#shortcuts')
-  end
-
-  it 'to #ui' do
-    expect(get('/help/ui')).to route_to('help#ui')
   end
 end
 
@@ -100,40 +115,51 @@ end
 #             profile_history GET    /profile/history(.:format)             profile#history
 #            profile_password PUT    /profile/password(.:format)            profile#password_update
 #               profile_token GET    /profile/token(.:format)               profile#token
-# profile_reset_private_token PUT    /profile/reset_private_token(.:format) profile#reset_private_token
 #                     profile GET    /profile(.:format)                     profile#show
-#              profile_design GET    /profile/design(.:format)              profile#design
 #              profile_update PUT    /profile/update(.:format)              profile#update
-describe ProfilesController, "routing" do
+RSpec.describe ProfilesController, "routing" do
   it "to #account" do
     expect(get("/profile/account")).to route_to('profiles/accounts#show')
   end
 
-  it "to #history" do
-    expect(get("/profile/history")).to route_to('profiles#history')
+  it "to #audit_log" do
+    expect(get("/profile/audit_log")).to route_to('profiles#audit_log')
   end
 
-  it "to #reset_private_token" do
-    expect(put("/profile/reset_private_token")).to route_to('profiles#reset_private_token')
+  it "to #reset_feed_token" do
+    expect(put("/profile/reset_feed_token")).to route_to('profiles#reset_feed_token')
   end
 
   it "to #show" do
     expect(get("/profile")).to route_to('profiles#show')
   end
 
-  it "to #design" do
-    expect(get("/profile/design")).to route_to('profiles#design')
+  it 'to #show from scope routing' do
+    expect(get("/-/profile")).to route_to('profiles#show')
+  end
+end
+
+# profile_preferences GET      /profile/preferences(.:format) profiles/preferences#show
+#                     PATCH    /profile/preferences(.:format) profiles/preferences#update
+#                     PUT      /profile/preferences(.:format) profiles/preferences#update
+RSpec.describe Profiles::PreferencesController, 'routing' do
+  it 'to #show' do
+    expect(get('/profile/preferences')).to route_to('profiles/preferences#show')
+  end
+
+  it 'to #update' do
+    expect(put('/profile/preferences')).to   route_to('profiles/preferences#update')
+    expect(patch('/profile/preferences')).to route_to('profiles/preferences#update')
   end
 end
 
 #     keys GET    /keys(.:format)          keys#index
 #          POST   /keys(.:format)          keys#create
-#  new_key GET    /keys/new(.:format)      keys#new
 # edit_key GET    /keys/:id/edit(.:format) keys#edit
 #      key GET    /keys/:id(.:format)      keys#show
 #          PUT    /keys/:id(.:format)      keys#update
 #          DELETE /keys/:id(.:format)      keys#destroy
-describe Profiles::KeysController, "routing" do
+RSpec.describe Profiles::KeysController, "routing" do
   it "to #index" do
     expect(get("/profile/keys")).to route_to('profiles/keys#index')
   end
@@ -142,28 +168,17 @@ describe Profiles::KeysController, "routing" do
     expect(post("/profile/keys")).to route_to('profiles/keys#create')
   end
 
-  it "to #new" do
-    expect(get("/profile/keys/new")).to route_to('profiles/keys#new')
-  end
-
-  it "to #edit" do
-    expect(get("/profile/keys/1/edit")).to route_to('profiles/keys#edit', id: '1')
-  end
-
   it "to #show" do
     expect(get("/profile/keys/1")).to route_to('profiles/keys#show', id: '1')
-  end
-
-  it "to #update" do
-    expect(put("/profile/keys/1")).to route_to('profiles/keys#update', id: '1')
   end
 
   it "to #destroy" do
     expect(delete("/profile/keys/1")).to route_to('profiles/keys#destroy', id: '1')
   end
 
-  # get all the ssh-keys of a user
   it "to #get_keys" do
+    allow_any_instance_of(::Constraints::UserUrlConstrainer).to receive(:matches?).and_return(true)
+
     expect(get("/foo.keys")).to route_to('profiles/keys#get_keys', username: 'foo')
   end
 end
@@ -171,7 +186,7 @@ end
 #   emails GET    /emails(.:format)        emails#index
 #          POST   /keys(.:format)          emails#create
 #          DELETE /keys/:id(.:format)      keys#destroy
-describe Profiles::EmailsController, "routing" do
+RSpec.describe Profiles::EmailsController, "routing" do
   it "to #index" do
     expect(get("/profile/emails")).to route_to('profiles/emails#index')
   end
@@ -186,7 +201,7 @@ describe Profiles::EmailsController, "routing" do
 end
 
 # profile_avatar DELETE /profile/avatar(.:format) profiles/avatars#destroy
-describe Profiles::AvatarsController, "routing" do
+RSpec.describe Profiles::AvatarsController, "routing" do
   it "to #destroy" do
     expect(delete("/profile/avatar")).to route_to('profiles/avatars#destroy')
   end
@@ -195,15 +210,17 @@ end
 #                dashboard GET    /dashboard(.:format)                dashboard#show
 #         dashboard_issues GET    /dashboard/issues(.:format)         dashboard#issues
 # dashboard_merge_requests GET    /dashboard/merge_requests(.:format) dashboard#merge_requests
-#                     root        /                                   dashboard#show
-describe DashboardController, "routing" do
+RSpec.describe DashboardController, "routing" do
   it "to #index" do
-    expect(get("/dashboard")).to route_to('dashboard#show')
-    expect(get("/")).to route_to('dashboard#show')
+    expect(get("/dashboard")).to route_to('dashboard/projects#index')
   end
 
   it "to #issues" do
-    expect(get("/dashboard/issues")).to route_to('dashboard#issues')
+    expect(get("/dashboard/issues.html")).to route_to('dashboard#issues', format: 'html')
+  end
+
+  it "to #calendar_issues" do
+    expect(get("/dashboard/issues.ics")).to route_to('dashboard#issues_calendar', format: 'ics')
   end
 
   it "to #merge_requests" do
@@ -211,26 +228,144 @@ describe DashboardController, "routing" do
   end
 end
 
-#        new_user_session GET    /users/sign_in(.:format)               devise/sessions#new
-#            user_session POST   /users/sign_in(.:format)               devise/sessions#create
-#    destroy_user_session DELETE /users/sign_out(.:format)              devise/sessions#destroy
-# user_omniauth_authorize        /users/auth/:provider(.:format)        omniauth_callbacks#passthru
-#  user_omniauth_callback        /users/auth/:action/callback(.:format) omniauth_callbacks#(?-mix:(?!))
-#           user_password POST   /users/password(.:format)              devise/passwords#create
-#       new_user_password GET    /users/password/new(.:format)          devise/passwords#new
-#      edit_user_password GET    /users/password/edit(.:format)         devise/passwords#edit
-#                         PUT    /users/password(.:format)              devise/passwords#update
-describe "Authentication", "routing" do
-  # pending
-end
-
-describe "Groups", "routing" do
-  it "to #show" do
-    expect(get("/groups/1")).to route_to('groups#show', id: '1')
-  end
-
-  it "also display group#show on the short path" do
-    expect(get('/1')).to route_to('namespaces#show', id: '1')
+#                     root        /                                   root#show
+RSpec.describe RootController, 'routing' do
+  it 'to #index' do
+    expect(get('/')).to route_to('root#index')
   end
 end
 
+RSpec.describe "Authentication", "routing" do
+  it "GET /users/sign_in" do
+    expect(get("/users/sign_in")).to route_to('sessions#new')
+  end
+
+  it "POST /users/sign_in" do
+    expect(post("/users/sign_in")).to route_to('sessions#create')
+  end
+
+  it "POST /users/sign_out" do
+    expect(post("/users/sign_out")).to route_to('sessions#destroy')
+  end
+
+  it "POST /users/password" do
+    expect(post("/users/password")).to route_to('passwords#create')
+  end
+
+  it "GET /users/password/new" do
+    expect(get("/users/password/new")).to route_to('passwords#new')
+  end
+
+  it "GET /users/password/edit" do
+    expect(get("/users/password/edit")).to route_to('passwords#edit')
+  end
+
+  it "PUT /users/password" do
+    expect(put("/users/password")).to route_to('passwords#update')
+  end
+
+  context 'with LDAP configured' do
+    include LdapHelpers
+
+    let(:ldap_settings) { { enabled: true } }
+
+    before do
+      stub_ldap_setting(ldap_settings)
+      Rails.application.reload_routes!
+    end
+
+    after(:all) do
+      Rails.application.reload_routes!
+    end
+
+    it 'POST /users/auth/ldapmain/callback' do
+      expect(post("/users/auth/ldapmain/callback")).to route_to('ldap/omniauth_callbacks#ldapmain')
+    end
+
+    context 'with LDAP sign-in disabled' do
+      let(:ldap_settings) { { enabled: true, prevent_ldap_sign_in: true } }
+
+      it 'prevents POST /users/auth/ldapmain/callback' do
+        expect(post("/users/auth/ldapmain/callback")).not_to be_routable
+      end
+    end
+  end
+end
+
+RSpec.describe HealthCheckController, 'routing' do
+  it 'to #index' do
+    expect(get('/health_check')).to route_to('health_check#index')
+  end
+
+  it 'also supports passing checks in the url' do
+    expect(get('/health_check/email')).to route_to('health_check#index', checks: 'email')
+  end
+end
+
+RSpec.describe InvitesController, 'routing' do
+  let_it_be(:member) { create(:project_member, :invited) }
+
+  it 'to #show' do
+    expect(get("/-/invites/#{member.invite_token}")).to route_to('invites#show', id: member.invite_token)
+  end
+
+  it 'to legacy route' do
+    expect(get("/invites/#{member.invite_token}")).to route_to('invites#show', id: member.invite_token)
+  end
+end
+
+RSpec.describe AbuseReportsController, 'routing' do
+  let_it_be(:user) { create(:user) }
+
+  it 'to #new' do
+    expect(get("/-/abuse_reports/new?user_id=#{user.id}")).to route_to('abuse_reports#new', user_id: user.id.to_s)
+  end
+
+  it 'to legacy route' do
+    expect(get("/abuse_reports/new?user_id=#{user.id}")).to route_to('abuse_reports#new', user_id: user.id.to_s)
+  end
+end
+
+RSpec.describe SentNotificationsController, 'routing' do
+  it 'to #unsubscribe' do
+    expect(get("/-/sent_notifications/4bee17d4a63ed60cf5db53417e9aeb4c/unsubscribe"))
+      .to route_to('sent_notifications#unsubscribe', id: '4bee17d4a63ed60cf5db53417e9aeb4c')
+  end
+end
+
+RSpec.describe AutocompleteController, 'routing' do
+  it 'to #users' do
+    expect(get("/-/autocomplete/users")).to route_to('autocomplete#users')
+  end
+
+  it 'to #projects' do
+    expect(get("/-/autocomplete/projects")).to route_to('autocomplete#projects')
+  end
+
+  it 'to #award_emojis' do
+    expect(get("/-/autocomplete/award_emojis")).to route_to('autocomplete#award_emojis')
+  end
+
+  it 'to #merge_request_target_branches' do
+    expect(get("/-/autocomplete/merge_request_target_branches")).to route_to('autocomplete#merge_request_target_branches')
+  end
+
+  it 'to legacy route' do
+    expect(get("/autocomplete/users")).to route_to('autocomplete#users')
+    expect(get("/autocomplete/projects")).to route_to('autocomplete#projects')
+    expect(get("/autocomplete/award_emojis")).to route_to('autocomplete#award_emojis')
+  end
+end
+
+RSpec.describe Snippets::BlobsController, "routing" do
+  it "to #raw" do
+    expect(get('/-/snippets/1/raw/master/lib/version.rb'))
+      .to route_to('snippets/blobs#raw', snippet_id: '1', ref: 'master', path: 'lib/version.rb')
+  end
+end
+
+RSpec.describe RunnerSetupController, 'routing' do
+  it 'to #platforms' do
+    expect(get("/-/runner_setup/platforms")).to route_to('runner_setup#platforms')
+  end
+end

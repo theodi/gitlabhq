@@ -1,37 +1,33 @@
-# == Schema Information
-#
-# Table name: web_hooks
-#
-#  id                    :integer          not null, primary key
-#  url                   :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  type                  :string(255)      default("ProjectHook")
-#  service_id            :integer
-#  push_events           :boolean          default(TRUE), not null
-#  issues_events         :boolean          default(FALSE), not null
-#  merge_requests_events :boolean          default(FALSE), not null
-#  tag_push_events       :boolean          default(FALSE)
-#  note_events           :boolean          default(FALSE), not null
-#
+# frozen_string_literal: true
 
 require 'spec_helper'
 
-describe ProjectHook do
+RSpec.describe ProjectHook do
+  describe 'associations' do
+    it { is_expected.to belong_to :project }
+  end
+
+  describe 'validations' do
+    it { is_expected.to validate_presence_of(:project) }
+  end
+
+  it_behaves_like 'includes Limitable concern' do
+    subject { build(:project_hook, project: create(:project)) }
+  end
+
   describe '.push_hooks' do
-    it 'should return hooks for push events only' do
+    it 'returns hooks for push events only' do
       hook = create(:project_hook, push_events: true)
-      hook2 = create(:project_hook, push_events: false)
-      expect(ProjectHook.push_hooks).to eq([hook])
+      create(:project_hook, push_events: false)
+      expect(described_class.push_hooks).to eq([hook])
     end
   end
 
   describe '.tag_push_hooks' do
-    it 'should return hooks for tag push events only' do
+    it 'returns hooks for tag push events only' do
       hook = create(:project_hook, tag_push_events: true)
-      hook2 = create(:project_hook, tag_push_events: false)
-      expect(ProjectHook.tag_push_hooks).to eq([hook])
+      create(:project_hook, tag_push_events: false)
+      expect(described_class.tag_push_hooks).to eq([hook])
     end
   end
 end

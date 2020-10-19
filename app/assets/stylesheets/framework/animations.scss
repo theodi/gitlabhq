@@ -1,0 +1,277 @@
+// This file is based off animate.css 3.5.1, available here:
+// https://github.com/daneden/animate.css/blob/3.5.1/animate.css
+//
+// animate.css - http://daneden.me/animate
+// Version - 3.5.1
+// Licensed under the MIT license - http://opensource.org/licenses/MIT
+//
+// Copyright (c) 2016 Daniel Eden
+
+.animated {
+  @include webkit-prefix(animation-duration, 1s);
+  @include webkit-prefix(animation-fill-mode, both);
+
+  &.once {
+    @include webkit-prefix(animation-iteration-count, 1);
+  }
+
+  &.short {
+    @include webkit-prefix(animation-duration, 321ms);
+    @include webkit-prefix(animation-fill-mode, none);
+  }
+}
+
+@include keyframes(pulse) {
+  from,
+  to {
+    @include webkit-prefix(transform, scale3d(1, 1, 1));
+  }
+
+  50% {
+    @include webkit-prefix(transform, scale3d(1.05, 1.05, 1.05));
+  }
+}
+
+.pulse {
+  @include webkit-prefix(animation-name, pulse);
+}
+
+/*
+* General hover animations
+*/
+
+
+// Sass multiple transitions mixin | https://gist.github.com/tobiasahlin/7a421fb9306a4f518aab
+// Usage:   @include transition(width, height 0.3s ease-in-out);
+// Output:  -webkit-transition(width 0.2s, height 0.3s ease-in-out);
+//          transition(width 0.2s, height 0.3s ease-in-out);
+//
+// Pass in any number of transitions
+@mixin transition($transitions...) {
+  $unfolded-transitions: ();
+  @each $transition in $transitions {
+    $unfolded-transitions: append($unfolded-transitions, unfold-transition($transition), comma);
+  }
+
+  transition: $unfolded-transitions;
+}
+
+@mixin disable-all-animation {
+  /*CSS transitions*/
+  transition-property: none !important;
+  /*CSS transforms*/
+  transform: none !important;
+  /*CSS animations*/
+  animation: none !important;
+}
+
+@function unfold-transition ($transition) {
+  // Default values
+  $property: all;
+  $duration: $general-hover-transition-duration;
+  $easing: $general-hover-transition-curve; // Browser default is ease, which is what we want
+  $delay: null; // Browser default is 0, which is what we want
+  $default-properties: ($property, $duration, $easing, $delay);
+
+  // Grab transition properties if they exist
+  $unfolded-transition: ();
+  @for $i from 1 through length($default-properties) {
+    $p: null;
+    @if $i <= length($transition) {
+      $p: nth($transition, $i);
+    } @else {
+      $p: nth($default-properties, $i);
+    }
+    $unfolded-transition: append($unfolded-transition, $p);
+  }
+
+  @return $unfolded-transition;
+}
+
+.btn {
+  @include transition(background-color, border-color, color, box-shadow);
+}
+
+.dropdown-menu-toggle,
+.header-user-avatar {
+  @include transition(border-color);
+}
+
+.note-action-button,
+.toolbar-btn,
+.dropdown-toggle-caret {
+  @include transition(color);
+}
+
+a {
+  @include transition(background-color, color, border);
+}
+
+.stage-nav-item {
+  @include transition(background-color, box-shadow);
+}
+
+.dropdown-menu a,
+.dropdown-menu button {
+  transition: none;
+}
+
+@keyframes fadeIn {
+  0% {
+    opacity: 0;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.fade-in {
+  animation: fadeIn $fade-in-duration 1;
+}
+
+@keyframes fadeInHalf {
+  0% {
+    opacity: 0;
+  }
+
+  100% {
+    opacity: 0.5;
+  }
+}
+
+.fade-in-half {
+  animation: fadeInHalf $fade-in-duration 1;
+}
+
+@keyframes fadeInFull {
+  0% {
+    opacity: 0.5;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.fade-in-full {
+  animation: fadeInFull $fade-in-duration 1;
+}
+
+.animation-container {
+  height: 40px;
+  overflow: hidden;
+
+  &.animation-container-small {
+    height: 12px;
+  }
+
+  &.animation-container-right {
+    .skeleton-line-2 {
+      left: 0;
+      right: 150px;
+    }
+  }
+
+  [class^='skeleton-line-'] {
+    position: relative;
+    background-color: $gray-50;
+    height: 10px;
+    overflow: hidden;
+
+    &:not(:last-of-type) {
+      margin-bottom: 4px;
+    }
+
+    &::after {
+      content: ' ';
+      display: block;
+      animation: blockTextShine 1s linear infinite forwards;
+      background-repeat: no-repeat;
+      background-size: cover;
+      background-image: linear-gradient(to right,
+      $gray-50 0%,
+      $gray-10 20%,
+      $gray-50 40%,
+      $gray-50 100%);
+      height: 10px;
+    }
+  }
+}
+
+$skeleton-line-widths: (
+  156px,
+  235px,
+  200px,
+);
+
+@for $count from 1 through length($skeleton-line-widths) {
+  .skeleton-line-#{$count} {
+    width: nth($skeleton-line-widths, $count);
+  }
+}
+
+@keyframes blockTextShine {
+  0% {
+    transform: translateX(-468px);
+  }
+
+  100% {
+    transform: translateX(468px);
+  }
+}
+
+.slide-down-enter-active {
+  transition: transform 0.2s;
+}
+
+.slide-down-enter,
+.slide-down-leave-to {
+  transform: translateY(-30%);
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg);}
+  100% { transform: rotate(360deg);}
+}
+
+/** COMMON ANIMATION CLASSES **/
+.transform-origin-center { @include webkit-prefix(transform-origin, 50% 50%); }
+.animate-n-spin { @include webkit-prefix(animation-name, spin); }
+.animate-c-infinite { @include webkit-prefix(animation-iteration-count, infinite); }
+.animate-t-linear { @include webkit-prefix(animation-timing-function, linear); }
+.animate-d-1 { @include webkit-prefix(animation-duration, 1s); }
+.animate-d-2 { @include webkit-prefix(animation-duration, 2s); }
+
+/** COMPOSITE ANIMATION CLASSES **/
+.gl-spinner {
+  @include webkit-prefix(animation-name, spin);
+  @include webkit-prefix(animation-iteration-count, infinite);
+  @include webkit-prefix(animation-timing-function, linear);
+  @include webkit-prefix(animation-duration, 1s);
+  transform-origin: 50% 50%;
+}
+
+/* ----------------------------------------------
+ * Generated by Animista on 2019-4-26 17:40:41
+ * w: http://animista.net, t: @cssanimista
+ * ---------------------------------------------- */
+@keyframes slide-in-fwd-bottom {
+  0% {
+    transform: translateZ(-1400px) translateY(800px);
+    opacity: 0;
+  }
+
+  100% {
+    transform: translateZ(0) translateY(0);
+    opacity: 1;
+  }
+}
+
+.slide-in-fwd-bottom-enter-active {
+  animation: slide-in-fwd-bottom 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+.slide-in-fwd-bottom-leave-active {
+  animation: slide-in-fwd-bottom 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both reverse;
+}

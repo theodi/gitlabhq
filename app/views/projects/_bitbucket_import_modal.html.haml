@@ -1,13 +1,14 @@
-%div#bitbucket_import_modal.modal.hide
+#bitbucket_import_modal.modal
   .modal-dialog
     .modal-content
       .modal-header
-        %a.close{href: "#", "data-dismiss" => "modal"} ×
-        %h3 Import projects from Bitbucket
+        %h3.modal-title Import projects from Bitbucket
+        %button.close{ type: "button", "data-dismiss": "modal", "aria-label" => _('Close') }
+          %span{ "aria-hidden": true } &times;
       .modal-body
-        To enable importing projects from Bitbucket, 
+        To enable importing projects from Bitbucket,
         - if current_user.admin?
-          you need to
+          as administrator you need to configure
         - else
-          your GitLab administrator needs to
-        == #{link_to 'setup OAuth integration', 'https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/integration/bitbucket.md'}.
+          ask your GitLab administrator to configure
+        = link_to 'OAuth integration', help_page_path("integration/bitbucket")

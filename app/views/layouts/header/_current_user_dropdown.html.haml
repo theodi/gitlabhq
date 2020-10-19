@@ -1,0 +1,57 @@
+- return unless current_user
+
+%ul
+  %li.current-user
+    .user-name.bold
+      = current_user.name
+    = current_user.to_reference
+    - if current_user.status
+      .user-status.d-flex.align-items-center.gl-mt-2.has-tooltip{ title: current_user.status.message_html, data: { html: 'true', placement: 'bottom' } }
+        %span.user-status-emoji.d-flex.align-items-center
+          = emoji_icon current_user.status.emoji
+        %span.user-status-message.str-truncated
+          = current_user.status.message_html.html_safe
+  %li.divider
+  - if can?(current_user, :update_user_status, current_user)
+    %li
+      %button.btn.menu-item.js-set-status-modal-trigger{ type: 'button' }
+        - if current_user.status.present?
+          = s_('SetStatusModal|Edit status')
+        - else
+          = s_('SetStatusModal|Set status')
+  - if current_user_menu?(:profile)
+    %li
+      = link_to s_("CurrentUser|Profile"), current_user, class: 'profile-link', data: { user: current_user.username }
+  - if current_user_menu?(:start_trial)
+    %li
+      %a.trial-link{ href: trials_link_url }
+        = s_("CurrentUser|Start a Gold trial")
+        = emoji_icon('rocket')
+  - if current_user_menu?(:settings)
+    %li
+      = link_to s_("CurrentUser|Settings"), profile_path, data: { qa_selector: 'settings_link' }
+  = render_if_exists 'layouts/header/buy_pipeline_minutes', project: @project, namespace: @group
+  = render_if_exists 'layouts/header/upgrade'
+
+  - if current_user_menu?(:help)
+    %li.divider.d-md-none
+    %li.d-md-none
+      = link_to _("Help"), help_path
+    %li.d-md-none
+      = link_to _("Support"), support_url
+    %li.d-md-none
+      = render 'shared/help_dropdown_forum_link'
+  %li.d-md-none
+    = link_to _("Submit feedback"), "https://about.gitlab.com/submit-feedback"
+  - if current_user_menu?(:help) || current_user_menu?(:settings) || current_user_menu?(:profile)
+    %li.d-md-none
+      = render 'shared/user_dropdown_contributing_link'
+  = render 'shared/user_dropdown_instance_review'
+  - if Gitlab.com_but_not_canary?
+    %li.d-md-none
+      = link_to _("Switch to GitLab Next"), "https://next.gitlab.com/"
+
+  - if current_user_menu?(:sign_out)
+    %li.divider
+    %li
+      = link_to _("Sign out"), destroy_user_session_path, method: :post, class: "sign-out-link", data: { qa_selector: 'sign_out_link' }

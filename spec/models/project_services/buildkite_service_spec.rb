@@ -1,83 +1,151 @@
-# == Schema Information
-#
-# Table name: services
-#
-#  id                    :integer          not null, primary key
-#  type                  :string(255)
-#  title                 :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  active                :boolean          default(FALSE), not null
-#  properties            :text
-#  template              :boolean          default(FALSE)
-#  push_events           :boolean          default(TRUE)
-#  issues_events         :boolean          default(TRUE)
-#  merge_requests_events :boolean          default(TRUE)
-#  tag_push_events       :boolean          default(TRUE)
-#  note_events           :boolean          default(TRUE), not null
-#
+# frozen_string_literal: true
 
 require 'spec_helper'
 
-describe BuildkiteService do
+RSpec.describe BuildkiteService, :use_clean_rails_memory_store_caching do
+  include ReactiveCachingHelpers
+  include StubRequests
+
+  let(:project) { create(:project) }
+
+  subject(:service) do
+    described_class.create!(
+      project: project,
+      properties: {
+        service_hook: true,
+        project_url: 'https://buildkite.com/organization-name/example-pipeline',
+        token: 'secret-sauce-webhook-token:secret-sauce-status-token'
+      }
+    )
+  end
+
   describe 'Associations' do
     it { is_expected.to belong_to :project }
     it { is_expected.to have_one :service_hook }
   end
 
-  describe 'commits methods' do
-    before do
-      @project = Project.new
-      @project.stub(
-        default_branch: 'default-brancho'
-      )
+  describe 'Validations' do
+    context 'when service is active' do
+      before do
+        subject.active = true
+      end
 
-      @service = BuildkiteService.new
-      @service.stub(
-        project: @project,
-        service_hook: true,
-        project_url: 'https://buildkite.com/account-name/example-project',
-        token: 'secret-sauce-webhook-token:secret-sauce-status-token'
-      )
+      it { is_expected.to validate_presence_of(:project_url) }
+      it { is_expected.to validate_presence_of(:token) }
+      it_behaves_like 'issue tracker service URL attribute', :project_url
     end
 
-    describe :webhook_url do
+    context 'when service is inactive' do
+      before do
+        subject.active = false
+      end
+
+      it { is_expected.not_to validate_presence_of(:project_url) }
+      it { is_expected.not_to validate_presence_of(:token) }
+    end
+  end
+
+  describe '.supported_events' do
+    it 'supports push, merge_request, and tag_push events' do
+      expect(service.supported_events).to eq %w(push merge_request tag_push)
+    end
+  end
+
+  describe 'commits methods' do
+    before do
+      allow(project).to receive(:default_branch).and_return('default-brancho')
+    end
+
+    it 'always activates SSL verification after saved' do
+      service.create_service_hook(enable_ssl_verification: false)
+
+      service.enable_ssl_verification = false
+      service.active = true
+
+      expect { service.save! }
+        .to change { service.service_hook.enable_ssl_verification }.from(false).to(true)
+    end
+
+    describe '#webhook_url' do
       it 'returns the webhook url' do
-        expect(@service.webhook_url).to eq(
+        expect(service.webhook_url).to eq(
           'https://webhook.buildkite.com/deliver/secret-sauce-webhook-token'
         )
       end
     end
 
-    describe :commit_status_path do
+    describe '#commit_status_path' do
       it 'returns the correct status page' do
-        expect(@service.commit_status_path('2ab7834c')).to eq(
+        expect(service.commit_status_path('2ab7834c')).to eq(
           'https://gitlab.buildkite.com/status/secret-sauce-status-token.json?commit=2ab7834c'
         )
       end
     end
 
-    describe :build_page do
+    describe '#build_page' do
       it 'returns the correct build page' do
-        expect(@service.build_page('2ab7834c', nil)).to eq(
-          'https://buildkite.com/account-name/example-project/builds?commit=2ab7834c'
+        expect(service.build_page('2ab7834c', nil)).to eq(
+          'https://buildkite.com/organization-name/example-pipeline/builds?commit=2ab7834c'
         )
       end
     end
 
-    describe :builds_page do
-      it 'returns the correct path to the builds page' do
-        expect(@service.builds_path).to eq(
-          'https://buildkite.com/account-name/example-project/builds?branch=default-brancho'
-        )
+    describe '#commit_status' do
+      it 'returns the contents of the reactive cache' do
+        stub_reactive_cache(service, { commit_status: 'foo' }, 'sha', 'ref')
+
+        expect(service.commit_status('sha', 'ref')).to eq('foo')
       end
     end
 
-    describe :status_img_path do
-      it 'returns the correct path to the status image' do
-        expect(@service.status_img_path).to eq('https://badge.buildkite.com/secret-sauce-status-token.svg')
+    describe '#calculate_reactive_cache' do
+      describe '#commit_status' do
+        let(:buildkite_full_url) do
+          'https://gitlab.buildkite.com/status/secret-sauce-status-token.json?commit=123'
+        end
+
+        subject { service.calculate_reactive_cache('123', 'unused')[:commit_status] }
+
+        it 'sets commit status to :error when status is 500' do
+          stub_request(status: 500)
+
+          is_expected.to eq(:error)
+        end
+
+        it 'sets commit status to :error when status is 404' do
+          stub_request(status: 404)
+
+          is_expected.to eq(:error)
+        end
+
+        it 'passes through build status untouched when status is 200' do
+          stub_request(body: %q({"status":"Great Success"}))
+
+          is_expected.to eq('Great Success')
+        end
+
+        Gitlab::HTTP::HTTP_ERRORS.each do |http_error|
+          it "sets commit status to :error with a #{http_error.name} error" do
+            WebMock.stub_request(:get, buildkite_full_url)
+              .to_raise(http_error)
+
+            expect(Gitlab::ErrorTracking)
+              .to receive(:log_exception)
+              .with(instance_of(http_error), project_id: project.id)
+
+            is_expected.to eq(:error)
+          end
+        end
       end
     end
+  end
+
+  def stub_request(status: 200, body: nil)
+    body ||= %q({"status":"success"})
+
+    stub_full_request(buildkite_full_url)
+      .to_return(status: status,
+                 headers: { 'Content-Type' => 'application/json' },
+                 body: body)
   end
 end

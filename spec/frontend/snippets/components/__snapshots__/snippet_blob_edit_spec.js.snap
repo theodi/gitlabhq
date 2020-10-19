@@ -1,0 +1,24 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Snippet Blob Edit component with loaded blob matches snapshot 1`] = `
+<div
+  class="file-holder snippet"
+  data-qa-selector="file_holder_container"
+>
+  <blob-header-edit-stub
+    candelete="true"
+    data-qa-selector="file_name_field"
+    id="blob_local_7_file_path"
+    showdelete="true"
+    value="foo/bar/test.md"
+  />
+   
+  <editor-lite-stub
+    editoroptions="[object Object]"
+    fileglobalid="blob_local_7"
+    filename="foo/bar/test.md"
+    value="Lorem ipsum dolar sit amet,
+consectetur adipiscing elit."
+  />
+</div>
+`;

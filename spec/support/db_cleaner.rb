@@ -1,50 +1,19 @@
-# RSpec.configure do |config|
+# frozen_string_literal: true
 
-#   config.around(:each) do |example|
-#     DatabaseCleaner.strategy = :transaction
-#     DatabaseCleaner.clean_with(:truncation)
-#     DatabaseCleaner.cleaning do
-#       example.run
-#     end
-#   end
+module DbCleaner
+  def delete_from_all_tables!(except: [])
+    except << 'ar_internal_metadata'
 
-#   config.around(:each, js: true) do |example|
-#     DatabaseCleaner.strategy = :truncation
-#     DatabaseCleaner.clean_with(:truncation)
-#     DatabaseCleaner.cleaning do
-#       example.run
-#     end
-#   end
-# end
-RSpec.configure do |config|
-  config.before(:suite) do
-    DatabaseCleaner.clean_with(:truncation)
+    DatabaseCleaner.clean_with(:deletion, cache_tables: false, except: except)
   end
 
-  config.before(:each) do
-    DatabaseCleaner.strategy = :transaction
+  def deletion_except_tables
+    []
   end
 
-  config.before(:each, :js => true) do
-    DatabaseCleaner.strategy = :truncation
+  def setup_database_cleaner
+    DatabaseCleaner[:active_record, { connection: ActiveRecord::Base }]
   end
-
-  config.before(:each) do
-    DatabaseCleaner.start
-  end
-
-  config.after(:each) do
-    DatabaseCleaner.clean
-  end
-
-  # rspec-rails 3 will no longer automatically infer an example group's spec type
-  # from the file location. You can explicitly opt-in to the feature using this
-  # config option.
-  # To explicitly tag specs without using automatic inference, set the `:type`
-  # metadata manually:
-  #
-  #     describe ThingsController, :type => :controller do
-  #       # Equivalent to being in spec/controllers
-  #     end
-  config.infer_spec_type_from_file_location!
 end
+
+DbCleaner.prepend_if_ee('EE::DbCleaner')

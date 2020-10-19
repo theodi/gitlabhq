@@ -1,33 +1,36 @@
-# == Schema Information
-#
-# Table name: milestones
-#
-#  id          :integer          not null, primary key
-#  title       :string(255)      not null
-#  project_id  :integer          not null
-#  description :text
-#  due_date    :date
-#  created_at  :datetime
-#  updated_at  :datetime
-#  state       :string(255)
-#  iid         :integer
-#
+# frozen_string_literal: true
 
-class Milestone < ActiveRecord::Base
-  include InternalId
+class Milestone < ApplicationRecord
   include Sortable
+  include Timebox
+  include Milestoneish
+  include FromUnion
+  include Importable
 
-  belongs_to :project
-  has_many :issues
-  has_many :merge_requests
-  has_many :participants, through: :issues, source: :assignee
+  prepend_if_ee('::EE::Milestone') # rubocop: disable Cop/InjectEnterpriseEditionModule
+
+  has_many :milestone_releases
+  has_many :releases, through: :milestone_releases
+
+  has_internal_id :iid, scope: :project, track_if: -> { !importing? }, init: ->(s) { s&.project&.milestones&.maximum(:iid) }
+  has_internal_id :iid, scope: :group, track_if: -> { !importing? }, init: ->(s) { s&.group&.milestones&.maximum(:iid) }
+
+  has_many :events, as: :target, dependent: :delete_all # rubocop:disable Cop/ActiveRecordDependent
 
   scope :active, -> { with_state(:active) }
-  scope :closed, -> { with_state(:closed) }
-  scope :of_projects, ->(ids) { where(project_id: ids) }
+  scope :started, -> { active.where('milestones.start_date <= CURRENT_DATE') }
+  scope :not_started, -> { active.where('milestones.start_date > CURRENT_DATE') }
+  scope :not_upcoming, -> do
+    active
+        .where('milestones.due_date <= CURRENT_DATE')
+        .order(:project_id, :group_id, :due_date)
+  end
 
-  validates :title, presence: true
-  validates :project, presence: true
+  scope :order_by_name_asc, -> { order(Arel::Nodes::Ascending.new(arel_table[:title].lower)) }
+  scope :reorder_by_due_date_asc, -> { reorder(Gitlab::Database.nulls_last_order('due_date', 'ASC')) }
+  scope :with_api_entity_associations, -> { preload(project: [:project_feature, :route, namespace: :route]) }
+
+  validates_associated :milestone_releases, message: -> (_, obj) { obj[:value].map(&:errors).map(&:full_messages).join(",") }
 
   state_machine :state, initial: :active do
     event :close do
@@ -43,51 +46,121 @@ class Milestone < ActiveRecord::Base
     state :active
   end
 
-  def expired?
-    if due_date
-      due_date.past?
-    else
-      false
-    end
+  def self.min_chars_for_partial_matching
+    2
   end
 
-  def open_items_count
-    self.issues.opened.count + self.merge_requests.opened.count
+  def self.reference_prefix
+    '%'
   end
 
-  def closed_items_count
-    self.issues.closed.count + self.merge_requests.closed.count
+  def self.reference_pattern
+    # NOTE: The iid pattern only matches when all characters on the expression
+    # are digits, so it will match %2 but not %2.1 because that's probably a
+    # milestone name and we want it to be matched as such.
+    @reference_pattern ||= %r{
+      (#{Project.reference_pattern})?
+      #{Regexp.escape(reference_prefix)}
+      (?:
+        (?<milestone_iid>
+          \d+(?!\S\w)\b # Integer-based milestone iid, or
+        ) |
+        (?<milestone_name>
+          [^"\s]+\b |  # String-based single-word milestone title, or
+          "[^"]+"      # String-based multi-word milestone surrounded in quotes
+        )
+      )
+    }x
   end
 
-  def total_items_count
-    self.issues.count + self.merge_requests.count
+  def self.link_reference_pattern
+    @link_reference_pattern ||= super("milestones", /(?<milestone>\d+)/)
   end
 
-  def percent_complete
-    ((closed_items_count * 100) / total_items_count).abs
-  rescue ZeroDivisionError
-    0
+  def self.upcoming_ids(projects, groups)
+    unscoped
+      .for_projects_and_groups(projects, groups)
+      .active.where('milestones.due_date > CURRENT_DATE')
+      .order(:project_id, :group_id, :due_date).select('DISTINCT ON (project_id, group_id) id')
   end
 
-  def expires_at
-    if due_date
-      if due_date.past?
-        "expired at #{due_date.stamp("Aug 21, 2011")}"
+  def participants
+    User.joins(assigned_issues: :milestone).where("milestones.id = ?", id).distinct
+  end
+
+  def self.sort_by_attribute(method)
+    sorted =
+      case method.to_s
+      when 'due_date_asc'
+        reorder_by_due_date_asc
+      when 'due_date_desc'
+        reorder(Gitlab::Database.nulls_last_order('due_date', 'DESC'))
+      when 'name_asc'
+        reorder(Arel::Nodes::Ascending.new(arel_table[:title].lower))
+      when 'name_desc'
+        reorder(Arel::Nodes::Descending.new(arel_table[:title].lower))
+      when 'start_date_asc'
+        reorder(Gitlab::Database.nulls_last_order('start_date', 'ASC'))
+      when 'start_date_desc'
+        reorder(Gitlab::Database.nulls_last_order('start_date', 'DESC'))
       else
-        "expires at #{due_date.stamp("Aug 21, 2011")}"
+        order_by(method)
       end
-    end
+
+    sorted.with_order_id_desc
+  end
+
+  def self.states_count(projects, groups = nil)
+    return STATE_COUNT_HASH unless projects || groups
+
+    counts = Milestone
+               .for_projects_and_groups(projects, groups)
+               .reorder(nil)
+               .group(:state)
+               .count
+
+    {
+        opened: counts['active'] || 0,
+        closed: counts['closed'] || 0,
+        all: counts.values.sum
+    }
+  end
+
+  def for_display
+    self
   end
 
   def can_be_closed?
-    active? && issues.opened.count.zero?
-  end
-
-  def is_empty?
-    total_items_count.zero?
+    active? && issues.opened.count == 0
   end
 
   def author_id
     nil
+  end
+
+  # TODO: remove after all code paths use `timebox_id`
+  # https://gitlab.com/gitlab-org/gitlab/-/issues/215688
+  alias_method :milestoneish_id, :timebox_id
+  # TODO: remove after all code paths use (group|project)_timebox?
+  # https://gitlab.com/gitlab-org/gitlab/-/issues/215690
+  alias_method :group_milestone?, :group_timebox?
+  alias_method :project_milestone?, :project_timebox?
+
+  def parent
+    if group_milestone?
+      group
+    else
+      project
+    end
+  end
+
+  def subgroup_milestone?
+    group_milestone? && parent.subgroup?
+  end
+
+  private
+
+  def issues_finder_params
+    { project_id: project_id, group_id: group_id, include_subgroups: group_id.present? }.compact
   end
 end

@@ -1,0 +1,39 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Blob Header Filepath rendering matches the snapshot 1`] = `
+<div
+  class="file-header-content d-flex align-items-center lh-100"
+>
+   
+  <file-icon-stub
+    aria-hidden="true"
+    cssclasses="mr-2"
+    filemode=""
+    filename="foo/bar/dummy.md"
+    size="18"
+  />
+   
+  <strong
+    class="file-title-name mr-1 js-blob-header-filepath"
+    data-qa-selector="file_title_content"
+  >
+    foo/bar/dummy.md
+  </strong>
+   
+  <small
+    class="mr-2"
+  >
+    a lot
+  </small>
+   
+  <clipboard-button-stub
+    category="tertiary"
+    cssclass="btn-clipboard btn-transparent lh-100 position-static"
+    gfm="\`foo/bar/dummy.md\`"
+    size="medium"
+    text="foo/bar/dummy.md"
+    title="Copy file path"
+    tooltipplacement="top"
+  />
+</div>
+`;

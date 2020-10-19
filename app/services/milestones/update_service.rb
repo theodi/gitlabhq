@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Milestones
   class UpdateService < Milestones::BaseService
     def execute(milestone)
@@ -5,16 +7,18 @@ module Milestones
 
       case state
       when 'activate'
-        Milestones::ReopenService.new(project, current_user, {}).execute(milestone)
+        Milestones::ReopenService.new(parent, current_user, {}).execute(milestone)
       when 'close'
-        Milestones::CloseService.new(project, current_user, {}).execute(milestone)
+        Milestones::CloseService.new(parent, current_user, {}).execute(milestone)
       end
 
       if params.present?
-        milestone.update_attributes(params.except(:state_event))
+        milestone.update(params.except(:state_event))
       end
 
       milestone
     end
   end
 end
+
+Milestones::UpdateService.prepend_if_ee('EE::Milestones::UpdateService')

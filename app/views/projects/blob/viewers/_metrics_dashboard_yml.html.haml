@@ -1,0 +1,11 @@
+- if viewer.valid?
+  = icon('check fw')
+  = _('Metrics Dashboard YAML definition is valid.')
+- else
+  = icon('warning fw')
+  = _('Metrics Dashboard YAML definition is invalid:')
+  %ul
+    - viewer.errors.each do |error|
+      %li= error
+
+= link_to _('Learn more'), help_page_path('operations/metrics/dashboards/index.md')

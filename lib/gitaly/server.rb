@@ -1,0 +1,124 @@
+# frozen_string_literal: true
+
+module Gitaly
+  class Server
+    SHA_VERSION_REGEX = /\A\d+\.\d+\.\d+-\d+-g([a-f0-9]{8})\z/.freeze
+    DEFAULT_REPLICATION_FACTOR = 1
+
+    class << self
+      def all
+        Gitlab.config.repositories.storages.keys.map { |s| Gitaly::Server.new(s) }
+      end
+
+      def count
+        all.size
+      end
+
+      def filesystems
+        all.map(&:filesystem_type).compact.uniq
+      end
+
+      def gitaly_clusters
+        all.count { |g| g.replication_factor > DEFAULT_REPLICATION_FACTOR }
+      end
+    end
+
+    attr_reader :storage
+
+    def initialize(storage)
+      @storage = storage
+    end
+
+    def server_version
+      info.server_version
+    end
+
+    def git_binary_version
+      info.git_version
+    end
+
+    def expected_version?
+      server_version == Gitlab::GitalyClient.expected_server_version || matches_sha?
+    end
+    alias_method :up_to_date?, :expected_version?
+
+    def read_writeable?
+      readable? && writeable?
+    end
+
+    def readable?
+      storage_status&.readable
+    end
+
+    def writeable?
+      storage_status&.writeable
+    end
+
+    def filesystem_type
+      storage_status&.fs_type
+    end
+
+    def disk_used
+      disk_statistics_storage_status&.used
+    end
+
+    def disk_available
+      disk_statistics_storage_status&.available
+    end
+
+    # Simple convenience method for when obtaining both used and available
+    # statistics at once is preferred.
+    def disk_stats
+      disk_statistics_storage_status
+    end
+
+    def address
+      Gitlab::GitalyClient.address(@storage)
+    rescue RuntimeError => e
+      "Error getting the address: #{e.message}"
+    end
+
+    def replication_factor
+      storage_status&.replication_factor
+    end
+
+    private
+
+    def storage_status
+      @storage_status ||= info.storage_statuses.find { |s| s.storage_name == storage }
+    end
+
+    def disk_statistics_storage_status
+      @disk_statistics_storage_status ||= disk_statistics.storage_statuses.find { |s| s.storage_name == storage }
+    end
+
+    def matches_sha?
+      match = server_version.match(SHA_VERSION_REGEX)
+      return false unless match
+
+      Gitlab::GitalyClient.expected_server_version.start_with?(match[1])
+    end
+
+    def info
+      @info ||=
+        begin
+          Gitlab::GitalyClient::ServerService.new(@storage).info
+        rescue GRPC::Unavailable, GRPC::DeadlineExceeded => ex
+          Gitlab::ErrorTracking.track_exception(ex)
+          # This will show the server as being out of date
+          Gitaly::ServerInfoResponse.new(git_version: '', server_version: '', storage_statuses: [])
+        end
+    end
+
+    def disk_statistics
+      @disk_statistics ||=
+        begin
+          Gitlab::GitalyClient::ServerService.new(@storage).disk_statistics
+        rescue GRPC::Unavailable, GRPC::DeadlineExceeded => ex
+          Gitlab::ErrorTracking.track_exception(ex)
+          # This will show the server as being out of date
+          Gitaly::ServerInfoResponse.new(git_version: '', server_version: '', storage_statuses: [])
+        end
+    end
+  end
+end

@@ -1,10 +1,18 @@
-!!! 5
-%html{ lang: "en"}
-  = render "layouts/head"
-  %body{class: "#{app_theme}", :'data-page' => body_data_page}
-    - if current_user
-      = render "layouts/header/default", title: header_title
-    - else
-      = render "layouts/header/public", title: header_title
+- page_classes = page_class << @html_class
+- page_classes = page_classes.flatten.compact
 
-    = render 'layouts/page', sidebar: sidebar
+!!! 5
+%html{ lang: I18n.locale, class: page_classes }
+  = render "layouts/head"
+  %body{ class: "#{user_application_theme} #{user_tab_width} #{@body_class} #{client_class_list}", data: body_data }
+    = render "layouts/init_auto_complete" if @gfm_form
+    = render "layouts/init_client_detection_flags"
+    = render 'peek/bar'
+    = header_message
+    = render partial: "layouts/header/default", locals: { project: @project, group: @group }
+    = render 'layouts/page', sidebar: sidebar, nav: nav
+    = footer_message
+
+    = render 'layouts/img_loader'
+
+    = yield :scripts_body

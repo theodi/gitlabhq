@@ -1,19 +1,13 @@
-# == Schema Information
-#
-# Table name: snippets
-#
-#  id               :integer          not null, primary key
-#  title            :string(255)
-#  content          :text
-#  author_id        :integer          not null
-#  project_id       :integer
-#  created_at       :datetime
-#  updated_at       :datetime
-#  file_name        :string(255)
-#  expires_at       :datetime
-#  type             :string(255)
-#  visibility_level :integer          default(0), not null
-#
+# frozen_string_literal: true
 
 class PersonalSnippet < Snippet
+  include WithUploads
+
+  def parent_user
+    author
+  end
+
+  def skip_project_check?
+    true
+  end
 end

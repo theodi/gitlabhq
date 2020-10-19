@@ -1,6 +1,8 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe 'Gitlab::VersionInfo', no_db: true do
+RSpec.describe 'Gitlab::VersionInfo' do
   before do
     @unknown = Gitlab::VersionInfo.new
     @v0_0_1 = Gitlab::VersionInfo.new(0, 0, 1)
@@ -50,13 +52,16 @@ describe 'Gitlab::VersionInfo', no_db: true do
   context 'unknown' do
     it { expect(@unknown).not_to be @v0_0_1 }
     it { expect(@unknown).not_to be Gitlab::VersionInfo.new }
-    it { expect{@unknown > @v0_0_1}.to raise_error(ArgumentError) }
-    it { expect{@unknown < @v0_0_1}.to raise_error(ArgumentError) }
+    it { expect {@unknown > @v0_0_1}.to raise_error(ArgumentError) }
+    it { expect {@unknown < @v0_0_1}.to raise_error(ArgumentError) }
   end
 
   context 'parse' do
     it { expect(Gitlab::VersionInfo.parse("1.0.0")).to eq(@v1_0_0) }
     it { expect(Gitlab::VersionInfo.parse("1.0.0.1")).to eq(@v1_0_0) }
+    it { expect(Gitlab::VersionInfo.parse("1.0.0-ee")).to eq(@v1_0_0) }
+    it { expect(Gitlab::VersionInfo.parse("1.0.0-rc1")).to eq(@v1_0_0) }
+    it { expect(Gitlab::VersionInfo.parse("1.0.0-rc1-ee")).to eq(@v1_0_0) }
     it { expect(Gitlab::VersionInfo.parse("git 1.0.0b1")).to eq(@v1_0_0) }
     it { expect(Gitlab::VersionInfo.parse("git 1.0b1")).not_to be_valid }
   end
@@ -66,4 +71,3 @@ describe 'Gitlab::VersionInfo', no_db: true do
     it { expect(@unknown.to_s).to eq("Unknown") }
   end
 end
-

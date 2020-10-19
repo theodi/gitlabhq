@@ -1,38 +1,14 @@
-- page_title "System Hooks"
-%h3.page-title
-  System hooks
+- page_title @hook.pluralized_name
 
-%p.light
-  #{link_to "System hooks ", help_page_path("system_hooks", "system_hooks"), class: "vlink"} can be
-  used for binding events when GitLab creates a User or Project.
+.row.gl-mt-3
+  .col-lg-4
+    = render 'shared/web_hooks/title_and_docs', hook: @hook
 
-%hr
+  .col-lg-8.gl-mb-3
+    = form_for @hook, as: :hook, url: admin_hooks_path do |f|
+      = render partial: 'form', locals: { form: f, hook: @hook }
+      = f.submit _('Add system hook'), class: 'btn gl-button btn-success'
 
+    = render 'shared/web_hooks/index', hooks: @hooks, hook_class: @hook.class
 
-= form_for @hook, as: :hook, url: admin_hooks_path, html: { class: 'form-horizontal' } do |f|
-  -if @hook.errors.any?
-    .alert.alert-danger
-      - @hook.errors.full_messages.each do |msg|
-        %p= msg
-  .form-group
-    = f.label :url, "URL:", class: 'control-label'
-    .col-sm-10
-      = f.text_field :url, class: "form-control"
-  .form-actions
-    = f.submit "Add System Hook", class: "btn btn-create"
-%hr
-
--if @hooks.any?
-  .panel.panel-default
-    .panel-heading
-      System hooks (#{@hooks.count})
-    %ul.well-list
-      - @hooks.each do |hook|
-        %li
-          .list-item-name
-            = link_to admin_hook_path(hook) do
-              %strong= hook.url
-
-          .pull-right
-            = link_to 'Test Hook', admin_hook_test_path(hook), class: "btn btn-sm"
-            = link_to 'Remove', admin_hook_path(hook), data: { confirm: 'Are you sure?' }, method: :delete, class: "btn btn-remove btn-sm"
+= render 'shared/file_hooks/index'

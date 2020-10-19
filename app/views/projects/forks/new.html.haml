@@ -1,40 +1,18 @@
-- page_title "Fork project"
-%h3.page-title Fork project
-%p.lead
-  Click to fork the project to a user or group
-%hr
+- page_title _("Fork project")
 
-.fork-namespaces
-  - @namespaces.in_groups_of(6, false) do |group|
-    .row
-      - group.each do |namespace|
-        .col-md-2.col-sm-3
-          - if fork = namespace.find_fork_of(@project)
-            .thumbnail.fork-exists-thumbnail
-              = link_to project_path(fork), title: "Visit project fork", class: 'has_tooltip' do
-                = image_tag namespace_icon(namespace, 200)
-                .caption
-                  %h4=namespace.human_name
-                  %p
-                    = namespace.path
-          - else
-            .thumbnail.fork-thumbnail
-              = link_to namespace_project_fork_path(@project.namespace, @project, namespace_key: namespace.id), title: "Fork here", method: "POST", class: 'has_tooltip' do
-                = image_tag namespace_icon(namespace, 200)
-                .caption
-                  %h4=namespace.human_name
-                  %p
-                    = namespace.path
-
-  %p.light
-    Fork is a copy of a project repository.
-    %br
-    Forking a repository allows you to do changes without affecting the original project.
-
-.save-project-loader.hide
-  .center
-    %h2
-      %i.fa.fa-spinner.fa-spin
-      Forking repository
-    %p Please wait a moment, this page will automatically refresh when ready.
+.row.gl-mt-3
+  .col-lg-3
+    %h4.gl-mt-0
+      = _("Fork project")
+    %p
+      = _("A fork is a copy of a project.")
+      %br
+      = _('Forking a repository allows you to make changes without affecting the original project.')
+  .col-lg-9
+    - if @own_namespace.present?
+      .fork-thumbnail-container.js-fork-content
+        %h5.gl-mt-0.gl-mb-0.gl-ml-3.gl-mr-3
+          = _("Select a namespace to fork the project")
+        = render 'fork_button', namespace: @own_namespace
+    #fork-groups-mount-element{ data: { endpoint: new_project_fork_path(@project, format: :json), can_create_project: current_user.can_create_project?.to_s } }
 

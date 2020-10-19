@@ -1,328 +1,593 @@
+# frozen_string_literal: true
+
+require_dependency 'declarative_policy'
+
 module API
-  # Projects API
-  class Projects < Grape::API
-    before { authenticate! }
+  class Projects < ::API::Base
+    include PaginationParams
+    include Helpers::CustomAttributes
+
+    helpers Helpers::ProjectsHelpers
+
+    before { authenticate_non_get! }
+
+    helpers do
+      # EE::API::Projects would override this method
+      def apply_filters(projects)
+        projects = projects.with_issues_available_for_user(current_user) if params[:with_issues_enabled]
+        projects = projects.with_merge_requests_enabled if params[:with_merge_requests_enabled]
+        projects = projects.with_statistics if params[:statistics]
+        projects = projects.joins(:statistics) if params[:order_by].include?('project_statistics') # rubocop: disable CodeReuse/ActiveRecord
+
+        lang = params[:with_programming_language]
+        projects = projects.with_programming_language(lang) if lang
+
+        projects
+      end
+
+      def verify_update_project_attrs!(project, attrs)
+        attrs.delete(:repository_storage) unless can?(current_user, :change_repository_storage, project)
+      end
+
+      def verify_project_filters!(attrs)
+        attrs.delete(:repository_storage) unless can?(current_user, :use_project_statistics_filters)
+      end
+
+      def verify_statistics_order_by_projects!
+        return unless Helpers::ProjectsHelpers::STATISTICS_SORT_PARAMS.include?(params[:order_by])
+
+        params[:order_by] = if can?(current_user, :use_project_statistics_filters)
+                              "project_statistics.#{params[:order_by]}"
+                            else
+                              route.params['order_by'][:default]
+                            end
+      end
+
+      def delete_project(user_project)
+        destroy_conditionally!(user_project) do
+          ::Projects::DestroyService.new(user_project, current_user, {}).async_execute
+        end
+
+        accepted!
+      end
+    end
+
+    helpers do
+      params :statistics_params do
+        optional :statistics, type: Boolean, default: false, desc: 'Include project statistics'
+      end
+
+      params :collection_params do
+        use :sort_params
+        use :filter_params
+        use :pagination
+
+        optional :simple, type: Boolean, default: false,
+                          desc: 'Return only the ID, URL, name, and path of each project'
+      end
+
+      params :sort_params do
+        optional :order_by, type: String,
+                            values: %w[id name path created_at updated_at last_activity_at] + Helpers::ProjectsHelpers::STATISTICS_SORT_PARAMS,
+                            default: 'created_at', desc: "Return projects ordered by field. #{Helpers::ProjectsHelpers::STATISTICS_SORT_PARAMS.join(', ')} are only available to admins."
+        optional :sort, type: String, values: %w[asc desc], default: 'desc',
+                        desc: 'Return projects sorted in ascending and descending order'
+      end
+
+      params :filter_params do
+        optional :archived, type: Boolean, desc: 'Limit by archived status'
+        optional :visibility, type: String, values: Gitlab::VisibilityLevel.string_values,
+                              desc: 'Limit by visibility'
+        optional :search, type: String, desc: 'Return list of projects matching the search criteria'
+        optional :search_namespaces, type: Boolean, desc: "Include ancestor namespaces when matching search criteria"
+        optional :owned, type: Boolean, default: false, desc: 'Limit by owned by authenticated user'
+        optional :starred, type: Boolean, default: false, desc: 'Limit by starred status'
+        optional :membership, type: Boolean, default: false, desc: 'Limit by projects that the current user is a member of'
+        optional :with_issues_enabled, type: Boolean, default: false, desc: 'Limit by enabled issues feature'
+        optional :with_merge_requests_enabled, type: Boolean, default: false, desc: 'Limit by enabled merge requests feature'
+        optional :with_programming_language, type: String, desc: 'Limit to repositories which use the given programming language'
+        optional :min_access_level, type: Integer, values: Gitlab::Access.all_values, desc: 'Limit by minimum access level of authenticated user'
+        optional :id_after, type: Integer, desc: 'Limit results to projects with IDs greater than the specified ID'
+        optional :id_before, type: Integer, desc: 'Limit results to projects with IDs less than the specified ID'
+        optional :last_activity_after, type: DateTime, desc: 'Limit results to projects with last_activity after specified time. Format: ISO 8601 YYYY-MM-DDTHH:MM:SSZ'
+        optional :last_activity_before, type: DateTime, desc: 'Limit results to projects with last_activity before specified time. Format: ISO 8601 YYYY-MM-DDTHH:MM:SSZ'
+        optional :repository_storage, type: String, desc: 'Which storage shard the repository is on. Available only to admins'
+
+        use :optional_filter_params_ee
+      end
+
+      params :create_params do
+        optional :namespace_id, type: Integer, desc: 'Namespace ID for the new project. Default to the user namespace.'
+        optional :import_url, type: String, desc: 'URL from which the project is imported'
+        optional :template_name, type: String, desc: "Name of template from which to create project"
+        optional :template_project_id, type: Integer, desc: "Project ID of template from which to create project"
+        mutually_exclusive :import_url, :template_name, :template_project_id
+      end
+
+      def load_projects
+        params = project_finder_params
+        verify_project_filters!(params)
+
+        ProjectsFinder.new(current_user: current_user, params: params).execute
+      end
+
+      def present_projects(projects, options = {})
+        verify_statistics_order_by_projects!
+
+        projects = reorder_projects(projects)
+        projects = apply_filters(projects)
+
+        records, options = paginate_with_strategies(projects, options[:request_scope]) do |projects|
+          projects, options = with_custom_attributes(projects, options)
+
+          options = options.reverse_merge(
+            with: current_user ? Entities::ProjectWithAccess : Entities::BasicProjectDetails,
+            statistics: params[:statistics],
+            current_user: current_user,
+            license: false
+          )
+          options[:with] = Entities::BasicProjectDetails if params[:simple]
+
+          [options[:with].prepare_relation(projects, options), options]
+        end
+
+        present records, options
+      end
+
+      def translate_params_for_compatibility(params)
+        params[:builds_enabled] = params.delete(:jobs_enabled) if params.key?(:jobs_enabled)
+        params
+      end
+    end
+
+    resource :users, requirements: API::USER_REQUIREMENTS do
+      desc 'Get a user projects' do
+        success Entities::BasicProjectDetails
+      end
+      params do
+        requires :user_id, type: String, desc: 'The ID or username of the user'
+        use :collection_params
+        use :statistics_params
+        use :with_custom_attributes
+      end
+      get ":user_id/projects" do
+        user = find_user(params[:user_id])
+        not_found!('User') unless user
+
+        params[:user] = user
+
+        present_projects load_projects
+      end
+
+      desc 'Get projects starred by a user' do
+        success Entities::BasicProjectDetails
+      end
+      params do
+        requires :user_id, type: String, desc: 'The ID or username of the user'
+        use :collection_params
+        use :statistics_params
+      end
+      get ":user_id/starred_projects" do
+        user = find_user(params[:user_id])
+        not_found!('User') unless user
+
+        starred_projects = StarredProjectsFinder.new(user, params: project_finder_params, current_user: current_user).execute
+        present_projects starred_projects
+      end
+    end
 
     resource :projects do
-      helpers do
-        def map_public_to_visibility_level(attrs)
-          publik = attrs.delete(:public)
-          publik = parse_boolean(publik)
-          attrs[:visibility_level] = Gitlab::VisibilityLevel::PUBLIC if !attrs[:visibility_level].present? && publik == true
-          attrs
-        end
+      include CustomAttributesEndpoints
 
-        def filter_projects(projects)
-          # If the archived parameter is passed, limit results accordingly
-          if params[:archived].present?
-            projects = projects.where(archived: parse_boolean(params[:archived]))
-          end
-
-          if params[:search].present?
-            projects = projects.search(params[:search])
-          end
-
-          if params[:ci_enabled_first].present?
-            projects.includes(:gitlab_ci_service).
-              reorder("services.active DESC, projects.#{project_order_by} #{project_sort}")
-          else
-            projects.reorder(project_order_by => project_sort)
-          end
-        end
-
-        def project_order_by
-          order_fields = %w(id name path created_at updated_at last_activity_at)
-
-          if order_fields.include?(params['order_by'])
-            params['order_by']
-          else
-            'created_at'
-          end
-        end
-
-        def project_sort
-          if params["sort"] == 'asc'
-            :asc
-          else
-            :desc
-          end
-        end
+      desc 'Get a list of visible projects for authenticated user' do
+        success Entities::BasicProjectDetails
       end
-
-      # Get a projects list for authenticated user
-      #
-      # Example Request:
-      #   GET /projects
+      params do
+        use :collection_params
+        use :statistics_params
+        use :with_custom_attributes
+      end
       get do
-        @projects = current_user.authorized_projects
-        @projects = filter_projects(@projects)
-        @projects = paginate @projects
-        present @projects, with: Entities::Project
+        present_projects load_projects
       end
 
-      # Get an owned projects list for authenticated user
-      #
-      # Example Request:
-      #   GET /projects/owned
-      get '/owned' do
-        @projects = current_user.owned_projects
-        @projects = filter_projects(@projects)
-        @projects = paginate @projects
-        present @projects, with: Entities::Project
+      desc 'Create new project' do
+        success Entities::Project
       end
-
-      # Get all projects for admin user
-      #
-      # Example Request:
-      #   GET /projects/all
-      get '/all' do
-        authenticated_as_admin!
-        @projects = Project.all
-        @projects = filter_projects(@projects)
-        @projects = paginate @projects
-        present @projects, with: Entities::Project
+      params do
+        optional :name, type: String, desc: 'The name of the project'
+        optional :path, type: String, desc: 'The path of the repository'
+        at_least_one_of :name, :path
+        use :optional_create_project_params
+        use :create_params
       end
-
-      # Get a single project
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request:
-      #   GET /projects/:id
-      get ":id" do
-        present user_project, with: Entities::ProjectWithAccess, user: current_user
-      end
-
-      # Get events for a single project
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request:
-      #   GET /projects/:id/events
-      get ":id/events" do
-        events = paginate user_project.events.recent
-        present events, with: Entities::Event
-      end
-
-      # Create new project
-      #
-      # Parameters:
-      #   name (required) - name for new project
-      #   description (optional) - short project description
-      #   issues_enabled (optional)
-      #   merge_requests_enabled (optional)
-      #   wiki_enabled (optional)
-      #   snippets_enabled (optional)
-      #   namespace_id (optional) - defaults to user namespace
-      #   public (optional) - if true same as setting visibility_level = 20
-      #   visibility_level (optional) - 0 by default
-      #   import_url (optional)
-      # Example Request
-      #   POST /projects
       post do
-        required_attributes! [:name]
-        attrs = attributes_for_keys [:name,
-                                     :path,
-                                     :description,
-                                     :issues_enabled,
-                                     :merge_requests_enabled,
-                                     :wiki_enabled,
-                                     :snippets_enabled,
-                                     :namespace_id,
-                                     :public,
-                                     :visibility_level,
-                                     :import_url]
-        attrs = map_public_to_visibility_level(attrs)
-        @project = ::Projects::CreateService.new(current_user, attrs).execute
-        if @project.saved?
-          present @project, with: Entities::Project
+        Gitlab::QueryLimiting.whitelist('https://gitlab.com/gitlab-org/gitlab/issues/21139')
+        attrs = declared_params(include_missing: false)
+        attrs = translate_params_for_compatibility(attrs)
+        filter_attributes_using_license!(attrs)
+        project = ::Projects::CreateService.new(current_user, attrs).execute
+
+        if project.saved?
+          present project, with: Entities::Project,
+                           user_can_admin_project: can?(current_user, :admin_project, project),
+                           current_user: current_user
         else
-          if @project.errors[:limit_reached].present?
-            error!(@project.errors[:limit_reached], 403)
+          if project.errors[:limit_reached].present?
+            error!(project.errors[:limit_reached], 403)
           end
-          render_validation_error!(@project)
+
+          render_validation_error!(project)
         end
       end
 
-      # Create new project for a specified user.  Only available to admin users.
-      #
-      # Parameters:
-      #   user_id (required) - The ID of a user
-      #   name (required) - name for new project
-      #   description (optional) - short project description
-      #   default_branch (optional) - 'master' by default
-      #   issues_enabled (optional)
-      #   merge_requests_enabled (optional)
-      #   wiki_enabled (optional)
-      #   snippets_enabled (optional)
-      #   public (optional) - if true same as setting visibility_level = 20
-      #   visibility_level (optional)
-      #   import_url (optional)
-      # Example Request
-      #   POST /projects/user/:user_id
+      desc 'Create new project for a specified user. Only available to admin users.' do
+        success Entities::Project
+      end
+      params do
+        requires :name, type: String, desc: 'The name of the project'
+        requires :user_id, type: Integer, desc: 'The ID of a user'
+        optional :path, type: String, desc: 'The path of the repository'
+        optional :default_branch, type: String, desc: 'The default branch of the project'
+        use :optional_project_params
+        use :optional_create_project_params
+        use :create_params
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
       post "user/:user_id" do
+        Gitlab::QueryLimiting.whitelist('https://gitlab.com/gitlab-org/gitlab/issues/21139')
         authenticated_as_admin!
-        user = User.find(params[:user_id])
-        attrs = attributes_for_keys [:name,
-                                     :description,
-                                     :default_branch,
-                                     :issues_enabled,
-                                     :merge_requests_enabled,
-                                     :wiki_enabled,
-                                     :snippets_enabled,
-                                     :public,
-                                     :visibility_level,
-                                     :import_url]
-        attrs = map_public_to_visibility_level(attrs)
-        @project = ::Projects::CreateService.new(user, attrs).execute
-        if @project.saved?
-          present @project, with: Entities::Project
+        user = User.find_by(id: params.delete(:user_id))
+        not_found!('User') unless user
+
+        attrs = declared_params(include_missing: false)
+        attrs = translate_params_for_compatibility(attrs)
+        filter_attributes_using_license!(attrs)
+        project = ::Projects::CreateService.new(user, attrs).execute
+
+        if project.saved?
+          present project, with: Entities::Project,
+                           user_can_admin_project: can?(current_user, :admin_project, project),
+                           current_user: current_user
         else
-          render_validation_error!(@project)
+          render_validation_error!(project)
+        end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+    end
+
+    params do
+      requires :id, type: String, desc: 'The ID of a project'
+    end
+    resource :projects, requirements: API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'Get a single project' do
+        success Entities::ProjectWithAccess
+      end
+      params do
+        use :statistics_params
+        use :with_custom_attributes
+
+        optional :license, type: Boolean, default: false,
+                           desc: 'Include project license data'
+      end
+      get ":id" do
+        options = {
+          with: current_user ? Entities::ProjectWithAccess : Entities::BasicProjectDetails,
+          current_user: current_user,
+          user_can_admin_project: can?(current_user, :admin_project, user_project),
+          statistics: params[:statistics],
+          license: params[:license]
+        }
+
+        project, options = with_custom_attributes(user_project, options)
+
+        present project, options
+      end
+
+      desc 'Fork new project for the current user or provided namespace.' do
+        success Entities::Project
+      end
+      params do
+        optional :namespace, type: String, desc: '(deprecated) The ID or name of the namespace that the project will be forked into'
+        optional :namespace_id, type: Integer, desc: 'The ID of the namespace that the project will be forked into'
+        optional :namespace_path, type: String, desc: 'The path of the namespace that the project will be forked into'
+        optional :path, type: String, desc: 'The path that will be assigned to the fork'
+        optional :name, type: String, desc: 'The name that will be assigned to the fork'
+      end
+      post ':id/fork' do
+        Gitlab::QueryLimiting.whitelist('https://gitlab.com/gitlab-org/gitlab-foss/issues/42284')
+
+        not_found! unless can?(current_user, :fork_project, user_project)
+
+        fork_params = declared_params(include_missing: false)
+
+        fork_params[:namespace] =
+          if fork_params[:namespace_id].present?
+            find_namespace!(fork_params[:namespace_id])
+          elsif fork_params[:namespace_path].present?
+            find_namespace_by_path!(fork_params[:namespace_path])
+          elsif fork_params[:namespace].present?
+            find_namespace!(fork_params[:namespace])
+          end
+
+        service = ::Projects::ForkService.new(user_project, current_user, fork_params)
+
+        not_found!('Target Namespace') unless service.valid_fork_target?
+
+        forked_project = service.execute
+
+        if forked_project.errors.any?
+          conflict!(forked_project.errors.messages)
+        else
+          present forked_project, with: Entities::Project,
+                  user_can_admin_project: can?(current_user, :admin_project, forked_project),
+                  current_user: current_user
         end
       end
 
-      # Fork new project for the current user.
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request
-      #   POST /projects/fork/:id
-      post 'fork/:id' do
-        @forked_project =
-          ::Projects::ForkService.new(user_project,
-                                      current_user).execute
-        if @forked_project.errors.any?
-          conflict!(@forked_project.errors.messages)
-        else
-          present @forked_project, with: Entities::Project
-        end
+      desc 'List forks of this project' do
+        success Entities::Project
+      end
+      params do
+        use :collection_params
+        use :with_custom_attributes
+      end
+      get ':id/forks' do
+        forks = ForkProjectsFinder.new(user_project, params: project_finder_params, current_user: current_user).execute
+
+        present_projects forks, request_scope: user_project
       end
 
-      # Update an existing project
-      #
-      # Parameters:
-      #   id (required) - the id of a project
-      #   name (optional) - name of a project
-      #   path (optional) - path of a project
-      #   description (optional) - short project description
-      #   issues_enabled (optional)
-      #   merge_requests_enabled (optional)
-      #   wiki_enabled (optional)
-      #   snippets_enabled (optional)
-      #   public (optional) - if true same as setting visibility_level = 20
-      #   visibility_level (optional) - visibility level of a project
-      # Example Request
-      #   PUT /projects/:id
+      desc 'Check pages access of this project'
+      get ':id/pages_access' do
+        authorize! :read_pages_content, user_project unless user_project.public_pages?
+        status 200
+      end
+
+      desc 'Update an existing project' do
+        success Entities::Project
+      end
+      params do
+        optional :name, type: String, desc: 'The name of the project'
+        optional :default_branch, type: String, desc: 'The default branch of the project'
+        optional :path, type: String, desc: 'The path of the repository'
+
+        use :optional_project_params
+        use :optional_update_params_ee
+
+        at_least_one_of(*Helpers::ProjectsHelpers.update_params_at_least_one_of)
+      end
       put ':id' do
-        attrs = attributes_for_keys [:name,
-                                     :path,
-                                     :description,
-                                     :default_branch,
-                                     :issues_enabled,
-                                     :merge_requests_enabled,
-                                     :wiki_enabled,
-                                     :snippets_enabled,
-                                     :public,
-                                     :visibility_level]
-        attrs = map_public_to_visibility_level(attrs)
         authorize_admin_project
+        attrs = declared_params(include_missing: false)
         authorize! :rename_project, user_project if attrs[:name].present?
-        if attrs[:visibility_level].present?
-          authorize! :change_visibility_level, user_project
-        end
+        authorize! :change_visibility_level, user_project if attrs[:visibility].present?
 
-        ::Projects::UpdateService.new(user_project,
-                                      current_user, attrs).execute
+        attrs = translate_params_for_compatibility(attrs)
+        filter_attributes_using_license!(attrs)
+        verify_update_project_attrs!(user_project, attrs)
 
-        if user_project.errors.any?
-          render_validation_error!(user_project)
+        result = ::Projects::UpdateService.new(user_project, current_user, attrs).execute
+
+        if result[:status] == :success
+          present user_project, with: Entities::Project,
+                                user_can_admin_project: can?(current_user, :admin_project, user_project),
+                                current_user: current_user
         else
-          present user_project, with: Entities::Project
+          render_validation_error!(user_project)
         end
       end
 
-      # Remove project
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request:
-      #   DELETE /projects/:id
+      desc 'Archive a project' do
+        success Entities::Project
+      end
+      post ':id/archive' do
+        authorize!(:archive_project, user_project)
+
+        ::Projects::UpdateService.new(user_project, current_user, archived: true).execute
+
+        present user_project, with: Entities::Project, current_user: current_user
+      end
+
+      desc 'Unarchive a project' do
+        success Entities::Project
+      end
+      post ':id/unarchive' do
+        authorize!(:archive_project, user_project)
+
+        ::Projects::UpdateService.new(user_project, current_user, archived: false).execute
+
+        present user_project, with: Entities::Project, current_user: current_user
+      end
+
+      desc 'Star a project' do
+        success Entities::Project
+      end
+      post ':id/star' do
+        if current_user.starred?(user_project)
+          not_modified!
+        else
+          current_user.toggle_star(user_project)
+          user_project.reset
+
+          present user_project, with: Entities::Project, current_user: current_user
+        end
+      end
+
+      desc 'Unstar a project' do
+        success Entities::Project
+      end
+      post ':id/unstar' do
+        if current_user.starred?(user_project)
+          current_user.toggle_star(user_project)
+          user_project.reset
+
+          present user_project, with: Entities::Project, current_user: current_user
+        else
+          not_modified!
+        end
+      end
+
+      desc 'Get the users who starred a project' do
+        success Entities::UserBasic
+      end
+      params do
+        optional :search, type: String, desc: 'Return list of users matching the search criteria'
+        use :pagination
+      end
+      get ':id/starrers' do
+        starrers = UsersStarProjectsFinder.new(user_project, params, current_user: current_user).execute
+
+        present paginate(starrers), with: Entities::UserStarsProject
+      end
+
+      desc 'Get languages in project repository'
+      get ':id/languages' do
+        ::Projects::RepositoryLanguagesService
+          .new(user_project, current_user)
+          .execute.map { |lang| [lang.name, lang.share] }.to_h
+      end
+
+      desc 'Delete a project'
       delete ":id" do
         authorize! :remove_project, user_project
-        ::Projects::DestroyService.new(user_project, current_user, {}).execute
+
+        delete_project(user_project)
       end
 
-      # Mark this project as forked from another
-      #
-      # Parameters:
-      #   id: (required) - The ID of the project being marked as a fork
-      #   forked_from_id: (required) - The ID of the project it was forked from
-      # Example Request:
-      #   POST /projects/:id/fork/:forked_from_id
+      desc 'Mark this project as forked from another'
+      params do
+        requires :forked_from_id, type: String, desc: 'The ID of the project it was forked from'
+      end
       post ":id/fork/:forked_from_id" do
-        authenticated_as_admin!
-        forked_from_project = find_project(params[:forked_from_id])
-        unless forked_from_project.nil?
-          if user_project.forked_from_project.nil?
-            user_project.create_forked_project_link(forked_to_project_id: user_project.id, forked_from_project_id: forked_from_project.id)
-          else
-            render_api_error!("Project already forked", 409)
-          end
+        authorize! :admin_project, user_project
+
+        fork_from_project = find_project!(params[:forked_from_id])
+
+        not_found!("Source Project") unless fork_from_project
+
+        authorize! :fork_project, fork_from_project
+
+        result = ::Projects::ForkService.new(fork_from_project, current_user).execute(user_project)
+
+        if result
+          present user_project.reset, with: Entities::Project, current_user: current_user
         else
-          not_found!("Source Project")
+          render_api_error!("Project already forked", 409) if user_project.forked?
         end
-
       end
 
-      # Remove a forked_from relationship
-      #
-      # Parameters:
-      # id: (required) - The ID of the project being marked as a fork
-      # Example Request:
-      #  DELETE /projects/:id/fork
+      desc 'Remove a forked_from relationship'
       delete ":id/fork" do
-        authenticated_as_admin!
-        unless user_project.forked_project_link.nil?
-          user_project.forked_project_link.destroy
+        authorize! :remove_fork_project, user_project
+
+        result = destroy_conditionally!(user_project) do
+          ::Projects::UnlinkForkService.new(user_project, current_user).execute
+        end
+
+        not_modified! unless result
+      end
+
+      desc 'Share the project with a group' do
+        success Entities::ProjectGroupLink
+      end
+      params do
+        requires :group_id, type: Integer, desc: 'The ID of a group'
+        requires :group_access, type: Integer, values: Gitlab::Access.values, as: :link_group_access, desc: 'The group access level'
+        optional :expires_at, type: Date, desc: 'Share expiration date'
+      end
+      post ":id/share" do
+        authorize! :admin_project, user_project
+        group = Group.find_by_id(params[:group_id])
+
+        unless user_project.allowed_to_share_with_group?
+          break render_api_error!("The project sharing with group is disabled", 400)
+        end
+
+        result = ::Projects::GroupLinks::CreateService.new(user_project, current_user, declared_params(include_missing: false))
+          .execute(group)
+
+        if result[:status] == :success
+          present result[:link], with: Entities::ProjectGroupLink
+        else
+          render_api_error!(result[:message], result[:http_status])
         end
       end
-      # search for projects current_user has access to
-      #
-      # Parameters:
-      #   query (required) - A string contained in the project name
-      #   per_page (optional) - number of projects to return per page
-      #   page (optional) - the page to retrieve
-      # Example Request:
-      #   GET /projects/search/:query
-      get "/search/:query" do
-        ids = current_user.authorized_projects.map(&:id)
-        visibility_levels = [ Gitlab::VisibilityLevel::INTERNAL, Gitlab::VisibilityLevel::PUBLIC ]
-        projects = Project.where("(id in (?) OR visibility_level in (?)) AND (name LIKE (?))", ids, visibility_levels, "%#{params[:query]}%")
-        sort = params[:sort] == 'desc' ? 'desc' : 'asc'
 
-        projects = case params["order_by"]
-                   when 'id' then projects.order("id #{sort}")
-                   when 'name' then projects.order("name #{sort}")
-                   when 'created_at' then projects.order("created_at #{sort}")
-                   when 'last_activity_at' then projects.order("last_activity_at #{sort}")
-                   else projects
-                   end
+      params do
+        requires :group_id, type: Integer, desc: 'The ID of the group'
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      delete ":id/share/:group_id" do
+        authorize! :admin_project, user_project
 
-        present paginate(projects), with: Entities::Project
+        link = user_project.project_group_links.find_by(group_id: params[:group_id])
+        not_found!('Group Link') unless link
+
+        destroy_conditionally!(link) do
+          ::Projects::GroupLinks::DestroyService.new(user_project, current_user).execute(link)
+        end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Upload a file'
+      params do
+        # TODO: remove rubocop disable - https://gitlab.com/gitlab-org/gitlab/issues/14960
+        requires :file, type: File, desc: 'The file to be uploaded' # rubocop:disable Scalability/FileUploads
+      end
+      post ":id/uploads" do
+        upload = UploadService.new(user_project, params[:file]).execute
+
+        present upload, with: Entities::ProjectUpload
       end
 
-
-      # Get a users list
-      #
-      # Example Request:
-      #  GET /users
+      desc 'Get the users list of a project' do
+        success Entities::UserBasic
+      end
+      params do
+        optional :search, type: String, desc: 'Return list of users matching the search criteria'
+        optional :skip_users, type: Array[Integer], coerce_with: ::API::Validations::Types::CommaSeparatedToIntegerArray.coerce, desc: 'Filter out users with the specified IDs'
+        use :pagination
+      end
       get ':id/users' do
-        @users = User.where(id: user_project.team.users.map(&:id))
-        @users = @users.search(params[:search]) if params[:search].present?
-        @users = paginate @users
-        present @users, with: Entities::UserBasic
+        users = DeclarativePolicy.subject_scope { user_project.team.users }
+        users = users.search(params[:search]) if params[:search].present?
+        users = users.where_not_in(params[:skip_users]) if params[:skip_users].present?
+
+        present paginate(users), with: Entities::UserBasic
+      end
+
+      desc 'Start the housekeeping task for a project' do
+        detail 'This feature was introduced in GitLab 9.0.'
+      end
+      post ':id/housekeeping' do
+        authorize_admin_project
+
+        begin
+          ::Projects::HousekeepingService.new(user_project, :gc).execute
+        rescue ::Projects::HousekeepingService::LeaseTaken => error
+          conflict!(error.message)
+        end
+      end
+
+      desc 'Transfer a project to a new namespace'
+      params do
+        requires :namespace, type: String, desc: 'The ID or path of the new namespace'
+      end
+      put ":id/transfer" do
+        authorize! :change_namespace, user_project
+
+        namespace = find_namespace!(params[:namespace])
+        result = ::Projects::TransferService.new(user_project, current_user).execute(namespace)
+
+        if result
+          present user_project, with: Entities::Project, current_user: current_user
+        else
+          render_api_error!("Failed to transfer project #{user_project.errors.messages}", 400)
+        end
       end
     end
   end
 end
+
+API::Projects.prepend_if_ee('EE::API::Projects')

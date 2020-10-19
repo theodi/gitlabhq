@@ -1,0 +1,53 @@
+- breadcrumb_title _("CI / CD Settings")
+- page_title _("CI / CD")
+
+- expanded = expanded_by_default?
+- general_expanded = @group.errors.empty? ? expanded : true
+
+-# Given we only have one field in this form which is also admin-only,
+-# we don't want to show an empty section to non-admin users,
+- if can?(current_user, :update_max_artifacts_size, @group)
+  %section.settings#js-general-pipeline-settings.no-animate{ class: ('expanded' if general_expanded) }
+    .settings-header
+      %h4
+        = _("General pipelines")
+      %button.btn.gl-button.js-settings-toggle{ type: 'button' }
+        = expanded ? _('Collapse') : _('Expand')
+      %p
+        = _("Customize your pipeline configuration.")
+    .settings-content
+      = render 'groups/settings/ci_cd/form', group: @group
+
+%section.settings#ci-variables.no-animate{ class: ('expanded' if expanded) }
+  .settings-header
+    = render 'ci/variables/header', expanded: expanded
+  .settings-content
+    = render 'ci/variables/index', save_endpoint: group_variables_path
+
+%section.settings#runners-settings.no-animate{ class: ('expanded' if expanded) }
+  .settings-header
+    %h4
+      = _('Runners')
+    %button.btn.gl-button.btn-default.js-settings-toggle{ type: "button" }
+      = expanded ? _('Collapse') : _('Expand')
+    %p
+      = _("Runners are processes that pick up and execute jobs for GitLab. Here you can register and see your Runners for this project.")
+      = link_to s_('More information'), help_page_path('ci/runners/README')
+  .settings-content
+    = render 'groups/runners/index'
+
+%section.settings#auto-devops-settings.no-animate{ class: ('expanded' if expanded) }
+  .settings-header
+    %h4
+      = _('Auto DevOps')
+    %button.btn.gl-button.btn-default.js-settings-toggle{ type: "button" }
+      = expanded ? _('Collapse') : _('Expand')
+    %p
+      - auto_devops_url = help_page_path('topics/autodevops/index')
+      - quickstart_url = help_page_path('topics/autodevops/quick_start_guide')
+      - auto_devops_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: auto_devops_url }
+      - quickstart_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: quickstart_url }
+      = s_('AutoDevOps|Auto DevOps can automatically build, test, and deploy applications based on predefined continuous integration and delivery configuration. %{auto_devops_start}Learn more about Auto DevOps%{auto_devops_end} or use our %{quickstart_start}quick start guide%{quickstart_end} to get started right away.').html_safe % { auto_devops_start: auto_devops_start, auto_devops_end: '</a>'.html_safe, quickstart_start: quickstart_start, quickstart_end: '</a>'.html_safe }
+
+  .settings-content
+    = render 'groups/settings/ci_cd/auto_devops_form', group: @group

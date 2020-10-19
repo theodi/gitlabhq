@@ -1,0 +1,29 @@
+- add_to_breadcrumbs 'Users', admin_users_path
+- breadcrumb_title @user.name
+- page_title _('Impersonation Tokens'), @user.name, _('Users')
+- type = _('impersonation token')
+- type_plural = _('impersonation tokens')
+
+= render 'admin/users/head'
+
+.row.gl-mt-3
+  .col-lg-12
+    - if @new_impersonation_token
+      = render 'shared/access_tokens/created_container',
+        type: type,
+        new_token_value: @new_impersonation_token
+
+    = render 'shared/access_tokens/form',
+        type: type,
+        title: _('Add an impersonation token'),
+        path: admin_user_impersonation_tokens_path,
+        impersonation: true,
+        token: @impersonation_token,
+        scopes: @scopes
+
+    = render 'shared/access_tokens/table',
+        type: type,
+        type_plural: type_plural,
+        impersonation: true,
+        active_tokens: @active_impersonation_tokens,
+        revoke_route_helper: ->(token) { revoke_admin_user_impersonation_token_path(token.user, token) }

@@ -1,9 +1,23 @@
 !!! 5
-%html{ lang: "en"}
-  = render "layouts/head"
-  %body{class: "#{app_theme}  application"}
-    = render "layouts/header/empty"
-    .container.navless-container
-      = render "layouts/flash"
-      .error-page
-        = yield
+%html{ lang: "en" }
+  %head
+    %meta{ :content => "width=device-width, initial-scale=1, maximum-scale=1", :name => "viewport" }
+    %title= yield(:title)
+    %style
+      = Rails.application.assets_manifest.find_sources('errors.css').first.to_s.html_safe
+  %body
+    .page-container
+      = yield
+    = javascript_tag nonce: true do
+      :plain
+        (function(){
+          var goBackElement = document.querySelector('.js-go-back');
+
+          if (goBackElement && history.length > 1) {
+            goBackElement.removeAttribute('hidden');
+
+            goBackElement.querySelector('button').addEventListener('click', function() {
+              history.back();
+            });
+          }
+        }());

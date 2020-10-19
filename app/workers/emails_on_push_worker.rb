@@ -1,10 +1,19 @@
-class EmailsOnPushWorker
-  include Sidekiq::Worker
+# frozen_string_literal: true
+
+class EmailsOnPushWorker # rubocop:disable Scalability/IdempotentWorker
+  include ApplicationWorker
+
+  attr_reader :email, :skip_premailer
+
+  feature_category :source_code_management
+  urgency :low
+  worker_resource_boundary :cpu
+  weight 2
 
   def perform(project_id, recipients, push_data, options = {})
     options.symbolize_keys!
     options.reverse_merge!(
-      send_from_committer_email:  false, 
+      send_from_committer_email:  false,
       disable_diffs:              false
     )
     send_from_committer_email = options[:send_from_committer_email]
@@ -16,24 +25,30 @@ class EmailsOnPushWorker
     ref = push_data["ref"]
     author_id = push_data["user_id"]
 
-    action = 
+    action =
       if Gitlab::Git.blank_ref?(before_sha)
-        :create 
+        :create
       elsif Gitlab::Git.blank_ref?(after_sha)
         :delete
       else
         :push
       end
 
+    diff_refs = nil
     compare = nil
     reverse_compare = false
+
     if action == :push
-      compare = Gitlab::Git::Compare.new(project.repository.raw_repository, before_sha, after_sha)
+      compare = CompareService.new(project, after_sha)
+        .execute(project, before_sha)
+      diff_refs = compare.diff_refs
 
       return false if compare.same
 
       if compare.commits.empty?
-        compare = Gitlab::Git::Compare.new(project.repository.raw_repository, after_sha, before_sha)
+        compare = CompareService.new(project, before_sha)
+          .execute(project, after_sha)
+        diff_refs = compare.diff_refs
 
         reverse_compare = true
 
@@ -41,21 +56,46 @@ class EmailsOnPushWorker
       end
     end
 
-    recipients.split(" ").each do |recipient|
-      Notify.repository_push_email(
-        project_id, 
-        recipient, 
-        author_id:                  author_id, 
-        ref:                        ref, 
-        action:                     action,
-        compare:                    compare, 
-        reverse_compare:            reverse_compare,
-        send_from_committer_email:  send_from_committer_email,
-        disable_diffs:              disable_diffs
-      ).deliver
+    valid_recipients(recipients).each do |recipient|
+      send_email(
+        recipient,
+        project_id,
+        author_id:                 author_id,
+        ref:                       ref,
+        action:                    action,
+        compare:                   compare,
+        reverse_compare:           reverse_compare,
+        diff_refs:                 diff_refs,
+        send_from_committer_email: send_from_committer_email,
+        disable_diffs:             disable_diffs
+      )
+
+    # These are input errors and won't be corrected even if Sidekiq retries
+    rescue Net::SMTPFatalError, Net::SMTPSyntaxError => e
+      logger.info("Failed to send e-mail for project '#{project.full_name}' to #{recipient}: #{e}")
     end
   ensure
+    @email = nil
     compare = nil
     GC.start
+  end
+
+  private
+
+  def send_email(recipient, project_id, options)
+    # Generating the body of this email can be expensive, so only do it once
+    @skip_premailer ||= email.present?
+    @email ||= Notify.repository_push_email(project_id, options)
+
+    email.to = recipient
+    email.add_message_id
+    email.header[:skip_premailer] = true if skip_premailer
+    email.deliver_now
+  end
+
+  def valid_recipients(recipients)
+    recipients.split.select do |recipient|
+      recipient.include?('@')
+    end
   end
 end

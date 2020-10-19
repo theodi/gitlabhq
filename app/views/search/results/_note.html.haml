@@ -1,26 +1,30 @@
 - project = note.project
+- note_url = Gitlab::UrlBuilder.build(note)
+- noteable_identifier = note.noteable.try(:iid) || note.noteable.try(:id)
+
 .search-result-row
   %h5.note-search-caption.str-truncated
-    %i.fa.fa-comment
+    = sprite_icon('comment', css_class: 'gl-vertical-align-text-bottom')
     = link_to_member(project, note.author, avatar: false)
-    commented on
+    - link_to_project = link_to(project.full_name, project)
+    = _("commented on %{link_to_project}").html_safe % { link_to_project: link_to_project }
+    &middot;
 
     - if note.for_commit?
-      = link_to project do
-        = project.name_with_namespace
-      &middot;
-      = link_to namespace_project_commit_path(project.namespace, project, note.commit_id, anchor: dom_id(note)) do
-        Commit #{truncate_sha(note.commit_id)}
+      = link_to_if(noteable_identifier, _("Commit %{commit_id}") % { commit_id: truncate_sha(note.commit_id) }, note_url) do
+        = truncate_sha(note.commit_id)
+        %span.light= _("Commit deleted")
+
     - else
-      = link_to project do
-        = project.name_with_namespace
+      %span #{note.noteable_type.titleize} ##{noteable_identifier}
       &middot;
-      %span #{note.noteable_type.titleize} ##{note.noteable.iid}
-      &middot;
-      = link_to [project.namespace.becomes(Namespace), project, note.noteable, anchor: dom_id(note)]  do
-        = note.noteable.title
+      = link_to note.noteable.title, note_url, data: {track_event: 'click_text', track_label: 'noteable_title', track_property: 'search_result'}
+
+    %span.note-headline-light.note-headline-meta
+      %span.system-note-separator
+        &middot;
+      %span.system-note-separator= time_ago_with_tooltip(note.created_at, placement: 'bottom', html_class: 'note-created-ago')
 
   .note-search-result
     .term
-      = preserve do
-        = search_md_sanitize(markdown(note.note, {no_header_anchors: true}))
+      = search_md_sanitize(note.note)

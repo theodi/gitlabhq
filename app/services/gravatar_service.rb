@@ -1,15 +1,20 @@
+# frozen_string_literal: true
+
 class GravatarService
-  include Gitlab::CurrentSettings
+  def execute(email, size = nil, scale = 2, username: nil)
+    return unless Gitlab::CurrentSettings.gravatar_enabled?
 
-  def execute(email, size = nil)
-    if current_application_settings.gravatar_enabled? && email.present?
-      size = 40 if size.nil? || size <= 0
+    identifier = email.presence || username.presence
+    return unless identifier
 
-      sprintf gravatar_url,
-        hash: Digest::MD5.hexdigest(email.strip.downcase),
-        size: size,
-        email: email.strip
-    end
+    hash = Digest::MD5.hexdigest(identifier.strip.downcase)
+    size = 40 unless size && size > 0
+
+    sprintf gravatar_url,
+      hash: hash,
+      size: size * scale,
+      email: ERB::Util.url_encode(email&.strip || ''),
+      username: ERB::Util.url_encode(username&.strip || '')
   end
 
   def gitlab_config

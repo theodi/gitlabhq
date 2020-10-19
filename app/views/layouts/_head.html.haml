@@ -1,22 +1,105 @@
-- page_title "GitLab"
-%head
-  %meta{charset: "utf-8"}
-  %meta{'http-equiv' => 'X-UA-Compatible', content: 'IE=edge'}
-  %meta{content: "GitLab Community Edition", name: "description"}
+- page_description brand_title unless page_description
 
-  %title= page_title
+-# Needs a redirect on the client side since it's using an anchor to distinguish
+-# between sign in and registration. We need to inline the JS to not render
+-# anything from this page beforehand.
+-# Part of an experiment to build a new sign up flow. Will be removed again with
+-# https://gitlab.com/gitlab-org/growth/engineering/issues/64
+- if experiment_enabled?(:signup_flow) && current_path?("sessions#new")
+  = javascript_tag nonce: true do
+    :plain
+      if (window.location.hash === '#register-pane') {
+        window.location.replace("/users/sign_up")
+      }
 
-  = favicon_link_tag 'favicon.ico'
-  = stylesheet_link_tag    "application", :media => "all"
-  = stylesheet_link_tag    "print", :media => "print"
-  = javascript_include_tag "application"
+- site_name = "GitLab"
+%head{ prefix: "og: http://ogp.me/ns#" }
+  %meta{ charset: "utf-8" }
+
+  = render 'layouts/loading_hints'
+
+  %meta{ 'http-equiv' => 'X-UA-Compatible', content: 'IE=edge' }
+
+  = render 'layouts/startup_js'
+
+  -# Open Graph - http://ogp.me/
+  %meta{ property: 'og:type', content: "object" }
+  %meta{ property: 'og:site_name', content: site_name }
+  %meta{ property: 'og:title', content: page_title }
+  %meta{ property: 'og:description', content: page_description }
+  %meta{ property: 'og:image', content: page_image }
+  %meta{ property: 'og:image:width', content: '64' }
+  %meta{ property: 'og:image:height', content: '64' }
+  %meta{ property: 'og:url', content: request.base_url + request.fullpath }
+
+  -# Twitter Card - https://dev.twitter.com/cards/types/summary
+  %meta{ property: 'twitter:card', content: "summary" }
+  %meta{ property: 'twitter:title', content: page_title }
+  %meta{ property: 'twitter:description', content: page_description }
+  %meta{ property: 'twitter:image', content: page_image }
+  = page_card_meta_tags
+
+  %title= page_title(site_name)
+  %meta{ name: "description", content: page_description }
+
+  - if page_canonical_link
+    %link{ rel: 'canonical', href: page_canonical_link }
+
+  = favicon_link_tag favicon, id: 'favicon', data: { original_href: favicon }, type: 'image/png'
+
+  = render 'layouts/startup_css'
+  - if user_application_theme == 'gl-dark'
+    = stylesheet_link_tag_defer "application_dark"
+    = yield :page_specific_styles
+    = stylesheet_link_tag_defer "application_utilities_dark"
+  - else
+    = stylesheet_link_tag_defer "application"
+    = yield :page_specific_styles
+    = stylesheet_link_tag_defer "application_utilities"
+  - unless use_startup_css?
+    = stylesheet_link_tag_defer "themes/#{user_application_theme_css_filename}" if user_application_theme_css_filename
+  = stylesheet_link_tag "disable_animations", media: "all" if Rails.env.test? || Gitlab.config.gitlab['disable_animations']
+
+  = stylesheet_link_tag_defer "highlight/themes/#{user_color_scheme}"
+
+  = render 'layouts/startup_css_activation'
+
+  = stylesheet_link_tag 'performance_bar' if performance_bar_enabled?
+
+  = Gon::Base.render_data(nonce: content_security_policy_nonce)
+
+  = javascript_include_tag locale_path unless I18n.locale == :en
+  -# Temporarily commented out to investigate performance: https://gitlab.com/gitlab-org/gitlab/-/issues/251179
+  -# = webpack_bundle_tag "sentry" if Gitlab.config.sentry.enabled
+  = webpack_bundle_tag 'performance_bar' if performance_bar_enabled?
+
+  = yield :page_specific_javascripts
+
+  = webpack_controller_bundle_tags
+  = webpack_bundle_tag "chrome_84_icon_fix" if browser.chrome?([">=84", "<84.0.4147.125"]) || browser.edge?([">=84", "<84.0.522.59"])
+
+  = yield :project_javascripts
+
   = csrf_meta_tags
-  = include_gon
-  %meta{name: 'viewport', content: 'width=device-width, initial-scale=1, maximum-scale=1'}
-  %meta{name: 'theme-color', content: '#474D57'}
+  = csp_meta_tag
+  = action_cable_meta_tag
 
-  = yield(:meta_tags)
+  %meta{ name: 'viewport', content: 'width=device-width, initial-scale=1, maximum-scale=1' }
+  %meta{ name: 'theme-color', content: '#474D57' }
+
+  -# Apple Safari/iOS home screen icons
+  = favicon_link_tag 'touch-icon-iphone.png', rel: 'apple-touch-icon'
+  = favicon_link_tag 'touch-icon-ipad.png', rel: 'apple-touch-icon', sizes: '76x76'
+  = favicon_link_tag 'touch-icon-iphone-retina.png', rel: 'apple-touch-icon', sizes: '120x120'
+  = favicon_link_tag 'touch-icon-ipad-retina.png', rel: 'apple-touch-icon', sizes: '152x152'
+  %link{ rel: 'mask-icon', href: image_path('logo.svg'), color: 'rgb(226, 67, 41)' }
+
+  -# Windows 8 pinned site tile
+  %meta{ name: 'msapplication-TileImage', content: image_path('msapplication-tile.png') }
+  %meta{ name: 'msapplication-TileColor', content: '#30353E' }
+
+  = yield :meta_tags
 
   = render 'layouts/google_analytics' if extra_config.has_key?('google_analytics_id')
   = render 'layouts/piwik' if extra_config.has_key?('piwik_url') && extra_config.has_key?('piwik_site_id')
-  = render 'layouts/bootlint' if Rails.env.development?
+  = render 'layouts/snowplow'

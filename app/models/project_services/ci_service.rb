@@ -1,32 +1,16 @@
-# == Schema Information
-#
-# Table name: services
-#
-#  id                    :integer          not null, primary key
-#  type                  :string(255)
-#  title                 :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  active                :boolean          default(FALSE), not null
-#  properties            :text
-#  template              :boolean          default(FALSE)
-#  push_events           :boolean          default(TRUE)
-#  issues_events         :boolean          default(TRUE)
-#  merge_requests_events :boolean          default(TRUE)
-#  tag_push_events       :boolean          default(TRUE)
-#  note_events           :boolean          default(TRUE), not null
-#
+# frozen_string_literal: true
 
 # Base class for CI services
 # List methods you need to implement to get your CI service
 # working with GitLab Merge Requests
 class CiService < Service
-  def category
-    :ci
+  default_value_for :category, 'ci'
+
+  def valid_token?(token)
+    self.respond_to?(:token) && self.token.present? && ActiveSupport::SecurityUtils.secure_compare(token, self.token)
   end
 
-  def supported_events
+  def self.supported_events
     %w(push)
   end
 
@@ -41,14 +25,14 @@ class CiService < Service
 
   # Return string with build status or :error symbol
   #
-  # Allowed states: 'success', 'failed', 'running', 'pending'
+  # Allowed states: 'success', 'failed', 'running', 'pending', 'skipped'
   #
   #
   # Ex.
-  #   @service.commit_status('13be4ac')
+  #   @service.commit_status('13be4ac', 'master')
   #   # => 'success'
   #
-  #   @service.commit_status('2abe4ac')
+  #   @service.commit_status('2abe4ac', 'dev')
   #   # => 'running'
   #
   #

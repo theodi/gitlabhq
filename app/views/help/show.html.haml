@@ -1,3 +1,5 @@
-- page_title @file.humanize, *@category.split("/").reverse.map(&:humanize)
-.documentation.wiki
-  = markdown @markdown.gsub('$your_email', current_user.email)
+- page_title @path.split("/").reverse.map(&:humanize)
+- @content_class = "limit-container-width" unless fluid_layout
+
+.documentation.md.gl-mt-3
+  = markdown @markdown

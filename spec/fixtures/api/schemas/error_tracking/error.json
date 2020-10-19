@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "required" : [
+    "external_url",
+    "last_seen",
+    "message",
+    "type",
+    "title",
+    "project_id",
+    "project_name",
+    "project_slug",
+    "short_id",
+    "status",
+    "frequency"
+  ],
+  "properties" : {
+    "id": { "type": "string"},
+    "first_seen": { "type": "string", "format": "date-time" },
+    "last_seen": { "type": "string", "format": "date-time" },
+    "type": { "type": "string" },
+    "message": { "type": "string" },
+    "culprit": { "type": "string" },
+    "count": { "type": "integer"},
+    "external_url": { "type": "string" },
+    "user_count": { "type": "integer"},
+    "title": { "type": "string"},
+    "project_id": { "type": "string"},
+    "project_name": { "type": "string"},
+    "project_slug": { "type": "string"},
+    "short_id": { "type": "string"},
+    "status": { "type": "string"},
+    "frequency": { "type": "array"}
+  },
+  "additionalProperties": false
+}

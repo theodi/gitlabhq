@@ -1,90 +1,88 @@
-- page_title "Users"
-= render 'shared/show_aside'
+- page_title _("Users")
 
-.row
-  %aside.col-md-3
-    .admin-filter
-      %ul.nav.nav-pills.nav-stacked
-        %li{class: "#{'active' unless params[:filter]}"}
-          = link_to admin_users_path do
-            Active
-            %small.pull-right= User.active.count
-        %li{class: "#{'active' if params[:filter] == "admins"}"}
-          = link_to admin_users_path(filter: "admins") do
-            Admins
-            %small.pull-right= User.admins.count
-        %li{class: "#{'active' if params[:filter] == "blocked"}"}
-          = link_to admin_users_path(filter: "blocked") do
-            Blocked
-            %small.pull-right= User.blocked.count
-        %li{class: "#{'active' if params[:filter] == "wop"}"}
-          = link_to admin_users_path(filter: "wop") do
-            Without projects
-            %small.pull-right= User.without_projects.count
-      %hr
-      = form_tag admin_users_path, method: :get, class: 'form-inline' do
-        .form-group
-          = search_field_tag :name, params[:name], placeholder: 'Name, email or username', class: 'form-control'
-        = button_tag class: 'btn btn-primary' do
-          %i.fa.fa-search
-      %hr
-      = link_to 'Reset', admin_users_path, class: "btn btn-cancel"
+.top-area.scrolling-tabs-container.inner-page-scroll-tabs
+  .fade-left
+    = sprite_icon('chevron-lg-left', size: 12)
+  .fade-right
+    = sprite_icon('chevron-lg-right', size: 12)
+  %ul.nav-links.nav.nav-tabs.scrolling-tabs
+    = nav_link(html_options: { class: active_when(params[:filter].nil?) }) do
+      = link_to admin_users_path do
+        = s_('AdminUsers|Active')
+        %small.badge.badge-pill= limited_counter_with_delimiter(User.active_without_ghosts)
+    = nav_link(html_options: { class: active_when(params[:filter] == 'admins') }) do
+      = link_to admin_users_path(filter: "admins") do
+        = s_('AdminUsers|Admins')
+        %small.badge.badge-pill= limited_counter_with_delimiter(User.admins)
+    = nav_link(html_options: { class: "#{active_when(params[:filter] == 'two_factor_enabled')} filter-two-factor-enabled" }) do
+      = link_to admin_users_path(filter: 'two_factor_enabled') do
+        = s_('AdminUsers|2FA Enabled')
+        %small.badge.badge-pill= limited_counter_with_delimiter(User.with_two_factor)
+    = nav_link(html_options: { class: "#{active_when(params[:filter] == 'two_factor_disabled')} filter-two-factor-disabled" }) do
+      = link_to admin_users_path(filter: 'two_factor_disabled') do
+        = s_('AdminUsers|2FA Disabled')
+        %small.badge.badge-pill= limited_counter_with_delimiter(User.without_two_factor)
+    = nav_link(html_options: { class: active_when(params[:filter] == 'external') }) do
+      = link_to admin_users_path(filter: 'external') do
+        = s_('AdminUsers|External')
+        %small.badge.badge-pill= limited_counter_with_delimiter(User.external)
+    = nav_link(html_options: { class: active_when(params[:filter] == 'blocked') }) do
+      = link_to admin_users_path(filter: "blocked") do
+        = s_('AdminUsers|Blocked')
+        %small.badge.badge-pill= limited_counter_with_delimiter(User.blocked)
+    - if Feature.enabled?(:admin_approval_for_new_user_signups, default_enabled: true)
+      = nav_link(html_options: { class: "#{active_when(params[:filter] == 'blocked_pending_approval')} filter-blocked-pending-approval" }) do
+        = link_to admin_users_path(filter: "blocked_pending_approval") do
+          = s_('AdminUsers|Pending approval')
+          %small.badge.badge-pill= limited_counter_with_delimiter(User.blocked_pending_approval)
+    = nav_link(html_options: { class: active_when(params[:filter] == 'deactivated') }) do
+      = link_to admin_users_path(filter: "deactivated") do
+        = s_('AdminUsers|Deactivated')
+        %small.badge.badge-pill= limited_counter_with_delimiter(User.deactivated)
+    = nav_link(html_options: { class: active_when(params[:filter] == 'wop') }) do
+      = link_to admin_users_path(filter: "wop") do
+        = s_('AdminUsers|Without projects')
+        %small.badge.badge-pill= limited_counter_with_delimiter(User.without_projects)
+  .nav-controls
+    = render_if_exists 'admin/users/admin_email_users'
+    = link_to s_('AdminUsers|New user'), new_admin_user_path, class: 'btn gl-button btn-success btn-search float-right'
 
-  %section.col-md-9
-    .panel.panel-default
-      .panel-heading
-        Users (#{@users.total_count})
-        .panel-head-actions
-          .dropdown.inline
-            %a.dropdown-toggle.btn.btn-sm{href: '#', "data-toggle" => "dropdown"}
-              %span.light sort:
-              - if @sort.present?
-                = sort_options_hash[@sort]
-              - else
-                = sort_title_name
-              %b.caret
-            %ul.dropdown-menu
-              %li
-                = link_to admin_users_path(sort: sort_value_name) do
-                  = sort_title_name
-                = link_to admin_users_path(sort: sort_value_recently_signin) do
-                  = sort_title_recently_signin
-                = link_to admin_users_path(sort: sort_value_oldest_signin) do
-                  = sort_title_oldest_signin
-                = link_to admin_users_path(sort: sort_value_recently_created) do
-                  = sort_title_recently_created
-                = link_to admin_users_path(sort: sort_value_oldest_created) do
-                  = sort_title_oldest_created
-                = link_to admin_users_path(sort: sort_value_recently_updated) do
-                  = sort_title_recently_updated
-                = link_to admin_users_path(sort: sort_value_oldest_updated) do
-                  = sort_title_oldest_updated
-
-          = link_to 'New User', new_admin_user_path, class: "btn btn-new btn-sm"
-      %ul.well-list
-        - @users.each do |user|
+.filtered-search-block.row-content-block.border-top-0
+  = form_tag admin_users_path, method: :get do
+    - if params[:filter].present?
+      = hidden_field_tag "filter", h(params[:filter])
+    .search-holder
+      .search-field-holder
+        = search_field_tag :search_query, params[:search_query], placeholder: s_('AdminUsers|Search by name, email or username'), class: 'form-control search-text-input js-search-input', spellcheck: false, data: { qa_selector: 'user_search_field' }
+        - if @sort.present?
+          = hidden_field_tag :sort, @sort
+        = sprite_icon('search', css_class: 'search-icon')
+        = button_tag s_('AdminUsers|Search users') if Rails.env.test?
+      .dropdown.user-sort-dropdown
+        = label_tag 'Sort by', nil, class: 'label-bold'
+        - toggle_text = @sort.present? ? users_sort_options_hash[@sort] : sort_title_name
+        = dropdown_toggle(toggle_text, { toggle: 'dropdown' })
+        %ul.dropdown-menu.dropdown-menu-right
+          %li.dropdown-header
+            = s_('AdminUsers|Sort by')
           %li
-            .list-item-name
-              - if user.blocked?
-                %i.fa.fa-lock.cred
-              - else
-                %i.fa.fa-user.cgreen
-              = link_to user.name, [:admin, user]
-              - if user.admin?
-                %strong.cred (Admin)
-              - if user == current_user
-                %span.cred It's you!
-            .pull-right
-              %span.light
-                %i.fa.fa-envelope
-                = mail_to user.email, user.email, class: 'light'
-              &nbsp;
-              = link_to 'Edit', edit_admin_user_path(user), id: "edit_#{dom_id(user)}", class: "btn btn-xs"
-              - unless user == current_user
-                - if user.blocked?
-                  = link_to 'Unblock', unblock_admin_user_path(user), method: :put, class: "btn btn-xs btn-success"
-                - else
-                  = link_to 'Block', block_admin_user_path(user), data: {confirm: 'USER WILL BE BLOCKED! Are you sure?'}, method: :put, class: "btn btn-xs btn-warning"
-                - if user.can_be_removed?
-                  = link_to 'Destroy', [:admin, user], data: { confirm: "USER #{user.name} WILL BE REMOVED! All tickets linked to this user will also be removed! Maybe block the user instead? Are you sure?" }, method: :delete, class: "btn btn-xs btn-remove"
-    = paginate @users, theme: "gitlab"
+            - users_sort_options_hash.each do |value, title|
+              = link_to admin_users_path(sort: value, filter: params[:filter], search_query: params[:search_query]) do
+                = title
+
+- if @users.empty?
+  .nothing-here-block.border-top-0
+    = s_('AdminUsers|No users found')
+- else
+  .table-holder
+    .thead-white.text-nowrap.gl-responsive-table-row.table-row-header{ role: 'row' }
+      .table-section.section-40{ role: 'rowheader' }= _('Name')
+      .table-section.section-10{ role: 'rowheader' }= _('Projects')
+      .table-section.section-15{ role: 'rowheader' }= _('Created on')
+      .table-section.section-15{ role: 'rowheader' }= _('Last activity')
+
+    = render partial: 'admin/users/user', collection: @users
+
+= paginate @users, theme: "gitlab"
+
+= render partial: 'admin/users/modals'

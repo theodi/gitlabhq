@@ -1,0 +1,34 @@
+- signature = local_assigns.fetch(:signature)
+- title = local_assigns.fetch(:title)
+- label = local_assigns.fetch(:label)
+- css_class = local_assigns.fetch(:css_class)
+- icon = local_assigns.fetch(:icon)
+- show_user = local_assigns.fetch(:show_user, false)
+
+- css_classes = commit_signature_badge_classes(css_class)
+
+- title = capture do
+  .gpg-popover-status
+    .gpg-popover-icon{ class: css_class }
+      = sprite_icon(icon)
+    %div
+      = title
+
+- content = capture do
+  - if show_user
+    .clearfix
+      - uri_signature_badge_user = "projects/commit/#{"x509/" if x509_signature?(signature)}signature_badge_user"
+      = render partial: "#{uri_signature_badge_user}", locals: { signature: signature }
+
+  - if x509_signature?(signature)
+    = render partial: "projects/commit/x509/certificate_details", locals: { signature: signature }
+
+    = link_to(_('Learn more about X.509 signed commits'), help_page_path('user/project/repository/x509_signed_commits/index.md'), class: 'gpg-popover-help-link')
+  - else
+    = _('GPG Key ID:')
+    %span.monospace= signature.gpg_key_primary_keyid
+
+    = link_to(_('Learn more about signing commits'), help_page_path('user/project/repository/gpg_signed_commits/index.md'), class: 'gpg-popover-help-link')
+
+%a{ role: 'button', tabindex: 0, class: css_classes, data: { toggle: 'popover', html: 'true', placement: 'top', title: title, content: content } }
+  = label

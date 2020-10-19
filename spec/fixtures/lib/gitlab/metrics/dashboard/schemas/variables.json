@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "patternProperties": {
+    "^[a-zA-Z0-9_]*$": {
+        "anyOf": [
+          { "$ref": "text_variable_full_syntax.json" },
+          { "type": "string" },
+          {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          { "$ref": "custom_variable_full_syntax.json" },
+          { "$ref": "metric_label_values_variable_full_syntax.json" }
+        ]
+      }
+  },
+  "additionalProperties": false
+}

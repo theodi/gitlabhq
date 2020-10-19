@@ -1,26 +1,31 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe Gitlab::GoogleCodeImport::ProjectCreator do
+RSpec.describe Gitlab::GoogleCodeImport::ProjectCreator do
   let(:user) { create(:user) }
-  let(:repo) { 
+  let(:repo) do
     Gitlab::GoogleCodeImport::Repository.new(
-      "name"            => 'vim',
-      "summary"         => 'VI Improved',
-      "repositoryUrls"  => [ "https://vim.googlecode.com/git/" ]
+      "name" => 'vim',
+      "summary" => 'VI Improved',
+      "repositoryUrls" => ["https://vim.googlecode.com/git/"]
     )
-  }
-  let(:namespace){ create(:group, owner: user) }
+  end
+
+  let(:namespace) { create(:group) }
 
   before do
     namespace.add_owner(user)
   end
 
   it 'creates project' do
-    allow_any_instance_of(Project).to receive(:add_import_job)
+    expect_next_instance_of(Project) do |project|
+      expect(project).to receive(:add_import_job)
+    end
 
-    project_creator = Gitlab::GoogleCodeImport::ProjectCreator.new(repo, namespace, user)
+    project_creator = described_class.new(repo, namespace, user)
     project = project_creator.execute
-    
+
     expect(project.import_url).to eq("https://vim.googlecode.com/git/")
     expect(project.visibility_level).to eq(Gitlab::VisibilityLevel::PUBLIC)
   end

@@ -1,0 +1,27 @@
+---
+extends:
+  - 'plugin:@gitlab/jest'
+settings:
+  # We have to teach eslint-plugin-import what node modules we use
+  # otherwise there is an error when it tries to resolve them
+  import/core-modules:
+    - events
+    - fs
+    - path
+  import/resolver:
+    jest:
+      jestConfigFile: 'jest.config.js'
+globals:
+  getJSONFixture: false
+  loadFixtures: false
+  preloadFixtures: false
+  setFixtures: false
+rules:
+  jest/expect-expect:
+    - off
+    - assertFunctionNames:
+        - 'expect*'
+        - 'assert*'
+        - 'testAction'
+  jest/no-test-callback:
+    - off

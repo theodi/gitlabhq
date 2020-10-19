@@ -1,170 +1,289 @@
+# frozen_string_literal: true
+
 module Backup
   class Manager
-    def pack
-      # saving additional informations
-      s = {}
-      s[:db_version]         = "#{ActiveRecord::Migrator.current_version}"
-      s[:backup_created_at]  = Time.now
-      s[:gitlab_version]     = Gitlab::VERSION
-      s[:tar_version]        = tar_version
-      s[:skipped]            = ENV["SKIP"]
-      tar_file = "#{s[:backup_created_at].to_i}_gitlab_backup.tar"
+    ARCHIVES_TO_BACKUP = %w[uploads builds artifacts pages lfs registry].freeze
+    FOLDERS_TO_BACKUP = %w[repositories db].freeze
+    FILE_NAME_SUFFIX = '_gitlab_backup.tar'
 
-      Dir.chdir(Gitlab.config.backup.path) do
-        File.open("#{Gitlab.config.backup.path}/backup_information.yml",
-                  "w+") do |file|
-          file << s.to_yaml.gsub(/^---\n/,'')
+    attr_reader :progress
+
+    def initialize(progress)
+      @progress = progress
+    end
+
+    def write_info
+      # Make sure there is a connection
+      ActiveRecord::Base.connection.reconnect!
+
+      Dir.chdir(backup_path) do
+        File.open("#{backup_path}/backup_information.yml", "w+") do |file|
+          file << backup_information.to_yaml.gsub(/^---\n/, '')
         end
-
-        FileUtils.chmod(0700, folders_to_backup)
-
-        # create archive
-        $progress.print "Creating backup archive: #{tar_file} ... "
-        orig_umask = File.umask(0077)
-        if Kernel.system('tar', '-cf', tar_file, *backup_contents)
-          $progress.puts "done".green
-        else
-          puts "creating archive #{tar_file} failed".red
-          abort 'Backup failed'
-        end
-        File.umask(orig_umask)
-
-        upload(tar_file)
       end
     end
 
-    def upload(tar_file)
-      remote_directory = Gitlab.config.backup.upload.remote_directory
-      $progress.print "Uploading backup archive to remote storage #{remote_directory} ... "
+    def pack
+      Dir.chdir(backup_path) do
+        # create archive
+        progress.print "Creating backup archive: #{tar_file} ... "
+        # Set file permissions on open to prevent chmod races.
+        tar_system_options = { out: [tar_file, 'w', Gitlab.config.backup.archive_permissions] }
+        if Kernel.system('tar', '-cf', '-', *backup_contents, tar_system_options)
+          progress.puts "done".color(:green)
+        else
+          puts "creating archive #{tar_file} failed".color(:red)
+          raise Backup::Error, 'Backup failed'
+        end
+      end
+    end
+
+    def upload
+      progress.print "Uploading backup archive to remote storage #{remote_directory} ... "
 
       connection_settings = Gitlab.config.backup.upload.connection
       if connection_settings.blank?
-        $progress.puts "skipped".yellow
+        progress.puts "skipped".color(:yellow)
         return
       end
 
-      connection = ::Fog::Storage.new(connection_settings)
-      directory = connection.directories.get(remote_directory)
+      directory = connect_to_remote_directory(Gitlab.config.backup.upload)
 
-      if directory.files.create(key: tar_file, body: File.open(tar_file), public: false)
-        $progress.puts "done".green
+      if directory.files.create(create_attributes)
+        progress.puts "done".color(:green)
       else
-        puts "uploading backup to #{remote_directory} failed".red
-        abort 'Backup failed'
+        puts "uploading backup to #{remote_directory} failed".color(:red)
+        raise Backup::Error, 'Backup failed'
       end
     end
 
     def cleanup
-      $progress.print "Deleting tmp directories ... "
-      
-      backup_contents.each do |dir|
-        next unless File.exist?(File.join(Gitlab.config.backup.path, dir))
+      progress.print "Deleting tmp directories ... "
 
-        if FileUtils.rm_rf(File.join(Gitlab.config.backup.path, dir))
-          $progress.puts "done".green
+      backup_contents.each do |dir|
+        next unless File.exist?(File.join(backup_path, dir))
+
+        if FileUtils.rm_rf(File.join(backup_path, dir))
+          progress.puts "done".color(:green)
         else
-          puts "deleting tmp directory '#{dir}' failed".red
-          abort 'Backup failed'
+          puts "deleting tmp directory '#{dir}' failed".color(:red)
+          raise Backup::Error, 'Backup failed'
         end
       end
     end
 
     def remove_old
       # delete backups
-      $progress.print "Deleting old backups ... "
+      progress.print "Deleting old backups ... "
       keep_time = Gitlab.config.backup.keep_time.to_i
 
       if keep_time > 0
         removed = 0
-        
-        Dir.chdir(Gitlab.config.backup.path) do
-          file_list = Dir.glob('*_gitlab_backup.tar')
-          file_list.map! { |f| $1.to_i if f =~ /(\d+)_gitlab_backup.tar/ }
-          file_list.sort.each do |timestamp|
+
+        Dir.chdir(backup_path) do
+          backup_file_list.each do |file|
+            # For backward compatibility, there are 3 names the backups can have:
+            # - 1495527122_gitlab_backup.tar
+            # - 1495527068_2017_05_23_gitlab_backup.tar
+            # - 1495527097_2017_05_23_9.3.0-pre_gitlab_backup.tar
+            next unless file =~ /^(\d{10})(?:_\d{4}_\d{2}_\d{2}(_\d+\.\d+\.\d+((-|\.)(pre|rc\d))?(-ee)?)?)?_gitlab_backup\.tar$/
+
+            timestamp = Regexp.last_match(1).to_i
+
             if Time.at(timestamp) < (Time.now - keep_time)
-              if Kernel.system(*%W(rm #{timestamp}_gitlab_backup.tar))
+              begin
+                FileUtils.rm(file)
                 removed += 1
+              rescue => e
+                progress.puts "Deleting #{file} failed: #{e.message}".color(:red)
               end
             end
           end
         end
 
-        $progress.puts "done. (#{removed} removed)".green
+        progress.puts "done. (#{removed} removed)".color(:green)
       else
-        $progress.puts "skipping".yellow
+        progress.puts "skipping".color(:yellow)
+      end
+    end
+
+    def verify_backup_version
+      Dir.chdir(backup_path) do
+        # restoring mismatching backups can lead to unexpected problems
+        if settings[:gitlab_version] != Gitlab::VERSION
+          progress.puts(<<~HEREDOC.color(:red))
+            GitLab version mismatch:
+              Your current GitLab version (#{Gitlab::VERSION}) differs from the GitLab version in the backup!
+              Please switch to the following version and try again:
+              version: #{settings[:gitlab_version]}
+          HEREDOC
+          progress.puts
+          progress.puts "Hint: git checkout v#{settings[:gitlab_version]}"
+          exit 1
+        end
       end
     end
 
     def unpack
-      Dir.chdir(Gitlab.config.backup.path)
+      if ENV['BACKUP'].blank? && non_tarred_backup?
+        progress.puts "Non tarred backup found in #{backup_path}, using that"
 
-      # check for existing backups in the backup dir
-      file_list = Dir.glob("*_gitlab_backup.tar").each.map { |f| f.split(/_/).first.to_i }
-      puts "no backups found" if file_list.count == 0
-
-      if file_list.count > 1 && ENV["BACKUP"].nil?
-        puts "Found more than one backup, please specify which one you want to restore:"
-        puts "rake gitlab:backup:restore BACKUP=timestamp_of_backup"
-        exit 1
+        return false
       end
 
-      tar_file = ENV["BACKUP"].nil? ? File.join("#{file_list.first}_gitlab_backup.tar") : File.join(ENV["BACKUP"] + "_gitlab_backup.tar")
+      Dir.chdir(backup_path) do
+        # check for existing backups in the backup dir
+        if backup_file_list.empty?
+          progress.puts "No backups found in #{backup_path}"
+          progress.puts "Please make sure that file name ends with #{FILE_NAME_SUFFIX}"
+          exit 1
+        elsif backup_file_list.many? && ENV["BACKUP"].nil?
+          progress.puts 'Found more than one backup:'
+          # print list of available backups
+          progress.puts " " + available_timestamps.join("\n ")
+          progress.puts 'Please specify which one you want to restore:'
+          progress.puts 'rake gitlab:backup:restore BACKUP=timestamp_of_backup'
+          exit 1
+        end
 
-      unless File.exists?(tar_file)
-        puts "The specified backup doesn't exist!"
-        exit 1
-      end
+        tar_file = if ENV['BACKUP'].present?
+                     File.basename(ENV['BACKUP']) + FILE_NAME_SUFFIX
+                   else
+                     backup_file_list.first
+                   end
 
-      $progress.print "Unpacking backup ... "
+        unless File.exist?(tar_file)
+          progress.puts "The backup file #{tar_file} does not exist!"
+          exit 1
+        end
 
-      unless Kernel.system(*%W(tar -xf #{tar_file}))
-        puts "unpacking backup failed".red
-        exit 1
-      else
-        $progress.puts "done".green
-      end
+        progress.print 'Unpacking backup ... '
 
-      ENV["VERSION"] = "#{settings[:db_version]}" if settings[:db_version].to_i > 0
-
-      # restoring mismatching backups can lead to unexpected problems
-      if settings[:gitlab_version] != Gitlab::VERSION
-        puts "GitLab version mismatch:".red
-        puts "  Your current GitLab version (#{Gitlab::VERSION}) differs from the GitLab version in the backup!".red
-        puts "  Please switch to the following version and try again:".red
-        puts "  version: #{settings[:gitlab_version]}".red
-        puts
-        puts "Hint: git checkout v#{settings[:gitlab_version]}"
-        exit 1
+        if Kernel.system(*%W(tar -xf #{tar_file}))
+          progress.puts 'done'.color(:green)
+        else
+          progress.puts 'unpacking backup failed'.color(:red)
+          exit 1
+        end
       end
     end
 
     def tar_version
-      tar_version, _ = Gitlab::Popen.popen(%W(tar --version))
-      tar_version.force_encoding('locale').split("\n").first
+      tar_version, _ = Gitlab::Popen.popen(%w(tar --version))
+      tar_version.dup.force_encoding('locale').split("\n").first
     end
 
     def skipped?(item)
-      settings[:skipped] && settings[:skipped].include?(item)
+      settings[:skipped] && settings[:skipped].include?(item) || disabled_features.include?(item)
     end
 
     private
 
+    def non_tarred_backup?
+      File.exist?(File.join(backup_path, 'backup_information.yml'))
+    end
+
+    def backup_path
+      Gitlab.config.backup.path
+    end
+
+    def backup_file_list
+      @backup_file_list ||= Dir.glob("*#{FILE_NAME_SUFFIX}")
+    end
+
+    def available_timestamps
+      @backup_file_list.map {|item| item.gsub("#{FILE_NAME_SUFFIX}", "")}
+    end
+
+    def connect_to_remote_directory(options)
+      config = ObjectStorage::Config.new(options)
+      config.load_provider
+
+      connection = ::Fog::Storage.new(config.credentials)
+
+      # We only attempt to create the directory for local backups. For AWS
+      # and other cloud providers, we cannot guarantee the user will have
+      # permission to create the bucket.
+      if connection.service == ::Fog::Storage::Local
+        connection.directories.create(key: remote_directory)
+      else
+        connection.directories.new(key: remote_directory)
+      end
+    end
+
+    def remote_directory
+      Gitlab.config.backup.upload.remote_directory
+    end
+
+    def remote_target
+      if ENV['DIRECTORY']
+        File.join(ENV['DIRECTORY'], tar_file)
+      else
+        tar_file
+      end
+    end
+
     def backup_contents
-      folders_to_backup + ["backup_information.yml"]
+      folders_to_backup + archives_to_backup + ["backup_information.yml"]
+    end
+
+    def archives_to_backup
+      ARCHIVES_TO_BACKUP.map { |name| (name + ".tar.gz") unless skipped?(name) }.compact
     end
 
     def folders_to_backup
-      folders = %w{repositories db uploads}
+      FOLDERS_TO_BACKUP.reject { |name| skipped?(name) }
+    end
 
-      if ENV["SKIP"]
-        return folders.reject{ |folder| ENV["SKIP"].include?(folder) }
-      end
-
-      folders
+    def disabled_features
+      features = []
+      features << 'registry' unless Gitlab.config.registry.enabled
+      features
     end
 
     def settings
       @settings ||= YAML.load_file("backup_information.yml")
+    end
+
+    def tar_file
+      @tar_file ||= if ENV['BACKUP'].present?
+                      File.basename(ENV['BACKUP']) + FILE_NAME_SUFFIX
+                    else
+                      "#{backup_information[:backup_created_at].strftime('%s_%Y_%m_%d_')}#{backup_information[:gitlab_version]}#{FILE_NAME_SUFFIX}"
+                    end
+    end
+
+    def backup_information
+      @backup_information ||= {
+        db_version: ActiveRecord::Migrator.current_version.to_s,
+        backup_created_at: Time.now,
+        gitlab_version: Gitlab::VERSION,
+        tar_version: tar_version,
+        installation_type: Gitlab::INSTALLATION_TYPE,
+        skipped: ENV["SKIP"]
+      }
+    end
+
+    def create_attributes
+      attrs = {
+        key: remote_target,
+        body: File.open(File.join(backup_path, tar_file)),
+        multipart_chunk_size: Gitlab.config.backup.upload.multipart_chunk_size,
+        encryption: Gitlab.config.backup.upload.encryption,
+        encryption_key: Gitlab.config.backup.upload.encryption_key,
+        storage_class: Gitlab.config.backup.upload.storage_class
+      }
+
+      # Google bucket-only policies prevent setting an ACL. In any case, by default,
+      # all objects are set to the default ACL, which is project-private:
+      # https://cloud.google.com/storage/docs/json_api/v1/defaultObjectAccessControls
+      attrs[:public] = false unless google_provider?
+
+      attrs
+    end
+
+    def google_provider?
+      Gitlab.config.backup.upload.connection&.provider&.downcase == 'google'
     end
   end
 end

@@ -1,0 +1,27 @@
+- issuable = local_assigns.fetch(:issuable)
+- form = local_assigns.fetch(:form)
+
+- return unless issuable.is_a?(MergeRequest)
+- return if issuable.closed_without_fork?
+
+- source_title, target_title = format_mr_branch_names(@merge_request)
+
+.form-group.row.d-flex.gl-px-5.branch-selector
+  .align-self-center
+    %span
+      = html_escape(_('From %{code_open}%{source_title}%{code_close} into')) % { source_title: source_title, code_open: '<code>'.html_safe, code_close: '</code>'.html_safe }
+
+    - if issuable.new_record?
+      %code#js-target-branch-title= target_title
+      &nbsp;
+      = link_to _('Change branches'), mr_change_branches_path(issuable)
+    - elsif issuable.for_fork?
+      %code= issuable.target_project_path + ":"
+    - if issuable.merged?
+      %code= target_title
+  - unless issuable.new_record? || issuable.merged?
+    %span.dropdown.gl-ml-2.d-inline-block
+      = form.hidden_field(:target_branch,
+        { class: 'target_branch js-target-branch-select ref-name mw-xl',
+          data: { placeholder: _('Select branch'), endpoint: refs_project_path(@project, sort: 'updated_desc', find: 'branches') }})
+%hr

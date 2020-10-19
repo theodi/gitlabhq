@@ -1,28 +1,42 @@
-.search
-  = form_tag search_path, method: :get, class: 'navbar-form pull-left' do |f|
-    = search_field_tag "search", nil, placeholder: search_placeholder, class: "search-input form-control"
-    = hidden_field_tag :group_id, @group.try(:id)
-    - if @project && @project.persisted?
-      = hidden_field_tag :project_id, @project.id
+.search.search-form{ data: { track_label: "navbar_search", track_event: "activate_form_input", track_value: "" } }
+  = form_tag search_path, method: :get, class: 'form-inline' do |_f|
+    .search-input-container
+      .search-input-wrap
+        .dropdown{ data: { url: search_autocomplete_path } }
+          = search_field_tag 'search', nil, placeholder: _('Search or jump to…'),
+                                            class: 'search-input dropdown-menu-toggle no-outline js-search-dashboard-options',
+                                            spellcheck: false,
+                                            tabindex: '1',
+                                            autocomplete: 'off',
+                                            data: { issues_path: issues_dashboard_path,
+                                              mr_path: merge_requests_dashboard_path,
+                                              qa_selector: 'search_term_field' },
+                                            aria: { label: _('Search or jump to…') }
+          %button.hidden.js-dropdown-search-toggle{ type: 'button', data: { toggle: 'dropdown' } }
+          .dropdown-menu.dropdown-select.js-dashboard-search-options
+            = dropdown_content do
+              %ul
+                %li.dropdown-menu-empty-item
+                  %a
+                    = _('Loading...')
+            = dropdown_loading
+          = sprite_icon('search', css_class: 'search-icon')
+          = sprite_icon('close', css_class: 'clear-icon js-clear-input')
 
-      - if current_controller?(:issues)
-        = hidden_field_tag :scope, 'issues'
-      - elsif current_controller?(:merge_requests)
-        = hidden_field_tag :scope, 'merge_requests'
-      - elsif current_controller?(:wikis)
-        = hidden_field_tag :scope, 'wiki_blobs'
-      - else
-        = hidden_field_tag :search_code, true
+    = hidden_field_tag :group_id, search_context.for_group? ? search_context.group.id : '', class: 'js-search-group-options', data: search_context.group_metadata
+    = hidden_field_tag :project_id, search_context.for_project? ? search_context.project.id : '', id: 'search_project_id', class: 'js-search-project-options', data: search_context.project_metadata
 
-    - if @snippet || @snippets
-      = hidden_field_tag :snippets, true
-    = hidden_field_tag :repository_ref, @ref
-    = button_tag 'Go' if ENV['RAILS_ENV'] == 'test'
-    .search-autocomplete-opts.hide{:'data-autocomplete-path' => search_autocomplete_path, :'data-autocomplete-project-id' => @project.try(:id), :'data-autocomplete-project-ref' => @ref }
+    - if search_context.for_project?
+      = hidden_field_tag :scope, search_context.scope
+      = hidden_field_tag :search_code, search_context.code_search?
 
-:javascript
-  $('.search-input').on('keyup', function(e) {
-    if (e.keyCode == 27) {
-      $('.search-input').blur()
-    }
-  })
+    = hidden_field_tag :snippets, search_context.for_snippets?
+    = hidden_field_tag :repository_ref, search_context.ref
+    = hidden_field_tag :nav_source, 'navbar'
+
+    -# workaround for non-JS feature specs, see spec/support/helpers/search_helpers.rb
+    - if ENV['RAILS_ENV'] == 'test'
+      %noscript= button_tag 'Search'
+    .search-autocomplete-opts.hide{ :'data-autocomplete-path' => search_autocomplete_path,
+                                    :'data-autocomplete-project-id' => search_context.project.try(:id),
+                                    :'data-autocomplete-project-ref' => search_context.ref }

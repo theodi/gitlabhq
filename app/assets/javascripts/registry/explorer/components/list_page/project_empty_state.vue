@@ -1,0 +1,115 @@
+<script>
+import { GlEmptyState, GlSprintf, GlLink, GlFormInputGroup, GlFormInput } from '@gitlab/ui';
+import { mapState, mapGetters } from 'vuex';
+import { s__ } from '~/locale';
+import ClipboardButton from '~/vue_shared/components/clipboard_button.vue';
+import {
+  COPY_LOGIN_TITLE,
+  COPY_BUILD_TITLE,
+  COPY_PUSH_TITLE,
+  QUICK_START,
+} from '../../constants/index';
+
+export default {
+  name: 'ProjectEmptyState',
+  components: {
+    ClipboardButton,
+    GlEmptyState,
+    GlSprintf,
+    GlLink,
+    GlFormInputGroup,
+    GlFormInput,
+  },
+  i18n: {
+    quickStart: QUICK_START,
+    copyLoginTitle: COPY_LOGIN_TITLE,
+    copyBuildTitle: COPY_BUILD_TITLE,
+    copyPushTitle: COPY_PUSH_TITLE,
+    introText: s__(
+      `ContainerRegistry|With the Container Registry, every project can have its own space to store its Docker images. %{docLinkStart}More Information%{docLinkEnd}`,
+    ),
+    notLoggedInMessage: s__(
+      `ContainerRegistry|If you are not already logged in, you need to authenticate to the Container Registry by using your GitLab username and password. If you have %{twofaDocLinkStart}Two-Factor Authentication%{twofaDocLinkEnd} enabled, use a %{personalAccessTokensDocLinkStart}Personal Access Token%{personalAccessTokensDocLinkEnd} instead of a password.`,
+    ),
+    addImageText: s__(
+      'ContainerRegistry|You can add an image to this registry with the following commands:',
+    ),
+  },
+  computed: {
+    ...mapState(['config']),
+    ...mapGetters(['dockerBuildCommand', 'dockerPushCommand', 'dockerLoginCommand']),
+  },
+};
+</script>
+<template>
+  <gl-empty-state
+    :title="s__('ContainerRegistry|There are no container images stored for this project')"
+    :svg-path="config.noContainersImage"
+  >
+    <template #description>
+      <p>
+        <gl-sprintf :message="$options.i18n.introText">
+          <template #docLink="{content}">
+            <gl-link :href="config.helpPagePath" target="_blank">{{ content }}</gl-link>
+          </template>
+        </gl-sprintf>
+      </p>
+      <h5>{{ $options.i18n.quickStart }}</h5>
+      <p>
+        <gl-sprintf :message="$options.i18n.notLoggedInMessage">
+          <template #twofaDocLink="{content}">
+            <gl-link :href="config.twoFactorAuthHelpLink" target="_blank">{{ content }}</gl-link>
+          </template>
+          <template #personalAccessTokensDocLink="{content}">
+            <gl-link :href="config.personalAccessTokensHelpLink" target="_blank">{{
+              content
+            }}</gl-link>
+          </template>
+        </gl-sprintf>
+      </p>
+      <gl-form-input-group class="gl-mb-4">
+        <gl-form-input
+          :value="dockerLoginCommand"
+          readonly
+          type="text"
+          class="gl-font-monospace!"
+        />
+        <template #append>
+          <clipboard-button
+            :text="dockerLoginCommand"
+            :title="$options.i18n.copyLoginTitle"
+            class="gl-m-0!"
+          />
+        </template>
+      </gl-form-input-group>
+      <p class="gl-mb-4">
+        {{ $options.i18n.addImageText }}
+      </p>
+      <gl-form-input-group class="gl-mb-4 ">
+        <gl-form-input
+          :value="dockerBuildCommand"
+          readonly
+          type="text"
+          class="gl-font-monospace!"
+        />
+        <template #append>
+          <clipboard-button
+            :text="dockerBuildCommand"
+            :title="$options.i18n.copyBuildTitle"
+            class="gl-m-0!"
+          />
+        </template>
+      </gl-form-input-group>
+      <gl-form-input-group>
+        <gl-form-input :value="dockerPushCommand" readonly type="text" class="gl-font-monospace!" />
+        <template #append>
+          <clipboard-button
+            :text="dockerPushCommand"
+            :title="$options.i18n.copyPushTitle"
+            class="gl-m-0!"
+          />
+        </template>
+      </gl-form-input-group>
+    </template>
+  </gl-empty-state>
+</template>

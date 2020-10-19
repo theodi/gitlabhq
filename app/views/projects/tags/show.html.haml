@@ -1,0 +1,66 @@
+- user = user_email = nil
+- if @tag.tagger
+  - user_email = @tag.tagger.email
+  - user = User.find_by_any_email(user_email)
+- add_to_breadcrumbs s_('TagsPage|Tags'), project_tags_path(@project)
+- breadcrumb_title @tag.name
+- page_title @tag.name, s_('TagsPage|Tags')
+
+.top-area.multi-line.flex-wrap
+  .nav-text
+    .title
+      %span.item-title.ref-name{ data: { qa_selector: 'tag_name_content' } }
+        = sprite_icon('tag')
+        = @tag.name
+      - if protected_tag?(@project, @tag)
+        %span.badge.badge-success
+          = s_('TagsPage|protected')
+
+    - if user
+      = link_to user_path(user) do
+        %div
+          = user_avatar_without_link(user: user, size: 32, css_class: "mt-1 mb-1")
+
+        %div
+          %strong= user.name
+          %div= user.to_reference
+
+    - elsif user_email
+      = mail_to user_email do
+        %div
+          = user_avatar_without_link(user_email: user_email, size: 32, css_class: "mt-1 mb-1")
+
+        %div{ :class => "clearfix" }
+          %strong= user_email
+
+    - if @commit
+      = render 'projects/branches/commit', commit: @commit, project: @project
+    - else
+      = s_("TagsPage|Can't find HEAD commit for this tag")
+
+  .nav-controls
+    - if @tag.has_signature?
+      = render partial: 'projects/commit/signature', object: @tag.signature
+    - if can?(current_user, :admin_tag, @project)
+      = link_to edit_project_tag_release_path(@project, @tag.name), class: 'btn btn-icon btn-edit gl-button controls-item has-tooltip', title: s_('TagsPage|Edit release notes') do
+        = sprite_icon("pencil", css_class: 'gl-icon')
+    = link_to project_tree_path(@project, @tag.name), class: 'btn btn-icon gl-button controls-item has-tooltip', title: s_('TagsPage|Browse files') do
+      = sprite_icon('folder-open', css_class: 'gl-icon')
+    = link_to project_commits_path(@project, @tag.name), class: 'btn btn-icon gl-button controls-item has-tooltip', title: s_('TagsPage|Browse commits') do
+      = sprite_icon('history', css_class: 'gl-icon')
+    .btn-container.controls-item
+      = render 'projects/buttons/download', project: @project, ref: @tag.name
+    - if can?(current_user, :admin_tag, @project)
+      .btn-container.controls-item-full
+        = render 'projects/buttons/remove_tag', project: @project, tag: @tag
+
+  - if @tag.message.present?
+    %pre.wrap{ data: { qa_selector: 'tag_message_content' } }
+      = strip_signature(@tag.message)
+
+.gl-mb-3.gl-mt-3
+  - if @release.description.present?
+    .description.md{ data: { qa_selector: 'tag_release_notes_content' } }
+      = markdown_field(@release, :description)
+  - else
+    = s_('TagsPage|This tag has no release notes.')

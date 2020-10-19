@@ -1,9 +1,5 @@
-.blob-result
-  .file-holder
-    .file-title
-      = link_to namespace_project_blob_path(@project.namespace, @project, tree_join(blob.ref, blob.filename), :anchor => "L" + blob.startline.to_s) do
-        %i.fa.fa-file
-        %strong
-          = blob.filename
-    .file-content.code.term
-      = render 'shared/file_highlight', blob: blob, first_line_number: blob.startline, user_color_scheme_class: 'white'
+- project = blob.project
+- return unless project
+- blob_link = project_blob_path(project, tree_join(repository_ref(project), blob.path))
+
+= render partial: 'search/results/blob_data', locals: { blob: blob, project: project, path: blob.path, blob_link: blob_link }

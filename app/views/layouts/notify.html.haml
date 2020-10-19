@@ -1,42 +1,36 @@
-%html{lang: "en"}
+%html{ lang: "en" }
   %head
-    %meta{content: "text/html; charset=utf-8", "http-equiv" => "Content-Type"}
-      %title
-        GitLab
-  :css
-    img {
-      max-width: 100%;
-      height: auto;
-    }
-    p.details {
-      font-style:italic;
-      color:#777
-    }
-    .footer p {
-      font-size:small;
-      color:#777
-    }
-    pre.commit-message {
-      white-space: pre-wrap;
-    }
-    .file-stats a {
-      text-decoration: none;
-    }
-    .file-stats .new-file {
-      color: #090;
-    }
-    .file-stats .deleted-file {
-      color: #B00;
-    }
+    %meta{ content: "text/html; charset=utf-8", "http-equiv" => "Content-Type" }
+    %title
+      GitLab
+    = stylesheet_link_tag 'notify'
+    = yield :head
   %body
-    %div.content
+    .content
+      = html_header_message
       = yield
-    %div.footer{style: "margin-top: 10px;"}
+    .footer{ style: "margin-top: 10px;" }
       %p
-        \—
+        &mdash;
         %br
         - if @target_url
-          #{link_to "View it on GitLab", @target_url}
+          - if @reply_by_email
+            = _('Reply to this email directly or %{view_it_on_gitlab}.').html_safe % { view_it_on_gitlab: link_to(_("view it on GitLab"), @target_url) }
+          - else
+            #{link_to _("View it on GitLab"), @target_url}.
+          %br
+          -# Don't link the host in the line below, one link in the email is easier to quickly click than two.
+          = notification_reason_text(@reason)
+          If you'd like to receive fewer emails, you can
+          - if @labels_url
+            adjust your #{link_to 'label subscriptions', @labels_url}.
+          - else
+            - if @unsubscribe_url
+              = link_to "unsubscribe", @unsubscribe_url
+              from this thread or
+            adjust your notification settings.
+
           = email_action @target_url
-        - if @project && !@disable_footer
-          You're receiving this notification because you are a member of the #{link_to_unless @target_url, @project.name_with_namespace, namespace_project_url(@project.namespace, @project)} project team.
+
+        = render_if_exists 'layouts/email_additional_text'
+        = html_footer_message

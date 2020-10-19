@@ -1,0 +1,25 @@
+- wiki_page_title @page, @page.persisted? ? _('Edit') : _('New')
+
+= wiki_page_errors(@error)
+
+.wiki-page-header.top-area.has-sidebar-toggle.flex-column.flex-lg-row
+  = wiki_sidebar_toggle_button
+
+  .nav-text
+    %h2.wiki-page-title
+      - if @page.persisted?
+        = link_to_wiki_page @page
+        %span.light
+          &middot;
+          = s_("Wiki|Edit Page")
+      - else
+        = s_("Wiki|Create New Page")
+
+  .nav-controls.pb-md-3.pb-lg-0
+    - if @page.persisted?
+      - if can?(current_user, :admin_wiki, @wiki.container)
+        #delete-wiki-modal-wrapper{ data: { delete_wiki_url: wiki_page_path(@wiki, @page), page_title: @page.human_title } }
+
+= render 'shared/wikis/form', uploads_path: wiki_attachment_upload_url
+
+= render 'shared/wikis/sidebar'

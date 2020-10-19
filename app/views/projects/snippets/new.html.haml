@@ -1,5 +1,9 @@
-- page_title "New Snippets"
+- add_to_breadcrumbs _("Snippets"), project_snippets_path(@project)
+- breadcrumb_title _("New")
+- page_title _("New Snippet")
+- @content_class = "limit-container-width" unless fluid_layout
+
 %h3.page-title
-  New snippet
+  = _("New Snippet")
 %hr
-= render "shared/snippets/form", url: namespace_project_snippets_path(@project.namespace, @project, @snippet), visibility_level: default_snippet_visibility
+= render "shared/snippets/form", url: project_snippets_path(@project, @snippet)

@@ -1,19 +1,24 @@
-- page_title "Sign in"
-%div
-  - if signin_enabled? || ldap_enabled?
-    = render 'devise/shared/signin_box'
+- page_title _("Sign in")
 
-  -# Omniauth fits between signin/ldap signin and signup and does not have a surrounding box
-  - if Gitlab.config.omniauth.enabled && devise_mapping.omniauthable?
-    .clearfix.prepend-top-20
-      = render 'devise/shared/omniauth_box'
+#signin-container
+  - if any_form_based_providers_enabled?
+    = render 'devise/shared/tabs_ldap'
+  - else
+    - unless experiment_enabled?(:signup_flow)
+      = render 'devise/shared/tabs_normal'
+  .tab-content
+    - if password_authentication_enabled_for_web? || ldap_sign_in_enabled? || crowd_enabled?
+      = render 'devise/shared/signin_box'
 
-  -# Signup only makes sense if you can also sign-in
-  - if signin_enabled? && signup_enabled?
-    .prepend-top-20
+    -# Signup only makes sense if you can also sign-in
+    - if allow_signup?
       = render 'devise/shared/signup_box'
 
   -# Show a message if none of the mechanisms above are enabled
-  - if !signin_enabled? && !ldap_enabled? && !(Gitlab.config.omniauth.enabled && devise_mapping.omniauthable?)
+  - if !password_authentication_enabled_for_web? && !ldap_sign_in_enabled? && !(omniauth_enabled? && devise_mapping.omniauthable?)
     %div
       No authentication methods configured.
+
+  - if omniauth_enabled? && devise_mapping.omniauthable? && button_based_providers_enabled?
+    .clearfix
+      = render 'devise/shared/omniauth_box'

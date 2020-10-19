@@ -1,36 +1,43 @@
-- page_title "Members"
-%h3.page-title
-  Users with access to this project
+- page_title _("Members")
+- can_admin_project_members = can?(current_user, :admin_project_member, @project)
 
-%p.light
-  Read more about project permissions
-  %strong= link_to "here", help_page_path("permissions", "permissions"), class: "vlink"
+.js-remove-member-modal
+.row.gl-mt-3
+  .col-lg-12
+    - if project_can_be_shared?
+      %h4
+        = _("Project members")
+      - if can_admin_project_members
+        %p= share_project_description(@project)
+      - else
+        %p
+          = html_escape(_("Members can be added by project %{i_open}Maintainers%{i_close} or %{i_open}Owners%{i_close}")) % { i_open: '<i>'.html_safe, i_close: '</i>'.html_safe }
 
-%hr
+    .light
+      - if can_admin_project_members && project_can_be_shared?
+        - if !membership_locked? && @project.allowed_to_share_with_group?
+          %ul.nav-links.nav.nav-tabs.gitlab-tabs{ role: 'tablist' }
+            %li.nav-tab{ role: 'presentation' }
+              %a.nav-link.active{ href: '#invite-member-pane', id: 'invite-member-tab', data: { toggle: 'tab' }, role: 'tab' }= _("Invite member")
+            %li.nav-tab{ role: 'presentation', class: ('active' if membership_locked?) }
+              %a.nav-link{ href: '#invite-group-pane', id: 'invite-group-tab', data: { toggle: 'tab', qa_selector: 'invite_group_tab' }, role: 'tab' }= _("Invite group")
 
-.clearfix.js-toggle-container
-  = form_tag namespace_project_project_members_path(@project.namespace, @project), method: :get, class: 'form-inline member-search-form'  do
-    .form-group
-      = search_field_tag :search, params[:search], { placeholder: 'Find existing member by name', class: 'form-control search-text-input input-mn-300' }
-    = button_tag 'Search', class: 'btn'
+          .tab-content.gitlab-tab-content
+            .tab-pane.active{ id: 'invite-member-pane', role: 'tabpanel' }
+              = render 'shared/members/invite_member', submit_url: project_project_members_path(@project), access_levels: ProjectMember.access_level_roles, default_access_level: @project_member.access_level, can_import_members?: can_import_members?, import_path: import_project_project_members_path(@project)
+            .tab-pane{ id: 'invite-group-pane', role: 'tabpanel', class: ('active' if membership_locked?) }
+              = render 'shared/members/invite_group', submit_url: project_group_links_path(@project), access_levels: ProjectGroupLink.access_options, default_access_level: ProjectGroupLink.default_access, group_link_field: 'link_group_id', group_access_field: 'link_group_access'
+        - elsif !membership_locked?
+          .invite-member= render 'shared/members/invite_member', submit_url: project_project_members_path(@project), access_levels: ProjectMember.access_level_roles, default_access_level: @project_member.access_level, can_import_members?: can_import_members?, import_path: import_project_project_members_path(@project)
+        - elsif @project.allowed_to_share_with_group?
+          .invite-group= render 'shared/members/invite_group', access_levels: ProjectGroupLink.access_options, default_access_level: ProjectGroupLink.default_access, submit_url: project_group_links_path(@project), group_link_field: 'link_group_id', group_access_field: 'link_group_access'
 
-  - if can?(current_user, :admin_project_member, @project)
-    %span.pull-right
-      = button_tag class: 'btn btn-new btn-grouped js-toggle-button', type: 'button' do
-        Add members
-        %i.fa.fa-chevron-down
-      = link_to import_namespace_project_project_members_path(@project.namespace, @project), class: "btn btn-grouped", title: "Import members from another project" do
-        Import members
+        = render 'shared/members/requests', membership_source: @project, requesters: @requesters
+        .clearfix
+          %h5.member.existing-title
+            = _("Existing members and groups")
+        - if @group_links.any?
+          = render 'projects/project_members/groups', group_links: @group_links
 
-    .js-toggle-content.hide.new-group-member-holder
-      = render "new_project_member"
-
-= render "team", members: @project_members
-
-- if @group
-  = render "group_members", members: @group_members
-
-:coffeescript
-  $('form.member-search-form').on 'submit', (event) ->
-    event.preventDefault()
-    Turbolinks.visit @.action + '?' + $(@).serialize()
+    = render 'projects/project_members/team', project: @project, members: @project_members
+    = paginate @project_members, theme: "gitlab"

@@ -1,26 +1,28 @@
+# frozen_string_literal: true
+
 class Import::GoogleCodeController < Import::BaseController
+  before_action :verify_google_code_import_enabled
   before_action :user_map, only: [:new_user_map, :create_user_map]
 
   def new
-
   end
 
   def callback
     dump_file = params[:dump_file]
 
     unless dump_file.respond_to?(:read)
-      return redirect_to :back, alert: "You need to upload a Google Takeout archive."
+      return redirect_back_or_default(options: { alert: _("You need to upload a Google Takeout archive.") })
     end
 
     begin
-      dump = JSON.parse(dump_file.read)
+      dump = Gitlab::Json.parse(dump_file.read)
     rescue
-      return redirect_to :back, alert: "The uploaded file is not a valid Google Takeout archive."
+      return redirect_back_or_default(options: { alert: _("The uploaded file is not a valid Google Takeout archive.") })
     end
 
     client = Gitlab::GoogleCodeImport::Client.new(dump)
     unless client.valid?
-      return redirect_to :back, alert: "The uploaded file is not a valid Google Takeout archive."
+      return redirect_back_or_default(options: { alert: _("The uploaded file is not a valid Google Takeout archive.") })
     end
 
     session[:google_code_dump] = dump
@@ -33,7 +35,6 @@ class Import::GoogleCodeController < Import::BaseController
   end
 
   def new_user_map
-
   end
 
   def create_user_map
@@ -41,17 +42,17 @@ class Import::GoogleCodeController < Import::BaseController
     user_map_json = "{}" if user_map_json.blank?
 
     begin
-      user_map = JSON.parse(user_map_json)
+      user_map = Gitlab::Json.parse(user_map_json)
     rescue
-      flash.now[:alert] = "The entered user map is not a valid JSON user map."
+      flash.now[:alert] = _("The entered user map is not a valid JSON user map.")
 
-      render "new_user_map" and return
+      return render "new_user_map"
     end
 
     unless user_map.is_a?(Hash) && user_map.all? { |k, v| k.is_a?(String) && v.is_a?(String) }
-      flash.now[:alert] = "The entered user map is not a valid JSON user map."
+      flash.now[:alert] = _("The entered user map is not a valid JSON user map.")
 
-      render "new_user_map" and return
+      return render "new_user_map"
     end
 
     # This is the default, so let's not save it into the database.
@@ -61,11 +62,12 @@ class Import::GoogleCodeController < Import::BaseController
 
     session[:google_code_user_map] = user_map
 
-    flash[:notice] = "The user map has been saved. Continue by selecting the projects you want to import."
+    flash[:notice] = _("The user map has been saved. Continue by selecting the projects you want to import.")
 
     redirect_to status_import_google_code_path
   end
 
+  # rubocop: disable CodeReuse/ActiveRecord
   def status
     unless client.valid?
       return redirect_to new_import_google_code_path
@@ -74,34 +76,38 @@ class Import::GoogleCodeController < Import::BaseController
     @repos = client.repos
     @incompatible_repos = client.incompatible_repos
 
-    @already_added_projects = current_user.created_projects.where(import_type: "google_code")
+    @already_added_projects = find_already_added_projects('google_code')
     already_added_projects_names = @already_added_projects.pluck(:import_source)
 
     @repos.reject! { |repo| already_added_projects_names.include? repo.name }
   end
+  # rubocop: enable CodeReuse/ActiveRecord
 
   def jobs
-    jobs = current_user.created_projects.where(import_type: "google_code").to_json(only: [:id, :import_status])
-    render json: jobs
+    render json: find_jobs('google_code')
   end
 
   def create
-    @repo_id = params[:repo_id]
-    repo = client.repo(@repo_id)
-    @target_namespace = current_user.namespace
-    @project_name = repo.name
-
-    namespace = @target_namespace
-
+    repo = client.repo(params[:repo_id])
     user_map = session[:google_code_user_map]
 
-    @project = Gitlab::GoogleCodeImport::ProjectCreator.new(repo, namespace, current_user, user_map).execute
+    project = Gitlab::GoogleCodeImport::ProjectCreator.new(repo, current_user.namespace, current_user, user_map).execute
+
+    if project.persisted?
+      render json: ProjectSerializer.new.represent(project)
+    else
+      render json: { errors: project_save_error(project) }, status: :unprocessable_entity
+    end
   end
 
   private
 
   def client
     @client ||= Gitlab::GoogleCodeImport::Client.new(session[:google_code_dump])
+  end
+
+  def verify_google_code_import_enabled
+    render_404 unless google_code_import_enabled?
   end
 
   def user_map

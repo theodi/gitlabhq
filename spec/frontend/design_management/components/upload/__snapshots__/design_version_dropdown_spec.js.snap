@@ -1,0 +1,77 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Design management design version dropdown component renders design version dropdown button 1`] = `
+<gl-dropdown-stub
+  category="tertiary"
+  headertext=""
+  issueiid=""
+  projectpath=""
+  size="small"
+  text="Showing latest version"
+  variant="default"
+>
+  <gl-dropdown-item-stub
+    avatarurl=""
+    iconcolor=""
+    iconname=""
+    iconrightname=""
+    ischecked="true"
+    ischeckitem="true"
+    secondarytext=""
+  >
+    Version 
+        2
+       (latest)
+  </gl-dropdown-item-stub>
+  <gl-dropdown-item-stub
+    avatarurl=""
+    iconcolor=""
+    iconname=""
+    iconrightname=""
+    ischeckitem="true"
+    secondarytext=""
+  >
+    Version 
+        1
+      
+  </gl-dropdown-item-stub>
+</gl-dropdown-stub>
+`;
+
+exports[`Design management design version dropdown component renders design version list 1`] = `
+<gl-dropdown-stub
+  category="tertiary"
+  headertext=""
+  issueiid=""
+  projectpath=""
+  size="small"
+  text="Showing latest version"
+  variant="default"
+>
+  <gl-dropdown-item-stub
+    avatarurl=""
+    iconcolor=""
+    iconname=""
+    iconrightname=""
+    ischecked="true"
+    ischeckitem="true"
+    secondarytext=""
+  >
+    Version 
+        2
+       (latest)
+  </gl-dropdown-item-stub>
+  <gl-dropdown-item-stub
+    avatarurl=""
+    iconcolor=""
+    iconname=""
+    iconrightname=""
+    ischeckitem="true"
+    secondarytext=""
+  >
+    Version 
+        1
+      
+  </gl-dropdown-item-stub>
+</gl-dropdown-stub>
+`;

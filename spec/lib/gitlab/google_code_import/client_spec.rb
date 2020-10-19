@@ -1,7 +1,10 @@
+# frozen_string_literal: true
+
 require "spec_helper"
 
-describe Gitlab::GoogleCodeImport::Client do
-  let(:raw_data) { JSON.parse(File.read(Rails.root.join("spec/fixtures/GoogleCodeProjectHosting.json"))) }
+RSpec.describe Gitlab::GoogleCodeImport::Client do
+  let(:raw_data) { Gitlab::Json.parse(fixture_file("GoogleCodeProjectHosting.json")) }
+
   subject { described_class.new(raw_data) }
 
   describe "#valid?" do
@@ -15,7 +18,7 @@ describe Gitlab::GoogleCodeImport::Client do
       let(:raw_data) { "No clue" }
 
       it "returns true" do
-        expect(subject).to_not be_valid
+        expect(subject).not_to be_valid
       end
     end
   end

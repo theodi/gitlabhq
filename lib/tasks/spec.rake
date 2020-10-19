@@ -1,45 +1,31 @@
-Rake::Task["spec"].clear if Rake::Task.task_defined?('spec')
+# frozen_string_literal: true
+
+return if Rails.env.production?
 
 namespace :spec do
-  desc 'GITLAB | Run request specs'
-  task :api do
-    cmds = [
-      %W(rake gitlab:setup),
-      %W(rspec spec --tag @api)
-    ]
-    run_commands(cmds)
+  desc 'GitLab | RSpec | Run unit tests'
+  RSpec::Core::RakeTask.new(:unit, :rspec_opts) do |t, args|
+    require_dependency 'quality/test_level'
+    t.pattern = Quality::TestLevel.new.pattern(:unit)
+    t.rspec_opts = args[:rspec_opts]
   end
 
-  desc 'GITLAB | Run feature specs'
-  task :feature do
-    cmds = [
-      %W(rake gitlab:setup),
-      %W(rspec spec --tag @feature)
-    ]
-    run_commands(cmds)
+  desc 'GitLab | RSpec | Run integration tests'
+  RSpec::Core::RakeTask.new(:integration, :rspec_opts) do |t, args|
+    require_dependency 'quality/test_level'
+    t.pattern = Quality::TestLevel.new.pattern(:integration)
+    t.rspec_opts = args[:rspec_opts]
   end
 
-  desc 'GITLAB | Run other specs'
-  task :other do
-    cmds = [
-      %W(rake gitlab:setup),
-      %W(rspec spec --tag ~@api --tag ~@feature)
-    ]
-    run_commands(cmds)
+  desc 'GitLab | RSpec | Run system tests'
+  RSpec::Core::RakeTask.new(:system, :rspec_opts) do |t, args|
+    require_dependency 'quality/test_level'
+    t.pattern = Quality::TestLevel.new.pattern(:system)
+    t.rspec_opts = args[:rspec_opts]
   end
-end
 
-desc "GITLAB | Run specs"
-task :spec do
-  cmds = [
-    %W(rake gitlab:setup),
-    %W(rspec spec),
-  ]
-  run_commands(cmds)
-end
-
-def run_commands(cmds)
-  cmds.each do |cmd|
-    system({'RAILS_ENV' => 'test', 'force' => 'yes'}, *cmd) or raise("#{cmd} failed!")
+  desc 'Run the code examples in spec/requests/api'
+  RSpec::Core::RakeTask.new(:api) do |t|
+    t.pattern = 'spec/requests/api/**/*_spec.rb'
   end
 end

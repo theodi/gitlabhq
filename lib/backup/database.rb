@@ -1,78 +1,160 @@
+# frozen_string_literal: true
+
 require 'yaml'
 
 module Backup
   class Database
-    attr_reader :config, :db_dir
+    include Backup::Helper
+    attr_reader :progress
+    attr_reader :config, :db_file_name
 
-    def initialize
-      @config = YAML.load_file(File.join(Rails.root,'config','database.yml'))[Rails.env]
-      @db_dir = File.join(Gitlab.config.backup.path, 'db')
-      FileUtils.mkdir_p(@db_dir) unless Dir.exists?(@db_dir)
+    IGNORED_ERRORS = [
+      # Ignore the DROP errors; recent database dumps will use --if-exists with pg_dump
+      /does not exist$/,
+      # User may not have permissions to drop extensions or schemas
+      /must be owner of/
+    ].freeze
+    IGNORED_ERRORS_REGEXP = Regexp.union(IGNORED_ERRORS).freeze
+
+    def initialize(progress, filename: nil)
+      @progress = progress
+      @config = YAML.load_file(File.join(Rails.root, 'config', 'database.yml'))[Rails.env]
+      @db_file_name = filename || File.join(Gitlab.config.backup.path, 'db', 'database.sql.gz')
     end
 
     def dump
-      success = case config["adapter"]
-      when /^mysql/ then
-        $progress.print "Dumping MySQL database #{config['database']} ... "
-        system('mysqldump', *mysql_args, config['database'], out: db_file_name)
-      when "postgresql" then
-        $progress.print "Dumping PostgreSQL database #{config['database']} ... "
-        pg_env
-        system('pg_dump', config['database'], out: db_file_name)
+      FileUtils.mkdir_p(File.dirname(db_file_name))
+      FileUtils.rm_f(db_file_name)
+      compress_rd, compress_wr = IO.pipe
+      compress_pid = spawn(gzip_cmd, in: compress_rd, out: [db_file_name, 'w', 0600])
+      compress_rd.close
+
+      dump_pid =
+        case config["adapter"]
+        when "postgresql" then
+          progress.print "Dumping PostgreSQL database #{config['database']} ... "
+          pg_env
+          pgsql_args = ["--clean"] # Pass '--clean' to include 'DROP TABLE' statements in the DB dump.
+          pgsql_args << '--if-exists'
+
+          if Gitlab.config.backup.pg_schema
+            pgsql_args << '-n'
+            pgsql_args << Gitlab.config.backup.pg_schema
+
+            Gitlab::Database::EXTRA_SCHEMAS.each do |schema|
+              pgsql_args << '-n'
+              pgsql_args << schema.to_s
+            end
+          end
+
+          Process.spawn('pg_dump', *pgsql_args, config['database'], out: compress_wr)
+        end
+      compress_wr.close
+
+      success = [compress_pid, dump_pid].all? do |pid|
+        Process.waitpid(pid)
+        $?.success?
       end
+
       report_success(success)
-      abort 'Backup failed' unless success
+      progress.flush
+
+      raise Backup::Error, 'Backup failed' unless success
     end
 
     def restore
-      success = case config["adapter"]
-      when /^mysql/ then
-        $progress.print "Restoring MySQL database #{config['database']} ... "
-        system('mysql', *mysql_args, config['database'], in: db_file_name)
-      when "postgresql" then
-        $progress.print "Restoring PostgreSQL database #{config['database']} ... "
-        # Drop all tables because PostgreSQL DB dumps do not contain DROP TABLE
-        # statements like MySQL.
-        Rake::Task["gitlab:db:drop_all_tables"].invoke
-        Rake::Task["gitlab:db:drop_all_postgres_sequences"].invoke
-        pg_env
-        system('psql', config['database'], '-f', db_file_name)
+      decompress_rd, decompress_wr = IO.pipe
+      decompress_pid = spawn(*%w(gzip -cd), out: decompress_wr, in: db_file_name)
+      decompress_wr.close
+
+      status, errors =
+        case config["adapter"]
+        when "postgresql" then
+          progress.print "Restoring PostgreSQL database #{config['database']} ... "
+          pg_env
+          execute_and_track_errors(pg_restore_cmd, decompress_rd)
+        end
+      decompress_rd.close
+
+      Process.waitpid(decompress_pid)
+      success = $?.success? && status.success?
+
+      if errors.present?
+        progress.print "------ BEGIN ERRORS -----\n".color(:yellow)
+        progress.print errors.join.color(:yellow)
+        progress.print "------ END ERRORS -------\n".color(:yellow)
       end
+
       report_success(success)
-      abort 'Restore failed' unless success
+      raise Backup::Error, 'Restore failed' unless success
+
+      errors
     end
 
     protected
 
-    def db_file_name
-      File.join(db_dir, 'database.sql')
+    def ignore_error?(line)
+      IGNORED_ERRORS_REGEXP.match?(line)
     end
 
-    def mysql_args
-      args = {
-        'host'      => '--host',
-        'port'      => '--port',
-        'socket'    => '--socket',
-        'username'  => '--user',
-        'encoding'  => '--default-character-set',
-        'password'  => '--password'
-      }
-      args.map { |opt, arg| "#{arg}=#{config[opt]}" if config[opt] }.compact
+    def execute_and_track_errors(cmd, decompress_rd)
+      errors = []
+
+      Open3.popen3(ENV, *cmd) do |stdin, stdout, stderr, thread|
+        stdin.binmode
+
+        out_reader = Thread.new do
+          data = stdout.read
+          $stdout.write(data)
+        end
+
+        err_reader = Thread.new do
+          until (raw_line = stderr.gets).nil?
+            warn(raw_line)
+            errors << raw_line unless ignore_error?(raw_line)
+          end
+        end
+
+        begin
+          IO.copy_stream(decompress_rd, stdin)
+        rescue Errno::EPIPE
+        end
+
+        stdin.close
+        [thread, out_reader, err_reader].each(&:join)
+        [thread.value, errors]
+      end
     end
 
     def pg_env
-      ENV['PGUSER']     = config["username"] if config["username"]
-      ENV['PGHOST']     = config["host"] if config["host"]
-      ENV['PGPORT']     = config["port"].to_s if config["port"]
-      ENV['PGPASSWORD'] = config["password"].to_s if config["password"]
+      args = {
+        'username'  => 'PGUSER',
+        'host'      => 'PGHOST',
+        'port'      => 'PGPORT',
+        'password'  => 'PGPASSWORD',
+        # SSL
+        'sslmode'         => 'PGSSLMODE',
+        'sslkey'          => 'PGSSLKEY',
+        'sslcert'         => 'PGSSLCERT',
+        'sslrootcert'     => 'PGSSLROOTCERT',
+        'sslcrl'          => 'PGSSLCRL',
+        'sslcompression'  => 'PGSSLCOMPRESSION'
+      }
+      args.each { |opt, arg| ENV[arg] = config[opt].to_s if config[opt] }
     end
 
     def report_success(success)
       if success
-        $progress.puts '[DONE]'.green
+        progress.puts '[DONE]'.color(:green)
       else
-        $progress.puts '[FAILED]'.red
+        progress.puts '[FAILED]'.color(:red)
       end
+    end
+
+    private
+
+    def pg_restore_cmd
+      ['psql', config['database']]
     end
   end
 end

@@ -1,18 +1,61 @@
-i.icon-gitorious {
-  display: inline-block;
-  background-position: 0px 0px;
-  background-size: contain;
-  background-repeat: no-repeat;
+.import-jobs-to-col {
+  width: 39%;
 }
 
-i.icon-gitorious-small {
-  background-image: image-url('gitorious-logo-blue.png');
-  width: 13px;
-  height: 13px;
+.import-jobs-status-col {
+  width: 15%;
 }
 
-i.icon-gitorious-big {
-  background-image: image-url('gitorious-logo-black.png');
-  width: 18px;
-  height: 18px;
+.import-jobs-cta-col {
+  width: 1%;
+}
+
+.import-project-name-input {
+  border-radius: 0 $border-radius-default $border-radius-default 0;
+  position: relative;
+  left: -1px;
+  max-width: 300px;
+}
+
+.import-namespace-select {
+  > .select2-choice {
+    border-radius: $border-radius-default 0 0 $border-radius-default;
+    position: relative;
+    left: 1px;
+  }
+}
+
+.import-slash-divider {
+  background-color: $gray-lightest;
+  border: 1px solid $border-color;
+}
+
+.import-row {
+  height: 55px;
+}
+
+.import-table {
+  .import-jobs-from-col,
+  .import-jobs-to-col,
+  .import-jobs-status-col,
+  .import-jobs-cta-col {
+    border-bottom-width: 1px;
+    padding-left: $gl-padding;
+  }
+}
+
+.import-projects-loading-icon {
+  margin-top: $gl-padding-32;
+}
+
+.btn-import {
+  .loading-icon {
+    display: none;
+  }
+
+  &.is-loading {
+    .loading-icon {
+      display: inline-block;
+    }
+  }
 }

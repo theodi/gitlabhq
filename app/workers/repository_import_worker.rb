@@ -1,34 +1,66 @@
-class RepositoryImportWorker
-  include Sidekiq::Worker
-  include Gitlab::ShellAdapter
+# frozen_string_literal: true
 
-  sidekiq_options queue: :gitlab_shell
+class RepositoryImportWorker # rubocop:disable Scalability/IdempotentWorker
+  include ApplicationWorker
+  include ExceptionBacktrace
+  include ProjectStartImport
+
+  feature_category :importers
+  worker_has_external_dependencies!
+  # Do not retry on Import/Export until https://gitlab.com/gitlab-org/gitlab/-/issues/16812 is solved.
+  sidekiq_options retry: false, dead: false
+  sidekiq_options status_expiration: Gitlab::Import::StuckImportJob::IMPORT_JOBS_EXPIRATION
+
+  # technical debt: https://gitlab.com/gitlab-org/gitlab/issues/33991
+  sidekiq_options memory_killer_memory_growth_kb: ENV.fetch('MEMORY_KILLER_REPOSITORY_IMPORT_WORKER_MEMORY_GROWTH_KB', 50).to_i
+  sidekiq_options memory_killer_max_memory_growth_kb: ENV.fetch('MEMORY_KILLER_REPOSITORY_IMPORT_WORKER_MAX_MEMORY_GROWTH_KB', 300_000).to_i
 
   def perform(project_id)
-    project = Project.find(project_id)
+    @project = Project.find(project_id)
 
-    import_result = gitlab_shell.send(:import_repository,
-                               project.path_with_namespace,
-                               project.import_url)
-    return project.import_fail unless import_result
+    return unless start_import
 
-    data_import_result =  if project.import_type == 'github'
-                            Gitlab::GithubImport::Importer.new(project).execute
-                          elsif project.import_type == 'gitlab'
-                            Gitlab::GitlabImport::Importer.new(project).execute
-                          elsif project.import_type == 'bitbucket'
-                            Gitlab::BitbucketImport::Importer.new(project).execute
-                          elsif project.import_type == 'google_code'
-                            Gitlab::GoogleCodeImport::Importer.new(project).execute
-                          else
-                            true
-                          end
-    return project.import_fail unless data_import_result
+    Gitlab::Metrics.add_event(:import_repository)
 
-    project.import_finish
-    project.save
-    project.satellite.create unless project.satellite.exists?
-    project.update_repository_size
-    Gitlab::BitbucketImport::KeyDeleter.new(project).execute if project.import_type == 'bitbucket'
+    service = Projects::ImportService.new(project, project.creator)
+    result = service.execute
+
+    # Some importers may perform their work asynchronously. In this case it's up
+    # to those importers to mark the import process as complete.
+    return if service.async?
+
+    if result[:status] == :error
+      fail_import(result[:message]) if template_import?
+
+      raise result[:message]
+    end
+
+    project.after_import
+  end
+
+  private
+
+  attr_reader :project
+
+  def start_import
+    return true if start(project.import_state)
+
+    Gitlab::Import::Logger.info(
+      message: 'Project was in inconsistent state while importing',
+      project_full_path: project.full_path,
+      project_import_status: project.import_status
+    )
+
+    false
+  end
+
+  def fail_import(message)
+    project.import_state.mark_as_failed(message)
+  end
+
+  def template_import?
+    project.gitlab_project_import?
   end
 end
+
+RepositoryImportWorker.prepend_if_ee('EE::RepositoryImportWorker')

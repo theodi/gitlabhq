@@ -1,38 +1,71 @@
-# == Schema Information
-#
-# Table name: members
-#
-#  id                 :integer          not null, primary key
-#  access_level       :integer          not null
-#  source_id          :integer          not null
-#  source_type        :string(255)      not null
-#  user_id            :integer
-#  notification_level :integer          not null
-#  type               :string(255)
-#  created_at         :datetime
-#  updated_at         :datetime
-#  created_by_id      :integer
-#  invite_email       :string(255)
-#  invite_token       :string(255)
-#  invite_accepted_at :datetime
-#
+# frozen_string_literal: true
 
 require 'spec_helper'
 
-describe ProjectMember do
-  describe :import_team do
-    before do
-      @abilities = Six.new
-      @abilities << Ability
+RSpec.describe ProjectMember do
+  describe 'associations' do
+    it { is_expected.to belong_to(:project).with_foreign_key(:source_id) }
+  end
 
-      @project_1 = create :project
-      @project_2 = create :project
+  describe 'validations' do
+    it { is_expected.to allow_value('Project').for(:source_type) }
+    it { is_expected.not_to allow_value('project').for(:source_type) }
+    it { is_expected.to validate_inclusion_of(:access_level).in_array(Gitlab::Access.values) }
+  end
+
+  describe '.access_level_roles' do
+    it 'returns Gitlab::Access.options' do
+      expect(described_class.access_level_roles).to eq(Gitlab::Access.options)
+    end
+  end
+
+  describe '.add_user' do
+    it 'adds the user as a member' do
+      user = create(:user)
+      project = create(:project)
+
+      expect(project.users).not_to include(user)
+
+      described_class.add_user(project, user, :maintainer, current_user: project.owner)
+
+      expect(project.users.reload).to include(user)
+    end
+  end
+
+  describe '#real_source_type' do
+    subject { create(:project_member).real_source_type }
+
+    it { is_expected.to eq 'Project' }
+  end
+
+  describe "#destroy" do
+    let(:owner)   { create(:project_member, access_level: ProjectMember::MAINTAINER) }
+    let(:project) { owner.project }
+    let(:maintainer) { create(:project_member, project: project) }
+
+    it "creates an expired event when left due to expiry" do
+      expired = create(:project_member, project: project, expires_at: 1.day.from_now)
+      travel_to(2.days.from_now) { expired.destroy }
+
+      expect(Event.recent.first).to be_expired_action
+    end
+
+    it "creates a left event when left due to leave" do
+      maintainer.destroy
+      expect(Event.recent.first).to be_left_action
+    end
+  end
+
+  describe '.import_team' do
+    before do
+      @project_1 = create(:project)
+      @project_2 = create(:project)
 
       @user_1 = create :user
       @user_2 = create :user
 
-      @project_1.team << [ @user_1, :developer ]
-      @project_2.team << [ @user_2, :reporter ]
+      @project_1.add_developer(@user_1)
+      @project_2.add_reporter(@user_2)
 
       @status = @project_2.team.import(@project_1)
     end
@@ -43,8 +76,8 @@ describe ProjectMember do
       it { expect(@project_2.users).to include(@user_1) }
       it { expect(@project_2.users).to include(@user_2) }
 
-      it { expect(@abilities.allowed?(@user_1, :write_project, @project_2)).to be_truthy }
-      it { expect(@abilities.allowed?(@user_2, :read_project, @project_2)).to be_truthy }
+      it { expect(Ability.allowed?(@user_1, :create_project, @project_2)).to be_truthy }
+      it { expect(Ability.allowed?(@user_2, :read_project, @project_2)).to be_truthy }
     end
 
     describe 'project 1 should not be changed' do
@@ -53,44 +86,56 @@ describe ProjectMember do
     end
   end
 
-  describe :add_users_into_projects do
-    before do
-      @project_1 = create :project
-      @project_2 = create :project
+  describe '.add_users_to_projects' do
+    it 'adds the given users to the given projects' do
+      projects = create_list(:project, 2)
+      users = create_list(:user, 2)
 
-      @user_1 = create :user
-      @user_2 = create :user
+      described_class.add_users_to_projects(
+        [projects.first.id, projects.second.id],
+        [users.first.id, users.second],
+        described_class::MAINTAINER)
 
-      ProjectMember.add_users_into_projects(
-        [@project_1.id, @project_2.id],
-        [@user_1.id, @user_2.id],
-        ProjectMember::MASTER
-      )
+      expect(projects.first.users).to include(users.first)
+      expect(projects.first.users).to include(users.second)
+
+      expect(projects.second.users).to include(users.first)
+      expect(projects.second.users).to include(users.second)
     end
-
-    it { expect(@project_1.users).to include(@user_1) }
-    it { expect(@project_1.users).to include(@user_2) }
-
-
-    it { expect(@project_2.users).to include(@user_1) }
-    it { expect(@project_2.users).to include(@user_2) }
   end
 
-  describe :truncate_teams do
+  describe '.truncate_teams' do
     before do
-      @project_1 = create :project
-      @project_2 = create :project
+      @project_1 = create(:project)
+      @project_2 = create(:project)
 
       @user_1 = create :user
       @user_2 = create :user
 
-      @project_1.team << [ @user_1, :developer]
-      @project_2.team << [ @user_2, :reporter]
+      @project_1.add_developer(@user_1)
+      @project_2.add_reporter(@user_2)
 
-      ProjectMember.truncate_teams([@project_1.id, @project_2.id])
+      described_class.truncate_teams([@project_1.id, @project_2.id])
     end
 
     it { expect(@project_1.users).to be_empty }
     it { expect(@project_2.users).to be_empty }
+  end
+
+  it_behaves_like 'members notifications', :project
+
+  context 'access levels' do
+    context 'with parent group' do
+      it_behaves_like 'inherited access level as a member of entity' do
+        let(:entity) { create(:project, group: parent_entity) }
+      end
+    end
+
+    context 'with parent group and a subgroup' do
+      it_behaves_like 'inherited access level as a member of entity' do
+        let(:subgroup) { create(:group, parent: parent_entity) }
+        let(:entity) { create(:project, group: subgroup) }
+      end
+    end
   end
 end

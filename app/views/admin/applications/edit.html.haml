@@ -1,4 +1,7 @@
-- page_title "Edit", @application.name, "Applications"
+- add_to_breadcrumbs _("Applications"), admin_applications_path
+- breadcrumb_title @application.name
+- page_title _("Edit"), @application.name, _("Applications")
+
 %h3.page-title Edit application
 - @url = admin_application_path(@application)
 = render 'form', application: @application

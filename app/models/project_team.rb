@@ -1,59 +1,64 @@
+# frozen_string_literal: true
+
 class ProjectTeam
+  include BulkMemberAccessLoad
+
   attr_accessor :project
 
   def initialize(project)
     @project = project
   end
 
-  # Shortcut to add users
-  #
-  # Use:
-  #   @team << [@user, :master]
-  #   @team << [@users, :master]
-  #
-  def <<(args)
-    users, access, current_user = *args
-
-    if users.respond_to?(:each)
-      add_users(users, access, current_user)
-    else
-      add_user(users, access, current_user)
-    end
+  def add_guest(user, current_user: nil)
+    add_user(user, :guest, current_user: current_user)
   end
 
-  def find(user_id)
-    user = project.users.find_by(id: user_id)
+  def add_reporter(user, current_user: nil)
+    add_user(user, :reporter, current_user: current_user)
+  end
 
-    if group
-      user ||= group.users.find_by(id: user_id)
-    end
+  def add_developer(user, current_user: nil)
+    add_user(user, :developer, current_user: current_user)
+  end
 
-    user
+  def add_maintainer(user, current_user: nil)
+    add_user(user, :maintainer, current_user: current_user)
+  end
+
+  def add_role(user, role, current_user: nil)
+    public_send(:"add_#{role}", user, current_user: current_user) # rubocop:disable GitlabSecurity/PublicSend
   end
 
   def find_member(user_id)
-    member = project.project_members.find_by(user_id: user_id)
+    member = project.members.find_by(user_id: user_id)
 
     # If user is not in project members
     # we should check for group membership
     if group && !member
-      member = group.group_members.find_by(user_id: user_id)
+      member = group.members.find_by(user_id: user_id)
     end
 
     member
   end
 
-  def add_users(users, access, current_user = nil)
-    ProjectMember.add_users_into_projects(
-      [project.id],
+  def add_users(users, access_level, current_user: nil, expires_at: nil)
+    ProjectMember.add_users(
+      project,
       users,
-      access,
-      current_user
+      access_level,
+      current_user: current_user,
+      expires_at: expires_at
     )
   end
 
-  def add_user(user, access, current_user = nil)
-    add_users([user], access, current_user)
+  def add_user(user, access_level, current_user: nil, expires_at: nil)
+    ProjectMember.add_user(
+      project,
+      user,
+      access_level,
+      current_user: current_user,
+      expires_at: expires_at
+    )
   end
 
   # Remove all users from project team
@@ -61,28 +66,42 @@ class ProjectTeam
     ProjectMember.truncate_team(project)
   end
 
-  def users
-    members
-  end
-
   def members
     @members ||= fetch_members
   end
+  alias_method :users, :members
+
+  # `members` method uses project_authorizations table which
+  # is updated asynchronously, on project move it still contains
+  # old members who may not have access to the new location,
+  # so we filter out only members of project or project's group
+  def members_in_project_and_ancestors
+    members.where(id: member_user_ids)
+  end
 
   def guests
-    @guests ||= fetch_members(:guests)
+    @guests ||= fetch_members(Gitlab::Access::GUEST)
   end
 
   def reporters
-    @reporters ||= fetch_members(:reporters)
+    @reporters ||= fetch_members(Gitlab::Access::REPORTER)
   end
 
   def developers
-    @developers ||= fetch_members(:developers)
+    @developers ||= fetch_members(Gitlab::Access::DEVELOPER)
   end
 
-  def masters
-    @masters ||= fetch_members(:masters)
+  def maintainers
+    @maintainers ||= fetch_members(Gitlab::Access::MAINTAINER)
+  end
+
+  def owners
+    @owners ||=
+      if group
+        group.owners
+      else
+        [project.owner]
+      end
   end
 
   def import(source_project, current_user = nil)
@@ -127,43 +146,88 @@ class ProjectTeam
     max_member_access(user.id) == Gitlab::Access::DEVELOPER
   end
 
-  def master?(user)
-    max_member_access(user.id) == Gitlab::Access::MASTER
+  def maintainer?(user)
+    max_member_access(user.id) == Gitlab::Access::MAINTAINER
   end
 
-  def member?(user_id)
-    !!find_member(user_id)
+  # Checks if `user` is authorized for this project, with at least the
+  # `min_access_level` (if given).
+  def member?(user, min_access_level = Gitlab::Access::GUEST)
+    return false unless user
+
+    max_member_access(user.id) >= min_access_level
+  end
+
+  def human_max_access(user_id)
+    Gitlab::Access.human_access(max_member_access(user_id))
+  end
+
+  # Determine the maximum access level for a group of users in bulk.
+  #
+  # Returns a Hash mapping user ID -> maximum access level.
+  def max_member_access_for_user_ids(user_ids)
+    max_member_access_for_resource_ids(User, user_ids, project.id) do |user_ids|
+      project.project_authorizations
+             .where(user: user_ids)
+             .group(:user_id)
+             .maximum(:access_level)
+    end
   end
 
   def max_member_access(user_id)
-    access = []
-    access << project.project_members.find_by(user_id: user_id).try(:access_field)
+    max_member_access_for_user_ids([user_id])[user_id]
+  end
 
-    if group
-      access << group.group_members.find_by(user_id: user_id).try(:access_field)
+  def contribution_check_for_user_ids(user_ids)
+    user_ids = user_ids.uniq
+    key = "contribution_check_for_users:#{project.id}"
+
+    Gitlab::SafeRequestStore[key] ||= {}
+    contributors = Gitlab::SafeRequestStore[key] || {}
+
+    user_ids -= contributors.keys
+
+    return contributors if user_ids.empty?
+
+    resource_contributors = project.merge_requests
+                                   .merged
+                                   .where(author_id: user_ids, target_branch: project.default_branch.to_s)
+                                   .pluck(:author_id)
+                                   .product([true]).to_h
+
+    contributors.merge!(resource_contributors)
+
+    missing_resource_ids = user_ids - resource_contributors.keys
+
+    missing_resource_ids.each do |resource_id|
+      contributors[resource_id] = false
     end
 
-    access.compact.max
+    contributors
+  end
+
+  def contributor?(user_id)
+    return false if max_member_access(user_id) >= Gitlab::Access::GUEST
+
+    contribution_check_for_user_ids([user_id])[user_id]
   end
 
   private
 
   def fetch_members(level = nil)
-    project_members = project.project_members
-    group_members = group ? group.group_members : []
+    members = project.authorized_users
+    members = members.where(project_authorizations: { access_level: level }) if level
 
-    if level
-      project_members = project_members.send(level)
-      group_members = group_members.send(level) if group
-    end
-
-    user_ids = project_members.pluck(:user_id)
-    user_ids.push(*group_members.pluck(:user_id)) if group
-
-    User.where(id: user_ids)
+    members
   end
 
   def group
     project.group
   end
+
+  def member_user_ids
+    Member.on_project_and_ancestors(project).select(:user_id)
+  end
 end
+
+ProjectTeam.prepend_if_ee('EE::ProjectTeam')

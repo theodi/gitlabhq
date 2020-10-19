@@ -1,0 +1,24 @@
+- page_title _('Requests Profiles')
+
+%h3.page-title
+  = page_title
+
+.bs-callout.clearfix
+  Pass the header
+  %code X-Profile-Token: #{@profile_token}
+  to profile the request
+
+- if @profiles.present?
+  .gl-mt-3
+    - @profiles.each do |path, profiles|
+      .card
+        .card-header
+          %code= path
+        %ul.content-list
+          - profiles.each do |profile|
+            %li
+              = link_to profile.time.to_s(:long) + ' ' + profile.profile_mode.capitalize,
+                admin_requests_profile_path(profile)
+- else
+  %p
+    No profiles found

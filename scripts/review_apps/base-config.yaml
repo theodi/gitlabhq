@@ -1,0 +1,166 @@
+global:
+  appConfig:
+    enableUsagePing: false
+  imagePullPolicy: Always
+  ingress:
+    annotations:
+      external-dns.alpha.kubernetes.io/ttl: 10
+    configureCertmanager: false
+    tls:
+      secretName: review-apps-tls
+  initialRootPassword:
+    secret: shared-gitlab-initial-root-password
+certmanager:
+  install: false
+gitlab:
+  gitaly:
+    resources:
+      requests:
+        cpu: 1200m
+        memory: 245M
+      limits:
+        cpu: 1800m
+        memory: 367M
+    persistence:
+      size: 10G
+  gitlab-exporter:
+    enabled: false
+  mailroom:
+    enabled: false
+  migrations:
+    resources:
+      requests:
+        cpu: 350m
+        memory: 200M
+      limits:
+        cpu: 700m
+  gitlab-shell:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 25M
+      limits:
+        cpu: 750m
+        memory: 37.5M
+    maxReplicas: 3
+    hpa:
+      targetAverageValue: 500m
+    deployment:
+      livenessProbe:
+        timeoutSeconds: 5
+  sidekiq:
+    resources:
+      requests:
+        cpu: 855m
+        memory: 1071M
+      limits:
+        cpu: 1282m
+        memory: 1606M
+    hpa:
+      targetAverageValue: 650m
+  task-runner:
+    resources:
+      requests:
+        cpu: 300m
+        memory: 800M
+      limits:
+        cpu: 450m
+        memory: 1200M
+  webservice:
+    resources:
+      requests:
+        cpu: 746m
+        memory: 1873M
+      limits:
+        cpu: 1119m
+        memory: 2809M
+    deployment:
+      readinessProbe:
+        initialDelaySeconds: 5  # Default is 0
+        periodSeconds: 15  # Default is 10
+        timeoutSeconds: 5  # Default is 2
+    workhorse:
+      resources:
+        requests:
+          cpu: 400m
+          memory: 50M
+        limits:
+          cpu: 600m
+          memory: 75M
+      readinessProbe:
+        initialDelaySeconds: 5  # Default is 0
+        periodSeconds: 15  # Default is 10
+        timeoutSeconds: 5  # Default is 2
+gitlab-runner:
+  resources:
+    requests:
+      cpu: 675m
+      memory: 100M
+    limits:
+      cpu: 1015m
+      memory: 150M
+minio:
+  resources:
+    requests:
+      cpu: 9m
+      memory: 128M
+    limits:
+      cpu: 15m
+      memory: 280M
+nginx-ingress:
+  controller:
+    config:
+      ssl-ciphers: ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA:AES256-GCM-SHA384:AES128-GCM-SHA256:AES256-SHA256:AES128-SHA256:AES256-SHA:AES128-SHA:!aNULL:!eNULL:!EXPORT:!DES:!MD5:!PSK:!RC4
+    resources:
+      requests:
+        cpu: 100m
+        memory: 450M
+      limits:
+        cpu: 200m
+        memory: 675M
+    service:
+      enableHttp: false
+    livenessProbe:
+      timeoutSeconds: 5
+    readinessProbe:
+      timeoutSeconds: 5
+  defaultBackend:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 12M
+      limits:
+        cpu: 10m
+        memory: 24M
+postgresql:
+  metrics:
+    enabled: false
+  resources:
+    requests:
+      cpu: 550m
+      memory: 250M
+    limits:
+      cpu: 825m
+      memory: 375M
+prometheus:
+  install: false
+redis:
+  metrics:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 60M
+    limits:
+      cpu: 200m
+      memory: 130M
+registry:
+  hpa:
+    minReplicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 30M
+    limits:
+      cpu: 200m
+      memory: 45M

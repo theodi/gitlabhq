@@ -1,0 +1,25 @@
+= form_for @application_setting, url: repository_admin_application_settings_path(anchor: 'js-repository-storage-settings'), html: { class: 'fieldset-form' } do |f|
+  = form_errors(@application_setting)
+
+  %fieldset
+    .sub-section
+      %h4= _("Hashed repository storage paths")
+      .form-group
+        .form-check
+          = f.check_box :hashed_storage_enabled, class: 'form-check-input qa-hashed-storage-checkbox', disabled: @application_setting.hashed_storage_enabled?
+          = f.label :hashed_storage_enabled, _("Use hashed storage"), class: 'label-bold form-check-label'
+          .form-text.text-muted
+            = _("Use hashed storage paths for newly created and renamed repositories. Enable immutable, hash-based paths and repository names to store repositories on disk. This prevents repositories from having to be moved or renamed when the Repository URL changes and may improve disk I/O performance. (Always enabled since 13.0)")
+    .sub-section
+      %h4= _("Storage nodes for new repositories")
+      .form-group
+        .form-text
+          %p.text-secondary
+            = _('Enter weights for storages for new repositories.')
+            = link_to sprite_icon('question-o'), help_page_path('administration/repository_storage_paths')
+        .form-check
+          - storage_weights.each do |attribute|
+            = f.text_field attribute[:name], class: 'form-text-input', value: attribute[:value]
+            = f.label attribute[:label], attribute[:label], class: 'label-bold form-check-label'
+            %br
+  = f.submit _('Save changes'), class: "gl-button btn btn-success qa-save-changes-button"

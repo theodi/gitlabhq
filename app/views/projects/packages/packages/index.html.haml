@@ -1,0 +1,6 @@
+- page_title _("Package Registry")
+- @content_class = "limit-container-width" unless fluid_layout
+
+.row
+  .col-12
+    #js-vue-packages-list{ data: packages_list_data('projects', @project) }

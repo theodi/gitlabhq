@@ -1,51 +1,44 @@
+# frozen_string_literal: true
+
 class Projects::UploadsController < Projects::ApplicationController
-  skip_before_action :authenticate_user!, :reject_blocked!, :project,
-    :repository, if: -> { action_name == 'show' && image? }
+  include UploadsActions
+  include WorkhorseRequest
 
-  def create
-    link_to_file = ::Projects::UploadService.new(project, params[:file]).
-      execute
+  # These will kick you out if you don't have access.
+  skip_before_action :project, :repository,
+    if: -> { action_name == 'show' && embeddable? }
 
-    respond_to do |format|
-      if link_to_file
-        format.json do
-          render json: { link: link_to_file }
-        end
-      else
-        format.json do
-          render json: 'Invalid file.', status: :unprocessable_entity
-        end
-      end
-    end
+  before_action :authorize_upload_file!, only: [:create, :authorize]
+  before_action :verify_workhorse_api!, only: [:authorize]
+
+  feature_category :not_owned
+
+  private
+
+  def upload_model_class
+    Project
   end
 
-  def show
-    return not_found! if uploader.nil? || !uploader.file.exists?
-
-    disposition = uploader.image? ? 'inline' : 'attachment'
-    send_file uploader.file.path, disposition: disposition
+  def uploader_class
+    FileUploader
   end
 
-  def uploader
-    return @uploader if defined?(@uploader)
+  def find_model
+    return @project if @project
 
     namespace = params[:namespace_id]
     id = params[:project_id]
 
-    file_project = Project.find_with_namespace("#{namespace}/#{id}")
-
-    if file_project.nil?
-      @uploader = nil
-      return
-    end
-
-    @uploader = FileUploader.new(file_project, params[:secret])
-    @uploader.retrieve_from_store!(params[:filename])
-
-    @uploader
+    Project.find_by_full_path("#{namespace}/#{id}")
   end
 
-  def image?
-    uploader && uploader.file.exists? && uploader.image?
+  # Overrides ApplicationController#build_canonical_path since there are
+  # multiple routes that match project uploads:
+  # https://gitlab.com/gitlab-org/gitlab/issues/196396
+  def build_canonical_path(project)
+    return super unless action_name == 'show'
+    return super unless params[:secret] && params[:filename]
+
+    show_namespace_project_uploads_url(project.namespace.to_param, project.to_param, params[:secret], params[:filename])
   end
 end

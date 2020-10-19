@@ -1,0 +1,10 @@
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :wiki_directory do
+    skip_create
+
+    slug { '/path_up_to/dir' }
+    initialize_with { new(slug) }
+  end
+end

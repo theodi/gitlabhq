@@ -1,89 +1,118 @@
 # Google OAuth2 OmniAuth Provider
 
-To enable the Google OAuth2 OmniAuth provider you must register your application with Google. Google will generate a client ID and secret key for you to use.
+To enable the Google OAuth2 OmniAuth provider you must register your application
+with Google. Google will generate a client ID and secret key for you to use.
 
-1.  Sign in to the [Google Developers Console](https://console.developers.google.com/) with the Google account you want to use to register GitLab.
+## Enabling Google OAuth
 
-1.  Select "Create Project".
+In Google's side:
 
-1.  Provide the project information
-    - Project name: 'GitLab' works just fine here.
-    - Project ID: Must be unique to all Google Developer registered applications. Google provides a randomly generated Project ID by default. You can use the randomly generated ID or choose a new one.
-1. Refresh the page. You should now see your new project in the list. Click on the project.
-
-1. Select "APIs & auth" in the left menu.
-
-1. Select "APIs" in the submenu.
-    - Enable `Contacts API`
-    - Enable `Google+ API`
-
-1. Select "Credentials" in the submenu.
-
-1. Select "Create New Client ID".
-
+1. Navigate to the [cloud resource manager](https://console.cloud.google.com/cloud-resource-manager) page
+1. Select **Create Project**
+1. Provide the project information:
+   - **Project name** - "GitLab" works just fine here.
+   - **Project ID** - Must be unique to all Google Developer registered applications.
+     Google provides a randomly generated Project ID by default. You can use
+     the randomly generated ID or choose a new one.
+1. Refresh the page and you should see your new project in the list
+1. Go to the [Google API Console](https://console.developers.google.com/apis/dashboard)
+1. Select the previously created project in the upper left corner
+1. Select **Credentials** from the sidebar
+1. Select **OAuth consent screen** and fill the form with the required information
+1. In the **Credentials** tab, select **Create credentials > OAuth client ID**
 1. Fill in the required information
-    - Application type: "Web Application"
-    - Authorized JavaScript origins: This isn't really used by GitLab but go ahead and put 'https://gitlab.example.com' here.
-    - Authorized redirect URI: 'https://gitlab.example.com/users/auth/google_oauth2/callback'
-1. Under the heading "Client ID for web application" you should see a Client ID and Client secret (see screenshot). Keep this page open as you continue configuration. ![Google app](google_app.png)
+   - **Application type** - Choose "Web Application"
+   - **Name** - Use the default one or provide your own
+   - **Authorized JavaScript origins** -This isn't really used by GitLab but go
+     ahead and put `https://gitlab.example.com`
+   - **Authorized redirect URIs** - Enter your domain name followed by the
+     callback URIs one at a time:
 
-1.  On your GitLab server, open the configuration file.
+     ```plaintext
+     https://gitlab.example.com/users/auth/google_oauth2/callback
+     https://gitlab.example.com/-/google_api/auth/callback
+     ```
 
-    For omnibus package:
+1. You should now be able to see a Client ID and Client secret. Note them down
+   or keep this page open as you will need them later.
+1. To enable projects to access [Google Kubernetes Engine](../user/project/clusters/index.md), you must also
+   enable these APIs:
+   - Google Kubernetes Engine API
+   - Cloud Resource Manager API
+   - Cloud Billing API
 
-    ```sh
-      sudo editor /etc/gitlab/gitlab.rb
-    ```
+   To do so you need to:
 
-    For instalations from source:
+   1. Go to the [Google API Console](https://console.developers.google.com/apis/dashboard).
+   1. Click on **ENABLE APIS AND SERVICES** button at the top of the page.
+   1. Find each of the above APIs. On the page for the API, press the **ENABLE** button.
+      It may take a few minutes for the API to be fully functional.
 
-    ```sh
-      cd /home/git/gitlab
+On your GitLab server:
 
-      sudo -u git -H editor config/gitlab.yml
-    ```
+1. Open the configuration file.
 
-1.  See [Initial OmniAuth Configuration](omniauth.md#initial-omniauth-configuration) for initial settings.
+   For Omnibus GitLab:
 
-1.  Add the provider configuration:
+   ```shell
+   sudo editor /etc/gitlab/gitlab.rb
+   ```
 
-    For omnibus package:
+   For installations from source:
 
-    ```ruby
-      gitlab_rails['omniauth_providers'] = [
-        {
-          "name" => "google_oauth2",
-          "app_id" => "YOUR_APP_ID",
-          "app_secret" => "YOUR_APP_SECRET",
-          "args" => { "access_type" => "offline", "approval_prompt" => '' }
-        }
-      ]
-    ```
+   ```shell
+   cd /home/git/gitlab
+   sudo -u git -H editor config/gitlab.yml
+   ```
 
-    For installations from source:
+1. See [Initial OmniAuth Configuration](omniauth.md#initial-omniauth-configuration) for initial settings.
+1. Add the provider configuration:
 
-    ```
-     - { name: 'google_oauth2', app_id: 'YOUR_APP_ID',
+   For Omnibus GitLab:
+
+   ```ruby
+   gitlab_rails['omniauth_providers'] = [
+     {
+       "name" => "google_oauth2",
+       "app_id" => "YOUR_APP_ID",
+       "app_secret" => "YOUR_APP_SECRET",
+       "args" => { "access_type" => "offline", "approval_prompt" => '' }
+     }
+   ]
+   ```
+
+   For installations from source:
+
+   ```yaml
+   - { name: 'google_oauth2',
+       app_id: 'YOUR_APP_ID',
        app_secret: 'YOUR_APP_SECRET',
        args: { access_type: 'offline', approval_prompt: '' } }
-    ```
+   ```
 
-1.  Change 'YOUR_APP_ID' to the client ID from the Google Developer page from step 10.
+1. Change `YOUR_APP_ID` to the client ID from the Google Developer page
+1. Similarly, change `YOUR_APP_SECRET` to the client secret
+1. Make sure that you configure GitLab to use an FQDN as Google will not accept
+   raw IP addresses.
 
-1.  Change 'YOUR_APP_SECRET' to the client secret from the Google Developer page from step 10.
+   For Omnibus packages:
 
-1.  Save the configuration file.
+   ```ruby
+   external_url 'https://gitlab.example.com'
+   ```
 
-1.  Restart GitLab for the changes to take effect.
+   For installations from source:
 
-On the sign in page there should now be a Google icon below the regular sign in form. Click the icon to begin the authentication process. Google will ask the user to sign in and authorize the GitLab application. If everything goes well the user will be returned to GitLab and will be signed in.
+   ```yaml
+   gitlab:
+     host: https://gitlab.example.com
+   ```
 
-## Further Configuration
+1. Save the configuration file.
+1. [Reconfigure](../administration/restart_gitlab.md#omnibus-gitlab-reconfigure) or [restart GitLab](../administration/restart_gitlab.md#installations-from-source) for the changes to take effect if you
+   installed GitLab via Omnibus or from source respectively.
 
-This further configuration is not required for Google authentication to function but it is strongly recommended. Taking these steps will increase usability for users by providing a little more recognition and branding.
-
-At this point, when users first try to authenticate to your GitLab installation with Google they will see a generic application name on the prompt screen. The prompt informs the user that "Project Default Service Account" would like to access their account. "Project Default Service Account" isn't very recognizable and may confuse or cause users to be concerned. This is easily changeable.
-
-1. Select 'Consent screen' in the left menu. (See steps 1, 4 and 5 above for instructions on how to get here if you closed your window).
-1. Scroll down until you find "Product Name". Change the product name to something more descriptive.
-1. Add any additional information as you wish - homepage, logo, privacy policy, etc. None of this is required, but it may help your users.
+On the sign in page there should now be a Google icon below the regular sign in
+form. Click the icon to begin the authentication process. Google will ask the
+user to sign in and authorize the GitLab application. If everything goes well
+the user will be returned to GitLab and will be signed in.

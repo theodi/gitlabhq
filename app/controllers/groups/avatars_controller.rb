@@ -1,10 +1,16 @@
-class Groups::AvatarsController < ApplicationController
-  def destroy
-    @group = Group.find_by(path: params[:group_id])
-    @group.remove_avatar!
+# frozen_string_literal: true
 
+class Groups::AvatarsController < Groups::ApplicationController
+  before_action :authorize_admin_group!
+
+  skip_cross_project_access_check :destroy
+
+  feature_category :subgroups
+
+  def destroy
+    @group.remove_avatar!
     @group.save
 
-    redirect_to edit_group_path(@group)
+    redirect_to edit_group_path(@group), status: :found
   end
 end

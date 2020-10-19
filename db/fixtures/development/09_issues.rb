@@ -1,16 +1,5 @@
-Gitlab::Seeder.quiet do
-  Project.all.each do |project|
-    (1..10).each  do |i|
-      issue_params = {
-        title: FFaker::Lorem.sentence(6),
-        description: FFaker::Lorem.sentence,
-        state: ['opened', 'closed'].sample,
-        milestone: project.milestones.sample,
-        assignee: project.team.users.sample
-      }
+require './spec/support/sidekiq_middleware'
 
-      Issues::CreateService.new(project, project.team.users.sample, issue_params).execute
-      print '.'
-    end
-  end
+Gitlab::Seeder.quiet do
+  Rake::Task["gitlab:seed:issues"].invoke
 end

@@ -1,26 +1,25 @@
-# encoding: utf-8
+# frozen_string_literal: true
 
-class AttachmentUploader < CarrierWave::Uploader::Base
-  storage :file
+class AttachmentUploader < GitlabUploader
+  include RecordsUploads::Concern
+  include ObjectStorage::Concern
+  prepend ObjectStorage::Extension::RecordsUploads
+  include UploaderHelper
 
-  def store_dir
-    "uploads/#{model.class.to_s.underscore}/#{mounted_as}/#{model.id}"
+  private
+
+  def dynamic_segment
+    File.join(model.class.underscore, mounted_as.to_s, model.id.to_s)
   end
 
-  def image?
-    img_ext = %w(png jpg jpeg gif bmp tiff)
-    if file.respond_to?(:extension)
-      img_ext.include?(file.extension.downcase)
+  def mounted_as
+    # Geo fails to sync attachments on Note, and LegacyDiffNotes with missing mount_point.
+    #
+    # See https://gitlab.com/gitlab-org/gitlab/-/issues/209752 for more details.
+    if model.class.underscore.include?('note')
+      super || 'attachment'
     else
-      # Not all CarrierWave storages respond to :extension
-      ext = file.path.split('.').last.downcase
-      img_ext.include?(ext)
+      super
     end
-  rescue
-    false
-  end
-
-  def file_storage?
-    self.class.storage == CarrierWave::Storage::File
   end
 end

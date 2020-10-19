@@ -1,35 +1,113 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe 'Profile account page', feature: true do
+RSpec.describe 'Profile account page', :js do
   let(:user) { create(:user) }
 
   before do
-    login_as :user
+    sign_in(user)
   end
 
-  describe 'when signup is enabled' do
+  describe 'when I delete my account' do
     before do
-      ApplicationSetting.any_instance.stub(signup_enabled?: true)
       visit profile_account_path
     end
 
-    it { expect(page).to have_content('Remove account') }
+    it { expect(page).to have_content('Delete account') }
 
-    it 'should delete the account' do
-      expect { click_link 'Delete account' }.to change { User.count }.by(-1)
-      expect(current_path).to eq(new_user_session_path)
+    it 'does not immediately delete the account' do
+      click_button 'Delete account'
+
+      expect(User.exists?(user.id)).to be_truthy
+    end
+
+    it 'deletes user', :js, :sidekiq_might_not_need_inline do
+      click_button 'Delete account'
+
+      fill_in 'password', with: '12345678'
+
+      page.within '.modal' do
+        click_button 'Delete account'
+      end
+
+      expect(page).to have_content('Account scheduled for removal')
+      expect(User.exists?(user.id)).to be_falsy
+    end
+
+    it 'shows invalid password flash message', :js do
+      click_button 'Delete account'
+
+      fill_in 'password', with: 'testing123'
+
+      page.within '.modal' do
+        click_button 'Delete account'
+      end
+
+      expect(page).to have_content('Invalid password')
+    end
+
+    it 'does not show delete button when user owns a group' do
+      group = create(:group)
+      group.add_owner(user)
+
+      visit profile_account_path
+
+      expect(page).not_to have_button('Delete account')
+      expect(page).to have_content("Your account is currently an owner in these groups: #{group.name}")
     end
   end
 
-  describe 'when signup is disabled' do
+  describe 'when I reset feed token' do
     before do
-      ApplicationSetting.any_instance.stub(signup_enabled?: false)
+      visit profile_personal_access_tokens_path
+    end
+
+    it 'resets feed token' do
+      within('.feed-token-reset') do
+        previous_token = find("#feed_token").value
+
+        accept_confirm { click_link('reset it') }
+
+        expect(find('#feed_token').value).not_to eq(previous_token)
+      end
+
+      expect(page).to have_content 'Feed token was successfully reset'
+    end
+  end
+
+  describe 'when I reset incoming email token' do
+    before do
+      allow(Gitlab.config.incoming_email).to receive(:enabled).and_return(true)
+      visit profile_personal_access_tokens_path
+    end
+
+    it 'resets incoming email token' do
+      within('.incoming-email-token-reset') do
+        previous_token = find('#incoming_email_token').value
+
+        accept_confirm { click_link('reset it') }
+
+        expect(find('#incoming_email_token').value).not_to eq(previous_token)
+      end
+    end
+  end
+
+  describe 'when I change my username' do
+    before do
       visit profile_account_path
     end
 
-    it 'should not have option to remove account' do
-      expect(page).not_to have_content('Remove account')
-      expect(current_path).to eq(profile_account_path)
+    it 'changes my username' do
+      fill_in 'username-change-input', with: 'new-username'
+
+      page.find('[data-target="#username-change-confirmation-modal"]').click
+
+      page.within('.modal') do
+        find('.js-modal-primary-action').click
+      end
+
+      expect(page).to have_content('new-username')
     end
   end
 end

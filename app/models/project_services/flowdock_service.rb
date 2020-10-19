@@ -1,24 +1,4 @@
-# == Schema Information
-#
-# Table name: services
-#
-#  id                    :integer          not null, primary key
-#  type                  :string(255)
-#  title                 :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  active                :boolean          default(FALSE), not null
-#  properties            :text
-#  template              :boolean          default(FALSE)
-#  push_events           :boolean          default(TRUE)
-#  issues_events         :boolean          default(TRUE)
-#  merge_requests_events :boolean          default(TRUE)
-#  tag_push_events       :boolean          default(TRUE)
-#  note_events           :boolean          default(TRUE), not null
-#
-
-require "flowdock-git-hook"
+# frozen_string_literal: true
 
 class FlowdockService < Service
   prop_accessor :token
@@ -29,20 +9,20 @@ class FlowdockService < Service
   end
 
   def description
-    'Flowdock is a collaboration web app for technical teams.'
+    s_('FlowdockService|Flowdock is a collaboration web app for technical teams.')
   end
 
-  def to_param
+  def self.to_param
     'flowdock'
   end
 
   def fields
     [
-      { type: 'text', name: 'token',     placeholder: '' }
+      { type: 'text', name: 'token', placeholder: s_('FlowdockService|Flowdock Git source token'), required: true }
     ]
   end
 
-  def supported_events
+  def self.supported_events
     %w(push)
   end
 
@@ -54,10 +34,10 @@ class FlowdockService < Service
       data[:before],
       data[:after],
       token: token,
-      repo: project.repository.path_to_repo,
-      repo_url: "#{Gitlab.config.gitlab.url}/#{project.path_with_namespace}",
-      commit_url: "#{Gitlab.config.gitlab.url}/#{project.path_with_namespace}/commit/%s",
-      diff_url: "#{Gitlab.config.gitlab.url}/#{project.path_with_namespace}/compare/%s...%s",
-      )
+      repo: project.repository,
+      repo_url: "#{Gitlab.config.gitlab.url}/#{project.full_path}",
+      commit_url: "#{Gitlab.config.gitlab.url}/#{project.full_path}/-/commit/%s",
+      diff_url: "#{Gitlab.config.gitlab.url}/#{project.full_path}/compare/%s...%s"
+    )
   end
 end

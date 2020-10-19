@@ -1,0 +1,28 @@
+- file_hooks = Gitlab::FileHook.files
+
+.row.gl-mt-3
+  .col-lg-4
+    %h4.gl-mt-0
+      = _('File Hooks')
+    %p
+      = _('File hooks are similar to system hooks but are executed as files instead of sending data to a URL.')
+      = link_to _('For more information, see the File Hooks documentation.'), help_page_path('administration/file_hooks')
+
+
+  .col-lg-8.gl-mb-3
+    - if file_hooks.any?
+      .card
+        .card-header
+          = _('File Hooks (%{count})') % { count: file_hooks.count }
+        %ul.content-list
+          - file_hooks.each do |file|
+            %li
+              .monospace
+                = File.basename(file)
+              - if File.dirname(file).ends_with?('plugins')
+                .text-warning
+                  = _('Plugins directory is deprecated and will be removed in 14.0. Please move this file into /file_hooks directory.')
+
+    - else
+      .card.bg-light.text-center
+        .nothing-here-block= _('No file hooks found.')

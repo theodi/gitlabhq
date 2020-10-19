@@ -1,0 +1,24 @@
+- page_title _("GitLab Import")
+- header_title _("Projects"), root_path
+
+%h3.page-title.d-flex
+  .gl-display-flex.gl-align-items-center.gl-justify-content-center
+    = sprite_icon('tanuki', css_class: 'gl-mr-2')
+  = _('Import an exported GitLab project')
+%hr
+
+= form_tag import_gitlab_project_path, class: 'new_project', multipart: true do
+  = render 'import/shared/new_project_form'
+
+  .row
+    .form-group.col-md-12
+      = _("To move or copy an entire GitLab project from another GitLab installation to this one, navigate to the original project's settings page, generate an export file, and upload it here.")
+  .row
+    .form-group.col-sm-12
+      = label_tag :file, _('GitLab project export'), class: 'label-bold'
+      .form-group
+        = file_field_tag :file, class: ''
+  .row
+    .form-actions.col-sm-12
+      = submit_tag _('Import project'), class: 'btn btn-success'
+      = link_to _('Cancel'), new_project_path, class: 'btn btn-cancel'

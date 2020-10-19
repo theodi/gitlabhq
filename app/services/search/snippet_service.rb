@@ -1,14 +1,15 @@
-module Search
-  class SnippetService
-    attr_accessor :current_user, :params
+# frozen_string_literal: true
 
-    def initialize(user, params)
-      @current_user, @params = user, params.dup
+module Search
+  class SnippetService < Search::GlobalService
+    def execute
+      Gitlab::SnippetSearchResults.new(current_user, params[:search])
     end
 
-    def execute
-      snippet_ids = Snippet.accessible_to(current_user).pluck(:id)
-      Gitlab::SnippetSearchResults.new(snippet_ids, params[:search])
+    def scope
+      @scope ||= 'snippet_titles'
     end
   end
 end
+
+Search::SnippetService.prepend_if_ee('::EE::Search::SnippetService')

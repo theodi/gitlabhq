@@ -1,0 +1,65 @@
+.timeline {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  &::before {
+    @include notes-media('max', map-get($grid-breakpoints, sm)) {
+      background: none;
+    }
+  }
+
+  .system-note {
+    .note-text {
+      color: $gl-text-color !important;
+    }
+  }
+
+  .diff-file {
+    border: 1px solid $border-color;
+    margin: 0;
+  }
+
+  &.text-file .diff-file {
+    border-bottom: 0;
+  }
+}
+
+.timeline-entry {
+  color: $gl-text-color;
+
+  // [dark-theme]: only give background color to actual notes
+  // in the timeline, the note form textarea has a background
+  // of it's own
+  &:not(.note-form) {
+    background-color: $white;
+  }
+
+  .timeline-entry-inner {
+    position: relative;
+  }
+
+  &:target,
+  &.target {
+    background: $line-target-blue;
+
+    &.system-note .note-body .note-text.system-note-commit-list::after {
+      background: linear-gradient(rgba($line-target-blue, 0.1) -100px, $line-target-blue 100%);
+    }
+  }
+
+  img.avatar {
+    margin-right: $gl-padding;
+  }
+
+  .controls {
+    padding-top: 10px;
+    float: right;
+  }
+}
+
+.discussion .timeline-entry {
+  margin: 0;
+  border-right: 0;
+  border-radius: $border-radius-default $border-radius-default 0 0;
+}

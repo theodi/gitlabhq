@@ -1,0 +1,63 @@
+<script>
+import { GlTooltipDirective, GlLink, GlBadge, GlButton } from '@gitlab/ui';
+import { BACK_URL_PARAM } from '~/releases/constants';
+import { setUrlParams } from '~/lib/utils/url_utility';
+
+export default {
+  name: 'ReleaseBlockHeader',
+  components: {
+    GlLink,
+    GlBadge,
+    GlButton,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  props: {
+    release: {
+      type: Object,
+      required: true,
+    },
+  },
+  computed: {
+    editLink() {
+      if (this.release._links?.editUrl) {
+        const queryParams = {
+          [BACK_URL_PARAM]: window.location.href,
+        };
+
+        return setUrlParams(queryParams, this.release._links.editUrl);
+      }
+
+      return undefined;
+    },
+    selfLink() {
+      return this.release._links?.self;
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="card-header d-flex align-items-center bg-white pr-0">
+    <h2 class="card-title my-2 mr-auto">
+      <gl-link v-if="selfLink" :href="selfLink" class="font-size-inherit">
+        {{ release.name }}
+      </gl-link>
+      <template v-else>{{ release.name }}</template>
+      <gl-badge v-if="release.upcomingRelease" variant="warning" class="align-middle">{{
+        __('Upcoming Release')
+      }}</gl-badge>
+    </h2>
+    <gl-button
+      v-if="editLink"
+      v-gl-tooltip
+      category="primary"
+      variant="default"
+      icon="pencil"
+      class="gl-mr-3 js-edit-button ml-2 pb-2"
+      :title="__('Edit this release')"
+      :href="editLink"
+    />
+  </div>
+</template>

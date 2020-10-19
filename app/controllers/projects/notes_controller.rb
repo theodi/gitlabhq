@@ -1,125 +1,93 @@
+# frozen_string_literal: true
+
 class Projects::NotesController < Projects::ApplicationController
-  # Authorize
+  include RendersNotes
+  include NotesActions
+  include NotesHelper
+  include ToggleAwardEmoji
+
+  before_action :whitelist_query_limiting, only: [:create, :update]
   before_action :authorize_read_note!
-  before_action :authorize_write_note!, only: [:create]
-  before_action :authorize_admin_note!, only: [:update, :destroy]
-  before_action :find_current_user_notes, except: [:destroy, :delete_attachment]
+  before_action :authorize_create_note!, only: [:create]
+  before_action :authorize_resolve_note!, only: [:resolve, :unresolve]
 
-  def index
-    current_fetched_at = Time.now.to_i
-
-    notes_json = { notes: [], last_fetched_at: current_fetched_at }
-
-    @notes.each do |note|
-      notes_json[:notes] << {
-        id: note.id,
-        html: note_to_html(note)
-      }
-    end
-
-    render json: notes_json
-  end
-
-  def create
-    @note = Notes::CreateService.new(project, current_user, note_params).execute
-
-    respond_to do |format|
-      format.json { render_note_json(@note) }
-      format.html { redirect_to :back }
-    end
-  end
-
-  def update
-    if note.editable?
-      note.update_attributes(note_params)
-      note.reset_events_cache
-    end
-
-    respond_to do |format|
-      format.json { render_note_json(note) }
-      format.html { redirect_to :back }
-    end
-  end
-
-  def destroy
-    if note.editable?
-      note.destroy
-      note.reset_events_cache
-    end
-
-    respond_to do |format|
-      format.js { render nothing: true }
-    end
-  end
+  feature_category :issue_tracking
 
   def delete_attachment
     note.remove_attachment!
     note.update_attribute(:attachment, nil)
 
     respond_to do |format|
-      format.js { render nothing: true }
+      format.js { head :ok }
+    end
+  end
+
+  def resolve
+    return render_404 unless note.resolvable?
+
+    Notes::ResolveService.new(project, current_user).execute(note)
+
+    discussion = note.discussion
+
+    if serialize_notes?
+      render_json_with_notes_serializer
+    else
+      render json: {
+        resolved_by: note.resolved_by.try(:name),
+        discussion_headline_html: (view_to_html_string('discussions/_headline', discussion: discussion) if discussion)
+      }
+    end
+  end
+
+  def unresolve
+    return render_404 unless note.resolvable?
+
+    note.unresolve!
+
+    discussion = note.discussion
+
+    if serialize_notes?
+      render_json_with_notes_serializer
+    else
+      render json: {
+        discussion_headline_html: (view_to_html_string('discussions/_headline', discussion: discussion) if discussion)
+      }
     end
   end
 
   private
 
+  def render_json_with_notes_serializer
+    prepare_notes_for_rendering([note])
+
+    render json: note_serializer.represent(note)
+  end
+
   def note
     @note ||= @project.notes.find(params[:id])
   end
 
-  def note_to_html(note)
-    render_to_string(
-      "projects/notes/_note",
-      layout: false,
-      formats: [:html],
-      locals: { note: note }
-    )
-  end
+  alias_method :awardable, :note
 
-  def note_to_discussion_html(note)
-    render_to_string(
-      "projects/notes/_diff_notes_with_reply",
-      layout: false,
-      formats: [:html],
-      locals: { notes: [note] }
-    )
-  end
-
-  def note_to_discussion_with_diff_html(note)
-    return unless note.for_diff_line?
-
-    render_to_string(
-      "projects/notes/_discussion",
-      layout: false,
-      formats: [:html],
-      locals: { discussion_notes: [note] }
-    )
-  end
-
-  def render_note_json(note)
-    render json: {
-      id: note.id,
-      discussion_id: note.discussion_id,
-      html: note_to_html(note),
-      discussion_html: note_to_discussion_html(note),
-      discussion_with_diff_html: note_to_discussion_with_diff_html(note)
-    }
+  def finder_params
+    params.merge(project: project, last_fetched_at: last_fetched_at, notes_filter: notes_filter)
   end
 
   def authorize_admin_note!
     return access_denied! unless can?(current_user, :admin_note, note)
   end
 
-  def note_params
-    params.require(:note).permit(
-      :note, :noteable, :noteable_id, :noteable_type, :project_id,
-      :attachment, :line_code, :commit_id
-    )
+  def authorize_resolve_note!
+    return access_denied! unless can?(current_user, :resolve_note, note)
   end
 
-  private
+  def authorize_create_note!
+    return unless noteable.lockable?
 
-  def find_current_user_notes
-    @notes = NotesFinder.new.execute(project, current_user, params)
+    access_denied! unless can?(current_user, :create_note, noteable)
+  end
+
+  def whitelist_query_limiting
+    Gitlab::QueryLimiting.whitelist('https://gitlab.com/gitlab-org/gitlab-foss/issues/42383')
   end
 end

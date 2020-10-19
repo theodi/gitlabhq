@@ -1,32 +1,37 @@
+# frozen_string_literal: true
+
 class Profiles::PasswordsController < Profiles::ApplicationController
   skip_before_action :check_password_expiration, only: [:new, :create]
+  skip_before_action :check_two_factor_requirement, only: [:new, :create]
 
   before_action :set_user
   before_action :authorize_change_password!
 
   layout :determine_layout
 
+  feature_category :authentication_and_authorization
+
   def new
   end
 
   def create
     unless @user.password_automatically_set || @user.valid_password?(user_params[:current_password])
-      redirect_to new_profile_password_path, alert: 'You must provide a valid current password'
+      redirect_to new_profile_password_path, alert: _('You must provide a valid current password')
       return
     end
 
-    new_password = user_params[:password]
-    new_password_confirmation = user_params[:password_confirmation]
-
-    result = @user.update_attributes(
-      password: new_password,
-      password_confirmation: new_password_confirmation,
+    password_attributes = {
+      password: user_params[:password],
+      password_confirmation: user_params[:password_confirmation],
       password_automatically_set: false
-    )
+    }
 
-    if result
-      @user.update_attributes(password_expires_at: nil)
-      redirect_to root_path, notice: 'Password successfully changed'
+    result = Users::UpdateService.new(current_user, password_attributes.merge(user: @user)).execute
+
+    if result[:status] == :success
+      Users::UpdateService.new(current_user, user: @user, password_expires_at: nil).execute
+
+      redirect_to root_path, notice: _('Password successfully changed')
     else
       render :new
     end
@@ -42,21 +47,24 @@ class Profiles::PasswordsController < Profiles::ApplicationController
     password_attributes[:password_automatically_set] = false
 
     unless @user.password_automatically_set || @user.valid_password?(user_params[:current_password])
-      redirect_to edit_profile_password_path, alert: 'You must provide a valid current password'
+      redirect_to edit_profile_password_path, alert: _('You must provide a valid current password')
       return
     end
 
-    if @user.update_attributes(password_attributes)
-      flash[:notice] = "Password was successfully updated. Please login with it"
+    result = Users::UpdateService.new(current_user, password_attributes.merge(user: @user)).execute
+
+    if result[:status] == :success
+      flash[:notice] = _('Password was successfully updated. Please sign in again.')
       redirect_to new_user_session_path
     else
+      @user.reset
       render 'edit'
     end
   end
 
   def reset
     current_user.send_reset_password_instructions
-    redirect_to edit_profile_password_path, notice: 'We sent you an email with reset password instructions'
+    redirect_to edit_profile_password_path, notice: _('We sent you an email with reset password instructions')
   end
 
   private
@@ -74,7 +82,7 @@ class Profiles::PasswordsController < Profiles::ApplicationController
   end
 
   def authorize_change_password!
-    return render_404 if @user.ldap_user?
+    render_404 unless @user.allow_password_authentication?
   end
 
   def user_params

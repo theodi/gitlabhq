@@ -1,21 +1,22 @@
-%h3.page-title
-  = @service.title
-  = boolean_to_icon @service.activated?
+- if lookup_context.template_exists?('top', "projects/services/#{@service.to_param}", true)
+  = render "projects/services/#{@service.to_param}/top"
 
-%p= @service.description
+.row.gl-mt-3.gl-mb-3
+  .col-lg-4
+    %h3.page-title.gl-mt-0
+      = @service.title
+      - [true, false].each do |value|
+        - hide_class = 'd-none' if @service.operating? != value
+        %span.js-service-active-status{ class: hide_class, data: { value: value.to_s } }
+          = boolean_to_icon value
 
-.back-link
-  = link_to namespace_project_services_path(@project.namespace, @project) do
-    &larr; to services
+    - if @service.respond_to?(:detailed_description)
+      %p= @service.detailed_description
+  .col-lg-8
+    = form_for(@service, as: :service, url: scoped_integration_path(@service), method: :put, html: { class: 'gl-show-field-errors integration-settings-form js-integration-settings-form', data: { 'test-url' => test_project_service_path(@project, @service) } }) do |form|
+      = render 'shared/service_settings', form: form, integration: @service
+      %input{ id: 'services_redirect_to', type: 'hidden', name: 'redirect_to', value: request.referrer }
 
-%hr
-
-= form_for(@service, as: :service, url: namespace_project_service_path(@project.namespace, @project, @service.to_param), method: :put, html: { class: 'form-horizontal' }) do |form|
-  = render 'shared/service_settings', form: form
-
-  .form-actions
-    = form.submit 'Save', class: 'btn btn-save'
-    &nbsp;
-    - if @service.valid? && @service.activated?
-      - disabled = @service.can_test? ? '':'disabled'
-      = link_to 'Test settings', test_namespace_project_service_path(@project.namespace, @project, @service.to_param), class: "btn #{disabled}"
+- if lookup_context.template_exists?('show', "projects/services/#{@service.to_param}", true)
+  %hr
+  = render "projects/services/#{@service.to_param}/show"

@@ -1,0 +1,12 @@
+- if @related_branches.any?
+  %h2.related-branches-title
+    = pluralize(@related_branches.size, 'Related Branch')
+  %ul.unstyled-list.related-merge-requests
+    - @related_branches.each do |branch|
+      %li
+        - if branch[:pipeline_status].present?
+          %span.related-branch-ci-status
+            = render 'ci/status/icon', status: branch[:pipeline_status]
+        %span.related-branch-info
+          %strong
+            = link_to branch[:name], branch[:link], class: "ref-name"

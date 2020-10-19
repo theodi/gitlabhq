@@ -1,0 +1,23 @@
+%ul
+  - if current_user_menu?(:help)
+    = render_if_exists 'layouts/header/whats_new_dropdown_item'
+    %li
+      = link_to _("Help"), help_path
+    %li
+      = link_to _("Support"), support_url
+    %li
+      = render 'shared/help_dropdown_forum_link'
+    %li
+      %button.js-shortcuts-modal-trigger{ type: "button" }
+        = _("Keyboard shortcuts")
+        %span.text-secondary.float-right{ "aria-hidden": true }= '?'.html_safe
+    %li.divider
+  %li
+    = link_to _("Submit feedback"), "https://about.gitlab.com/submit-feedback"
+  - if current_user_menu?(:help) || current_user_menu?(:settings) || current_user_menu?(:profile)
+    %li
+      = render 'shared/user_dropdown_contributing_link'
+  = render 'shared/user_dropdown_instance_review'
+  - if Gitlab.com_but_not_canary?
+    %li
+      = link_to _("Switch to GitLab Next"), "https://next.gitlab.com/"

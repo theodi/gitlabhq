@@ -1,0 +1,489 @@
+.filter-item {
+  vertical-align: top;
+
+  &.reset-filters {
+    padding: 7px;
+  }
+
+  &.update-issues-btn {
+    float: right;
+    margin-right: 0;
+
+    @include media-breakpoint-down(sm) {
+      float: none;
+    }
+  }
+}
+
+.filters-section {
+  @include media-breakpoint-down(sm) {
+    display: inline-block;
+  }
+}
+
+@include media-breakpoint-up(sm) {
+  .filter-item:not(:last-child) {
+    margin-right: 6px;
+  }
+
+  .bulk-update {
+    .filter-item {
+      margin-right: 0;
+    }
+  }
+
+  .sort-filter {
+    display: inline-block;
+    float: right;
+  }
+
+  .dropdown-menu-sort {
+    left: auto;
+    right: 0;
+  }
+}
+
+@include media-breakpoint-down(sm) {
+  .filter-item {
+    display: block;
+    margin: 0 0 10px;
+  }
+
+  .dropdown-menu-toggle,
+  .update-issues-btn .btn {
+    width: 100%;
+  }
+}
+
+.filtered-search-wrapper {
+  .tokens-container {
+    display: flex;
+    flex: 1;
+    padding-left: 12px;
+    position: relative;
+    margin-bottom: 0;
+    width: 1px;
+  }
+
+  .input-token {
+    max-width: 200px;
+    padding: 0;
+
+    &:hover,
+    &:focus {
+      background-color: inherit;
+      color: inherit;
+    }
+  }
+
+  .input-token:only-child,
+  .input-token:last-child {
+    flex: 1;
+    max-width: inherit;
+  }
+}
+
+.filtered-search-token,
+.filtered-search-term {
+  display: flex;
+  flex-shrink: 0;
+  margin-top: 4px;
+  margin-bottom: 4px;
+
+  .selectable {
+    display: flex;
+  }
+
+  .name,
+  .operator,
+  .value {
+    display: inline-block;
+    padding: 2px 7px;
+  }
+
+  .name {
+    background-color: $gray-50;
+    color: $gl-text-color-secondary;
+    border-radius: 2px 0 0 2px;
+    margin-right: 1px;
+    text-transform: capitalize;
+  }
+
+  .operator {
+    background-color: $white-normal;
+    color: $gl-text-color;
+    margin-right: 1px;
+  }
+
+  .value-container {
+    display: flex;
+    align-items: center;
+    background-color: $white-normal;
+    color: $gl-text-color;
+    border-radius: 0 2px 2px 0;
+    margin-right: 5px;
+    padding-right: 8px;
+  }
+
+  .value {
+    padding-right: 0;
+  }
+
+  .remove-token {
+    display: inline-block;
+    padding-left: 8px;
+    padding-right: 0;
+
+    .close-icon {
+      color: $gl-text-color-secondary;
+    }
+
+    &:hover .close-icon {
+      color: $gl-text-color;
+    }
+
+    &.inverted {
+      .close-icon {
+        color: $gl-text-color-secondary-inverted;
+      }
+
+      &:hover .close-icon {
+        color: $gl-text-color-inverted;
+      }
+    }
+  }
+}
+
+.filtered-search-token:hover,
+.filtered-search-token .selected,
+.filtered-search-term .selected {
+  .name {
+    background-color: $gray-100;
+  }
+
+  .operator {
+    box-shadow: inset 0 0 0 100px $filtered-search-term-shadow-color;
+  }
+
+  .value-container {
+    box-shadow: inset 0 0 0 100px $filtered-search-term-shadow-color;
+  }
+}
+
+.filtered-search-term {
+  .name {
+    background-color: inherit;
+    color: $black;
+    text-transform: none;
+  }
+
+  .selectable {
+    cursor: text;
+  }
+}
+
+.scroll-container {
+  display: flex;
+  overflow-x: auto;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.filtered-search-box {
+  position: relative;
+  flex: 1;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid $border-color;
+  background-color: $white;
+  border-radius: $border-radius-default 0 0 $border-radius-default;
+
+  @include media-breakpoint-down(sm) {
+    flex: 1 1 auto;
+    margin-bottom: 10px;
+  }
+
+  &:hover {
+    @extend .form-control:hover;
+  }
+
+  &.focus,
+  &.focus:hover {
+    border-color: $blue-300;
+    box-shadow: 0 0 4px $dropdown-input-focus-shadow;
+  }
+
+  gl-emoji {
+    display: inline-block;
+    font-family: inherit;
+    font-size: inherit;
+    vertical-align: inherit;
+
+    img {
+      height: $default-icon-size;
+      width: $default-icon-size;
+    }
+  }
+
+  .form-control {
+    position: relative;
+    min-width: 200px;
+    padding-right: 25px;
+    padding-left: 0;
+    height: $input-height - 2;
+    line-height: inherit;
+
+    &,
+    &:focus,
+    &:hover {
+      outline: none;
+      border-color: transparent;
+      box-shadow: none;
+    }
+  }
+
+  .clear-search-icon {
+    right: 10px;
+    color: $gray-darkest;
+  }
+
+  .clear-search {
+    width: 35px;
+    background-color: $white;
+    border: 0;
+    outline: none;
+    z-index: 1;
+
+    &:hover .clear-search-icon {
+      color: $common-gray-dark;
+    }
+  }
+}
+
+.filtered-search-box-input-container {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  background-color: $input-bg;
+}
+
+.filtered-search-input-dropdown-menu {
+  max-height: $dropdown-max-height-lg;
+  max-width: 280px;
+  overflow: auto;
+
+  @include media-breakpoint-down(sm) {
+    width: auto;
+    left: 0;
+    right: 0;
+    max-width: none;
+    min-width: 100%;
+  }
+
+  .btn-helptext {
+    margin-left: auto;
+    color: var(--gray);
+  }
+}
+
+.filtered-search-history-dropdown-wrapper {
+  position: static;
+  display: flex;
+  flex-direction: column;
+}
+
+.filtered-search-history-dropdown-toggle-button {
+  flex: 1;
+  width: auto;
+  border-radius: $border-radius-default 0 0 $border-radius-default;
+  border: 0;
+  border-right: 1px solid $border-color;
+  color: $gl-text-color-secondary;
+  transition: color 0.1s linear;
+
+  &:hover,
+  &:focus {
+    color: $gl-text-color;
+    border-color: $border-color;
+  }
+}
+
+.filtered-search-history-dropdown {
+  width: 40%;
+
+  @include media-breakpoint-down(sm) {
+    left: 0;
+    right: 0;
+    max-width: none;
+  }
+}
+
+.filtered-search-history-dropdown-content {
+  max-height: none;
+
+  .filtered-search-history-dropdown-item,
+  .filtered-search-history-clear-button {
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+}
+
+.filtered-search-history-dropdown-token {
+  display: inline;
+
+  &:not(:last-child) {
+    margin-right: 0.3em;
+  }
+
+  > .value {
+    font-weight: $gl-font-weight-bold;
+  }
+}
+
+.filter-dropdown-container {
+  .dropdown-toggle {
+    line-height: 22px;
+  }
+}
+
+@include media-breakpoint-down(sm) {
+  .issues-details-filters,
+  .epics-details-filters {
+    padding-top: $gl-padding-8;
+    padding-bottom: $gl-padding-8;
+    background-color: $white;
+  }
+
+  .filtered-search-block .boards-switcher {
+    @include gl-mr-0;
+    margin-bottom: $gl-input-padding;
+
+    .boards-selector-wrapper,
+    .dropdown {
+      @include gl-display-block;
+    }
+  }
+
+  .filter-dropdown-container {
+    > div {
+      @include gl-m-0;
+
+      > .btn {
+        margin: 0 0 $gl-input-padding;
+        @include gl-w-full;
+      }
+    }
+
+    .board-labels-toggle-wrapper {
+      margin-bottom: $gl-input-padding;
+    }
+
+    .board-swimlanes-toggle-wrapper {
+      @include gl-h-auto;
+      margin-bottom: $gl-input-padding;
+
+      > span,
+      > .dropdown,
+      .gl-dropdown-toggle {
+        @include gl-w-full;
+        @include gl-m-0;
+      }
+
+      > .dropdown {
+        @include gl-mt-2;
+      }
+    }
+  }
+
+  .boards-add-list > .btn {
+    text-align: left;
+
+    > svg {
+      position: absolute;
+      top: 11px;
+      right: 6px;
+    }
+  }
+}
+
+.droplab-dropdown .dropdown-menu .filter-dropdown-item {
+  .btn {
+    text-overflow: ellipsis;
+
+    svg {
+      margin-right: $gl-padding-8;
+    }
+
+    .dropdown-label-box {
+      border-color: $white;
+      border-style: solid;
+      border-width: 1px;
+      width: 17px;
+      height: 17px;
+      top: 0;
+    }
+  }
+
+  .dropdown-light-content {
+    font-size: 14px;
+    font-weight: $gl-font-weight-normal;
+  }
+
+  .dropdown-user {
+    display: flex;
+  }
+
+  .dropdown-user-details {
+    display: flex;
+    flex-direction: column;
+
+    > span {
+      white-space: normal;
+      word-break: break-all;
+    }
+  }
+}
+
+.filter-dropdown-loading {
+  padding: 8px 16px;
+  text-align: center;
+}
+
+.search-token-target-branch {
+  .value {
+    font-family: $monospace-font;
+    font-size: 13px;
+  }
+}
+
+.vue-filtered-search-bar-container {
+  .gl-search-box-by-click {
+    // Absolute width is needed to prevent flex to grow
+    // beyond the available width.
+    .gl-filtered-search-scrollable {
+      width: 1px;
+    }
+
+    // There are several styling issues happening while using
+    // `GlFilteredSearch` in roadmap due to some of our global
+    // styles which we need to override until those are fixed
+    // at framework level.
+    // See https://gitlab.com/gitlab-org/gitlab-ui/-/issues/908
+    .input-group-prepend + .gl-filtered-search-scrollable {
+      border-radius: 0;
+    }
+  }
+
+  @include media-breakpoint-up(md) {
+    .sort-dropdown-container {
+      margin-left: 10px;
+    }
+  }
+
+  @include media-breakpoint-down(sm) {
+    .sort-dropdown-container {
+      margin-top: 10px;
+    }
+  }
+}

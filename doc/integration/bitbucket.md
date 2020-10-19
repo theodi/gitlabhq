@@ -1,122 +1,135 @@
-# Integrate your server with Bitbucket
+# Integrate your GitLab server with Bitbucket Cloud
 
-Import projects from Bitbucket and login to your GitLab instance with your Bitbucket account.
+NOTE: **Note:**
+Starting from GitLab 11.4, OmniAuth is enabled by default. If you're using an
+earlier version, you'll need to explicitly enable it.
 
-To enable the Bitbucket OmniAuth provider you must register your application with Bitbucket.
-Bitbucket will generate an application ID and secret key for you to use.
+Import projects from Bitbucket.org and login to your GitLab instance with your
+Bitbucket.org account.
 
-1.  Sign in to Bitbucket.
+## Overview
 
-1.  Navigate to your individual user settings or a team's settings, depending on how you want the application registered. It does not matter if the application is registered as an individual or a team - that is entirely up to you.
+You can set up Bitbucket.org as an OAuth2 provider so that you can use your
+credentials to authenticate into GitLab or import your projects from
+Bitbucket.org.
 
-1.  Select "OAuth" in the left menu.
+- To use Bitbucket.org as an OmniAuth provider, follow the [Bitbucket OmniAuth
+  provider](#bitbucket-omniauth-provider) section.
+- To import projects from Bitbucket, follow both the
+  [Bitbucket OmniAuth provider](#bitbucket-omniauth-provider) and
+  [Bitbucket project import](#bitbucket-project-import) sections.
 
-1.  Select "Add consumer".
+## Bitbucket OmniAuth provider
 
-1.  Provide the required details.
-    - Name: This can be anything. Consider something like "\<Organization\>'s GitLab" or "\<Your Name\>'s GitLab" or something else descriptive.
-    - Application description: Fill this in if you wish.
-    - URL: The URL to your GitLab installation. 'https://gitlab.company.com'
-1.  Select "Save".
+NOTE: **Note:**
+GitLab 8.15 significantly simplified the way to integrate Bitbucket.org with
+GitLab. You are encouraged to upgrade your GitLab instance if you haven't done so
+already. If you're using GitLab 8.14 or below, [use the previous integration
+docs](https://gitlab.com/gitlab-org/gitlab/blob/8-14-stable-ee/doc/integration/bitbucket.md).
 
-1.  You should now see a Key and Secret in the list of OAuth customers.
-    Keep this page open as you continue configuration.
+To enable the Bitbucket OmniAuth provider you must register your application
+with Bitbucket.org. Bitbucket will generate an application ID and secret key for
+you to use.
 
-1.  On your GitLab server, open the configuration file.
+1. Sign in to [Bitbucket.org](https://bitbucket.org).
+1. Navigate to your individual user settings (**Bitbucket settings**) or a team's
+   settings (**Manage team**), depending on how you want the application registered.
+   It does not matter if the application is registered as an individual or a
+   team, that is entirely up to you.
+1. Select **OAuth** in the left menu under "Access Management".
+1. Select **Add consumer**.
+1. Provide the required details:
 
-    For omnibus package:
+   | Item | Description |
+   | :--- | :---------- |
+   | **Name** | This can be anything. Consider something like `<Organization>'s GitLab` or `<Your Name>'s GitLab` or something else descriptive. |
+   | **Application description** | Fill this in if you wish. |
+   | **Callback URL** | The URL to your GitLab installation, e.g., `https://gitlab.example.com/users/auth`. |
+   | **URL** | The URL to your GitLab installation, e.g., `https://gitlab.example.com`. |
 
-    ```sh
-      sudo editor /etc/gitlab/gitlab.rb
-    ```
+   NOTE: Be sure to append `/users/auth` to the end of the callback URL
+   to prevent a [OAuth2 convert
+   redirect](http://tetraph.com/covert_redirect/) vulnerability.
 
-    For instalations from source:
+   NOTE: Starting in GitLab 8.15, you MUST specify a callback URL, or you will
+   see an "Invalid redirect_uri" message. For more details, see [the
+   Bitbucket documentation](https://confluence.atlassian.com/bitbucket/oauth-faq-338365710.html).
 
-    ```sh
-      cd /home/git/gitlab
+   And grant at least the following permissions:
 
-      sudo -u git -H editor config/gitlab.yml
-    ```
+   ```plaintext
+   Account: Email, Read
+   Projects: Read
+   Repositories: Read
+   Pull Requests: Read
+   Issues: Read
+   Wiki: Read and Write
+   ```
 
-1.  See [Initial OmniAuth Configuration](omniauth.md#initial-omniauth-configuration) for initial settings.
+   ![Bitbucket OAuth settings page](img/bitbucket_oauth_settings_page.png)
 
-1.  Add the provider configuration:
+1. Select **Save**.
+1. Select your newly created OAuth consumer and you should now see a Key and
+   Secret in the list of OAuth consumers. Keep this page open as you continue
+   the configuration.
 
-    For omnibus package:
+   ![Bitbucket OAuth key](img/bitbucket_oauth_keys.png)
 
-    ```ruby
-      gitlab_rails['omniauth_providers'] = [
-        {
-          "name" => "bitbucket",
-          "app_id" => "YOUR_KEY",
-          "app_secret" => "YOUR_APP_SECRET",
-          "url" => "https://bitbucket.org/"
-        }
-      ]
-    ```
+1. On your GitLab server, open the configuration file:
 
-    For installation from source:
+   ```shell
+   # For Omnibus packages
+   sudo editor /etc/gitlab/gitlab.rb
 
-    ```
-      - { name: 'bitbucket', app_id: 'YOUR_KEY',
-        app_secret: 'YOUR_APP_SECRET' }
-    ```
+   # For installations from source
+   sudo -u git -H editor /home/git/gitlab/config/gitlab.yml
+   ```
 
-1.  Change 'YOUR_APP_ID' to the key from the Bitbucket application page from step 7.
+1. Add the Bitbucket provider configuration:
 
-1.  Change 'YOUR_APP_SECRET' to the secret from the Bitbucket application page from step 7.
+   For Omnibus packages:
 
-1.  Save the configuration file.
+   ```ruby
+   gitlab_rails['omniauth_providers'] = [
+     {
+       "name" => "bitbucket",
+       "app_id" => "BITBUCKET_APP_KEY",
+       "app_secret" => "BITBUCKET_APP_SECRET",
+       "url" => "https://bitbucket.org/"
+     }
+   ]
+   ```
 
-1.  Restart GitLab for the changes to take effect.
+   For installations from source:
 
-On the sign in page there should now be a Bitbucket icon below the regular sign in form.
-Click the icon to begin the authentication process. Bitbucket will ask the user to sign in and authorize the GitLab application.
-If everything goes well the user will be returned to GitLab and will be signed in.
+   ```yaml
+   omniauth:
+     enabled: true
+     providers:
+       - { name: 'bitbucket',
+           app_id: 'BITBUCKET_APP_KEY',
+           app_secret: 'BITBUCKET_APP_SECRET',
+           url: 'https://bitbucket.org/' }
+   ```
+
+   ---
+
+   Where `BITBUCKET_APP_KEY` is the Key and `BITBUCKET_APP_SECRET` the Secret
+   from the Bitbucket application page.
+
+1. Save the configuration file.
+1. For the changes to take effect, [reconfigure GitLab](../administration/restart_gitlab.md#omnibus-gitlab-reconfigure) if you installed via
+   Omnibus, or [restart](../administration/restart_gitlab.md#installations-from-source) if installed from source.
+
+On the sign in page there should now be a Bitbucket icon below the regular sign
+in form. Click the icon to begin the authentication process. Bitbucket will ask
+the user to sign in and authorize the GitLab application. If everything goes
+well, the user will be returned to GitLab and will be signed in.
 
 ## Bitbucket project import
 
-To allow projects to be imported directly into GitLab, Bitbucket requires two extra setup steps compared to GitHub and GitLab.com.
+Once the above configuration is set up, you can use Bitbucket to sign into
+GitLab and [start importing your projects](../user/project/import/bitbucket.md).
 
-Bitbucket doesn't allow OAuth applications to clone repositories over HTTPS, and instead requires GitLab to use SSH and identify itself using your GitLab server's SSH key.
-
-### Step 1: Known hosts
-
-To allow GitLab to connect to Bitbucket over SSH, you need to add 'bitbucket.org' to your GitLab server's known SSH hosts. Take the following steps to do so:
-
-1. Manually connect to 'bitbucket.org' over SSH, while logged in as the `git` account that GitLab will use:
-
-    ```sh
-    ssh git@bitbucket.org
-    ```
-
-1.  Verify the RSA key fingerprint you'll see in the response matches the one in the [Bitbucket documentation](https://confluence.atlassian.com/display/BITBUCKET/Use+the+SSH+protocol+with+Bitbucket#UsetheSSHprotocolwithBitbucket-KnownhostorBitbucket'spublickeyfingerprints) (the specific IP address doesn't matter):
-
-    ```sh
-    The authenticity of host 'bitbucket.org (207.223.240.182)' can't be established.
-    RSA key fingerprint is 97:8c:1b:f2:6f:14:6b:5c:3b:ec:aa:46:46:74:7c:40.
-    Are you sure you want to continue connecting (yes/no)?
-    ```
-
-1. If the fingerprint matches, type `yes` to continue connecting and have 'bitbucket.org' be added to your known hosts.
-
-1. Your GitLab server is now able to connect to Bitbucket over SSH. Continue to step 2:
-
-### Step 2: Public key
-
-To be able to access repositories on Bitbucket, GitLab will automatically register your public key with Bitbucket as a deploy key for the repositories to be imported. Your public key needs to be at `~/.ssh/bitbucket_rsa.pub`, which will expand to `/home/git/.ssh/bitbucket_rsa.pub` in most configurations.
-
-If you have that file in place, you're all set and should see the "Import projects from Bitbucket" option enabled. If you don't, do the following:
-
-1. Create a new SSH key:
-
-    ```sh
-    sudo -u git -H ssh-keygen
-    ```
-
-    When asked `Enter file in which to save the key` specify the correct path, eg. `/home/git/.ssh/bitbucket_rsa`.
-    Make sure to use an **empty passphrase**.
-
-2. Restart GitLab to allow it to find the new public key.
-
-You should now see the "Import projects from Bitbucket" option on the New Project page enabled.
+If you want to import projects from Bitbucket, but don't want to enable signing in,
+you can [disable Sign-Ins in the admin panel](omniauth.md#enable-or-disable-sign-in-with-an-omniauth-provider-without-disabling-import-sources).

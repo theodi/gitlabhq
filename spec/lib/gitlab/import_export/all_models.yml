@@ -1,0 +1,718 @@
+---
+issues:
+- subscriptions
+- award_emoji
+- author
+- assignees
+- updated_by
+- milestone
+- iteration
+- notes
+- resource_label_events
+- resource_weight_events
+- resource_milestone_events
+- resource_state_events
+- resource_iteration_events
+- sent_notifications
+- sentry_issue
+- issuable_severity
+- label_links
+- labels
+- last_edited_by
+- todos
+- user_agent_detail
+- moved_to
+- moved_from
+- duplicated_to
+- promoted_to_epic
+- events
+- merge_requests_closing_issues
+- metrics
+- timelogs
+- issuable_severity
+- issuable_sla
+- issue_assignees
+- closed_by
+- epic_issue
+- epic
+- feature_flag_issues
+- feature_flags
+- designs
+- design_versions
+- description_versions
+- prometheus_alerts
+- prometheus_alert_events
+- self_managed_prometheus_alert_events
+- zoom_meetings
+- vulnerability_links
+- related_vulnerabilities
+- user_mentions
+- system_note_metadata
+- alert_management_alert
+- status_page_published_incident
+- namespace
+- note_authors
+- issue_email_participants
+events:
+- author
+- project
+- group
+- target
+- push_event_payload
+notes:
+- award_emoji
+- project
+- noteable
+- author
+- updated_by
+- last_edited_by
+- resolved_by
+- todos
+- events
+- system_note_metadata
+- note_diff_file
+- suggestions
+- diff_note_positions
+- review
+label_links:
+- target
+- label
+label:
+- subscriptions
+- project
+- lists
+- label_links
+- issues
+- merge_requests
+- priorities
+milestone:
+- group
+- project
+- issues
+- labels
+- merge_requests
+- participants
+- events
+- boards
+- milestone_releases
+- releases
+snippets:
+- author
+- project
+- notes
+- award_emoji
+- user_agent_detail
+- user_mentions
+- snippet_repository
+- statistics
+releases:
+- author
+- project
+- links
+- milestone_releases
+- milestones
+- evidences
+links:
+- release
+project_members:
+- created_by
+- user
+- source
+- project
+merge_requests:
+- subscriptions
+- award_emoji
+- author
+- assignee
+- reviewers
+- updated_by
+- milestone
+- iteration
+- notes
+- resource_label_events
+- resource_milestone_events
+- resource_state_events
+- resource_iteration_events
+- label_links
+- labels
+- last_edited_by
+- todos
+- target_project
+- source_project
+- merge_user
+- merge_request_diffs
+- merge_request_diff
+- merge_request_context_commits
+- merge_request_context_commit_diff_files
+- events
+- merge_requests_closing_issues
+- cached_closes_issues
+- metrics
+- timelogs
+- head_pipeline
+- latest_merge_request_diff
+- pipelines_for_merge_request
+- merge_request_assignees
+- merge_request_reviewers
+- suggestions
+- diff_note_positions
+- unresolved_notes
+- assignees
+- reviews
+- approval_rules
+- approval_merge_request_rule_sources
+- approval_project_rules
+- approvals
+- approvers
+- approver_users
+- approver_groups
+- approved_by_users
+- draft_notes
+- merge_train
+- blocks_as_blocker
+- blocks_as_blockee
+- blocking_merge_requests
+- blocked_merge_requests
+- description_versions
+- deployment_merge_requests
+- deployments
+- user_mentions
+- system_note_metadata
+- note_authors
+external_pull_requests:
+- project
+merge_request_diff:
+- merge_request
+- merge_request_diff_commits
+- merge_request_diff_detail
+- merge_request_diff_files
+merge_request_diff_commits:
+- merge_request_diff
+merge_request_diff_detail:
+- merge_request_diff
+merge_request_diff_files:
+- merge_request_diff
+merge_request_context_commits:
+- merge_request
+- diff_files
+ci_pipelines:
+- project
+- user
+- ci_ref
+- stages
+- statuses
+- latest_statuses_ordered_by_stage
+- builds
+- bridges
+- processables
+- trigger_requests
+- variables
+- auto_canceled_by
+- auto_canceled_pipelines
+- auto_canceled_jobs
+- pending_builds
+- failed_builds
+- retryable_builds
+- cancelable_statuses
+- manual_actions
+- scheduled_actions
+- downloadable_artifacts
+- pipeline_schedule
+- merge_requests_as_head_pipeline
+- merge_request
+- external_pull_request
+- deployments
+- environments
+- chat_data
+- source_pipeline
+- ref_status
+- source_bridge
+- source_job
+- sourced_pipelines
+- source_project
+- triggered_by_pipeline
+- triggered_pipelines
+- child_pipelines
+- parent_pipeline
+- downstream_bridges
+- job_artifacts
+- vulnerabilities_finding_pipelines
+- vulnerability_findings
+- pipeline_config
+- security_scans
+- daily_build_group_report_results
+- latest_builds
+- daily_report_results
+- latest_builds_report_results
+- messages
+- pipeline_artifacts
+- latest_statuses
+ci_refs:
+- project
+- ci_pipelines
+pipeline_variables:
+- pipeline
+stages:
+- project
+- pipeline
+- statuses
+- processables
+- builds
+- bridges
+- latest_statuses
+statuses:
+- project
+- pipeline
+- stage
+- user
+- auto_canceled_by
+- needs
+variables:
+- project
+triggers:
+- project
+- trigger_requests
+- owner
+pipeline_schedules:
+- project
+- owner
+- pipelines
+- last_pipeline
+- variables
+pipeline_schedule:
+- pipelines
+pipeline_schedule_variables:
+- pipeline_schedule
+deploy_tokens:
+- project_deploy_tokens
+- projects
+deploy_keys:
+- user
+- deploy_keys_projects
+- projects
+services:
+- project
+- service_hook
+- jira_tracker_data
+- issue_tracker_data
+- open_project_tracker_data
+hooks:
+- project
+- web_hook_logs
+protected_branches:
+- project
+- merge_access_levels
+- push_access_levels
+- unprotect_access_levels
+- approval_project_rules
+- required_code_owners_sections
+protected_tags:
+- project
+- create_access_levels
+merge_access_levels:
+- protected_branch
+- user
+- group
+push_access_levels:
+- protected_branch
+- user
+- group
+create_access_levels:
+- user
+- protected_tag
+- group
+container_repositories:
+- project
+- name
+project:
+- taggings
+- base_tags
+- tag_taggings
+- tags
+- chat_services
+- cluster
+- clusters
+- cluster_agents
+- cluster_project
+- creator
+- cycle_analytics_stages
+- group
+- namespace
+- management_clusters
+- boards
+- last_event
+- services
+- campfire_service
+- confluence_service
+- discord_service
+- drone_ci_service
+- emails_on_push_service
+- pipelines_email_service
+- mattermost_slash_commands_service
+- slack_slash_commands_service
+- irker_service
+- packagist_service
+- pivotaltracker_service
+- prometheus_service
+- hipchat_service
+- flowdock_service
+- assembla_service
+- asana_service
+- slack_service
+- microsoft_teams_service
+- mattermost_service
+- hangouts_chat_service
+- unify_circuit_service
+- buildkite_service
+- bamboo_service
+- teamcity_service
+- pushover_service
+- jira_service
+- redmine_service
+- youtrack_service
+- custom_issue_tracker_service
+- bugzilla_service
+- ewm_service
+- external_wiki_service
+- mock_ci_service
+- mock_deployment_service
+- mock_monitoring_service
+- forked_to_members
+- forked_from_project
+- forks
+- merge_requests
+- fork_merge_requests
+- issues
+- labels
+- events
+- milestones
+- iterations
+- notes
+- snippets
+- hooks
+- protected_branches
+- protected_tags
+- project_members
+- project_repository
+- users
+- requesters
+- deploy_keys_projects
+- deploy_keys
+- users_star_projects
+- starrers
+- releases
+- lfs_objects_projects
+- lfs_objects
+- project_group_links
+- invited_groups
+- todos
+- notification_settings
+- import_data
+- commit_statuses
+- ci_pipelines
+- all_pipelines
+- stages
+- ci_refs
+- builds
+- processables
+- runner_projects
+- runners
+- variables
+- triggers
+- pipeline_schedules
+- environments
+- environments_for_dashboard
+- deployments
+- project_feature
+- auto_devops
+- pages_domains
+- pages_metadatum
+- pages_deployments
+- authorized_users
+- project_authorizations
+- remote_mirrors
+- route
+- redirect_routes
+- statistics
+- container_repositories
+- uploads
+- file_uploads
+- import_state
+- members_and_requesters
+- build_trace_section_names
+- build_trace_chunks
+- job_artifacts
+- root_of_fork_network
+- fork_network_member
+- fork_network
+- fork_network_projects
+- custom_attributes
+- lfs_file_locks
+- project_badges
+- source_of_merge_requests
+- internal_ids
+- project_deploy_tokens
+- deploy_tokens
+- settings
+- ci_cd_settings
+- project_settings
+- import_export_upload
+- repository_languages
+- pool_repository
+- kubernetes_namespaces
+- error_tracking_setting
+- metrics_setting
+- gitlab_slack_application_service
+- github_service
+- protected_environments
+- mirror_user
+- push_rule
+- jenkins_service
+- index_status
+- feature_usage
+- approval_rules
+- approval_merge_request_rules
+- approval_merge_request_rule_sources
+- approval_project_rules
+- approvers
+- approver_users
+- audit_events
+- path_locks
+- approver_groups
+- repository_state
+- source_pipelines
+- sourced_pipelines
+- prometheus_metrics
+- vulnerabilities
+- vulnerability_exports
+- vulnerability_findings
+- vulnerability_feedback
+- vulnerability_identifiers
+- vulnerability_scanners
+- dast_site_profiles
+- dast_scanner_profiles
+- dast_sites
+- dast_site_tokens
+- dast_site_validations
+- operations_feature_flags
+- operations_feature_flags_client
+- operations_feature_flags_user_lists
+- prometheus_alerts
+- prometheus_alert_events
+- self_managed_prometheus_alert_events
+- software_license_policies
+- software_licenses
+- project_registry
+- packages
+- package_files
+- tracing_setting
+- alerting_setting
+- project_setting
+- webide_pipelines
+- reviews
+- incident_management_setting
+- merge_trains
+- designs
+- project_aliases
+- external_pull_requests
+- alerts_service
+- grafana_integration
+- remove_source_branch_after_merge
+- deleting_user
+- upstream_projects
+- downstream_projects
+- upstream_project_subscriptions
+- downstream_project_subscriptions
+- service_desk_setting
+- security_setting
+- import_failures
+- container_expiration_policy
+- resource_groups
+- autoclose_referenced_issues
+- status_page_setting
+- requirements
+- export_jobs
+- daily_build_group_report_results
+- jira_imports
+- compliance_framework_setting
+- metrics_users_starred_dashboards
+- alert_management_alerts
+- repository_storage_moves
+- freeze_periods
+- webex_teams_service
+- build_report_results
+- vulnerability_statistic
+- vulnerability_historical_statistics
+- product_analytics_events
+- pipeline_artifacts
+- terraform_states
+- alert_management_http_integrations
+award_emoji:
+- awardable
+- user
+priorities:
+- label
+prometheus_metrics:
+- project
+- prometheus_alerts
+timelogs:
+- issue
+- merge_request
+- user
+- note
+push_event_payload:
+- event
+issuable_severity:
+- issue
+issue_assignees:
+- issue
+- assignee
+merge_request_assignees:
+- merge_request
+- assignee
+lfs_file_locks:
+- user
+project_badges:
+- project
+metrics:
+- merge_request
+- latest_closed_by
+- merged_by
+- pipeline
+resource_label_events:
+- user
+- issue
+- merge_request
+- epic
+- label
+error_tracking_setting:
+- project
+suggestions:
+- note
+diff_note_positions:
+- note
+metrics_setting:
+- project
+protected_environments:
+- project
+- deploy_access_levels
+deploy_access_levels:
+- protected_environment
+- user
+- group
+unprotect_access_levels:
+- user
+- protected_branch
+- group
+prometheus_alerts:
+- project
+- prometheus_alert_events
+prometheus_alert_events:
+- project
+self_managed_prometheus_alert_events:
+- project
+epic_issues:
+- issue
+- epic
+feature_flag_issues:
+- issue
+- feature_flag
+tracing_setting:
+- project
+reviews:
+- project
+- merge_request
+- author
+- notes
+incident_management_setting:
+- project
+merge_trains:
+- project
+- merge_request
+boards:
+- group
+- lists
+- destroyable_lists
+- milestone
+- board_labels
+- board_assignee
+- assignee
+- labels
+- user_preferences
+- boards_epic_user_preferences
+lists:
+- user
+- milestone
+- board
+- label
+- list_user_preferences
+milestone_releases:
+- milestone
+- release
+evidences:
+- release
+design: &design
+- issue
+- actions
+- versions
+- notes
+- user_mentions
+- events
+designs: *design
+actions:
+- design
+- version
+- uploads
+- file_uploads
+versions: &version
+- author
+- issue
+- designs
+- actions
+zoom_meetings:
+- issue
+sentry_issue:
+- issue
+issuable_severity:
+- issue
+design_versions: *version
+epic:
+- subscriptions
+- award_emoji
+- description_versions
+- author
+- assignee
+- issues
+- epic_issues
+- milestone
+- notes
+- label_links
+- labels
+- todos
+- metrics
+- group
+- parent
+- children
+- updated_by
+- last_edited_by
+- closed_by
+- start_date_sourcing_milestone
+- due_date_sourcing_milestone
+- start_date_sourcing_epic
+- due_date_sourcing_epic
+- events
+- resource_label_events
+- resource_state_events
+- user_mentions
+- note_authors
+- boards_epic_user_preferences
+epic_issue:
+- epic
+- issue
+system_note_metadata:
+- note
+- description_version
+status_page_published_incident:
+- issue
+issuable_sla:
+  - issue
